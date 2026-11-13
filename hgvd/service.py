@@ -209,6 +209,86 @@ class HongguoService:
         key = playback_api.extract_content_key(payload)
         return chosen["url"], chosen["size"], key
 
+    def download_series(
+        self,
+        series_id: str,
+        episodes: list[EpisodeItem] | None = None,
+        *,
+        cb=None,
+        cancel: CancelToken | None = None,
+        quality: str | None = None,
+        workers: int = 3,
+    ) -> list[tuple[EpisodeItem, DownloadResult]]:
+        """下载一部剧的多集（并发）。
+
+        ★ 并发数控制：参考项目的教训是「占网络槽位的是还没下完的任务，
+          不是线程还活着」—— 这里每集是独立文件、没有转封装流水线，
+          所以按「正在下载的集数」限流即可。
+        """
+        if episodes is None:
+            episodes = self.list_episodes(series_id)
+        if not episodes:
+            return []
+
+        results: list[tuple[EpisodeItem, DownloadResult]] = []
+        lock = threading.Lock()
+        sem = threading.Semaphore(max(1, workers))
+
+        def one(ep: EpisodeItem):
+            with sem:
+                if cancel and cancel.cancelled:
+                    return
+                try:
+                    res = self.download_episode(
+                        ep, cb=cb, cancel=cancel, quality=quality
+                    )
+                except Exception as e:  # noqa: BLE001
+                    res = DownloadResult(
+                        ok=False, out_path=str(self.build_out_path(ep)),
+                        error=str(e)[:200],
+                    )
+            with lock:
+                results.append((ep, res))
+
+        threads = []
+        for ep in episodes:
+            t = threading.Thread(target=one, args=(ep,), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+        results.sort(key=lambda x: x[0].index)
+        return results
+
+    def download_shelf(
+        self,
+        items=None,
+        *,
+        cb=None,
+        cancel: CancelToken | None = None,
+        quality: str | None = None,
+        workers: int = 3,
+    ) -> list[tuple[EpisodeItem, DownloadResult]]:
+        """下载收藏夹里的全部剧（串行剧、并发集）。"""
+        if items is None:
+            items = self.list_shelf()
+        out = []
+        for item in items:
+            if cancel and cancel.cancelled:
+                break
+            try:
+                eps = self.list_episodes(item.series_id)
+            except Exception:  # noqa: BLE001
+                continue
+            out.extend(
+                self.download_series(
+                    item.series_id, eps, cb=cb, cancel=cancel,
+                    quality=quality, workers=workers,
+                )
+            )
+        return out
+
     # ---------------------------------------------------------- 下载
 
     def build_out_path(self, ep: EpisodeItem) -> Path:

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>红果视频下载器</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e6e8ee; --fg2:#9aa3b2; --accent:#e0554d; --accent2:#3b82f6;
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.6 "Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;
+         background:var(--panel);border-bottom:1px solid var(--line)}
+  h1{font-size:16px;margin:0;font-weight:600}
+  .badge{padding:2px 10px;border-radius:99px;font-size:12px;
+         background:var(--panel2);color:var(--fg2);border:1px solid var(--line)}
+  .badge.on{background:rgba(34,197,94,.15);color:var(--ok);border-color:rgba(34,197,94,.4)}
+  .spacer{flex:1}
+  button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+         border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;font-family:inherit}
+  button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover:not(:disabled){filter:brightness(1.1)}
+  input[type=text],select{background:var(--panel2);color:var(--fg);
+         border:1px solid var(--line);border-radius:6px;padding:6px 10px;
+         font-family:inherit;font-size:13px}
+  main{display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px 18px;
+       height:calc(100vh - 56px)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        display:flex;flex-direction:column;overflow:hidden}
+  .card h2{font-size:13px;margin:0;padding:10px 14px;border-bottom:1px solid var(--line);
+           color:var(--fg2);font-weight:600;display:flex;align-items:center;gap:8px}
+  .list{flex:1;overflow:auto}
+  .item{padding:9px 14px;border-bottom:1px solid rgba(42,47,58,.5);cursor:pointer;
+        display:flex;gap:9px;align-items:flex-start}
+  .item:hover{background:var(--panel2)}
+  .item.sel{background:rgba(59,130,246,.12);box-shadow:inset 3px 0 0 var(--accent2)}
+  .item .t{flex:1;min-width:0}
+  .item .n{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .s{font-size:11px;color:var(--fg2);margin-top:2px}
+  .empty{padding:28px 16px;text-align:center;color:var(--fg2);font-size:13px}
+  .foot{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;
+        align-items:center;flex-wrap:wrap}
+  .right{display:flex;flex-direction:column;gap:14px;min-height:0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{position:sticky;top:0;background:var(--panel);text-align:left;padding:8px 12px;
+     color:var(--fg2);font-weight:600;border-bottom:1px solid var(--line);font-size:12px}
+  td{padding:7px 12px;border-bottom:1px solid rgba(42,47,58,.5)}
+  .st{font-size:12px;padding:2px 8px;border-radius:99px;white-space:nowrap}
+  .st.排队中{background:rgba(154,163,178,.16);color:var(--fg2)}
+  .st.下载中{background:rgba(59,130,246,.18);color:#93c5fd}
+  .st.解析中,.st.校验中,.st.解密{background:rgba(245,158,11,.16);color:#fcd34d}
+  .st.已完成{background:rgba(34,197,94,.16);color:#86efac}
+  .st.失败{background:rgba(239,68,68,.16);color:#fca5a5}
+  .bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;min-width:80px}
+  .bar>i{display:block;height:100%;background:var(--accent2)}
+  .num{font-variant-numeric:tabular-nums;color:var(--fg2);font-size:12px}
+  #log{font:12px/1.5 ui-monospace,Consolas,monospace;padding:10px 14px;
+       overflow:auto;color:var(--fg2);white-space:pre-wrap}
+  .row{display:flex;gap:8px;align-items:center;font-size:13px}
+  .row label{color:var(--fg2);font-size:12px}
+  .hint{font-size:12px;color:var(--fg2)}
+  .chk{width:15px;height:15px;accent-color:var(--accent2);cursor:pointer;margin-top:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>红果视频下载器</h1>
+  <span class="badge" id="auth">未登录</span>
+  <div class="spacer"></div>
+  <button onclick="refreshShelf()">刷新收藏夹</button>
+</header>
+
+<main>
+  <section class="card">
+    <h2>收藏夹 <span class="hint" id="shelfCount"></span></h2>
+    <div class="list" id="shelf"></div>
+    <div class="foot">
+      <button class="primary" id="dlBtn" disabled onclick="startDownload()">下载选中</button>
+      <button id="selAll" onclick="selectAll(true)">全选</button>
+      <button id="selNone" onclick="selectAll(false)">全清</button>
+    </div>
+  </section>
+
+  <div class="right">
+    <section class="card" style="flex:1;min-height:0">
+      <h2>分集 <span class="hint" id="epCount"></span></h2>
+      <div class="list" id="eps"></div>
+      <div class="foot">
+        <div class="row">
+          <label>下载目录</label>
+          <input type="text" id="outDir" style="width:300px">
+          <label>清晰度</label>
+          <select id="quality">
+            <option value="360p">360p</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </div>
+        <div class="spacer"></div>
+        <button onclick="stopAll()">停止</button>
+      </div>
+    </section>
+
+    <section class="card" style="max-height:300px">
+      <h2>下载任务</h2>
+      <div class="list">
+        <table>
+          <thead><tr>
+            <th style="width:78px">状态</th><th>剧名</th><th style="width:110px">集</th>
+            <th style="width:92px">大小</th><th style="width:92px">速度</th>
+            <th style="width:130px">进度</th>
+          </tr></thead>
+          <tbody id="jobs"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" style="max-height:150px">
+      <h2>日志</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+let state = {shelf:[], eps:[], selSeries:null, selEps:new Set(), jobs:[]};
+
+function log(s){
+  const el = document.getElementById('log');
+  el.textContent += s + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(()=>({error:'返回非 JSON'}));
+  if(j.error) throw new Error(j.error);
+  return j;
+}
+
+async function refreshShelf(){
+  const btn = document.getElementById('dlBtn');
+  log('正在读取收藏夹…');
+  try{
+    await api('/api/refresh', {method:'POST', body:'{}'});
+    await pullState();
+    log('收藏夹已刷新');
+  }catch(e){ log('读取失败：' + e.message); }
+}
+
+function renderShelf(){
+  const box = document.getElementById('shelf');
+  box.innerHTML = '';
+  document.getElementById('shelfCount').textContent =
+    state.shelf.length ? `(${state.shelf.length})` : '';
+  if(!state.shelf.length){
+    box.innerHTML = '<div class="empty">收藏夹为空<br>点右上角「刷新收藏夹」</div>';
+    return;
+  }
+  state.shelf.forEach(s=>{
+    const d = document.createElement('div');
+    d.className = 'item' + (state.selSeries===s.series_id ? ' sel':'');
+    d.innerHTML = `<input type="checkbox" class="chk" ${state.selSeries===s.series_id?'checked':''}>
+      <div class="t"><div class="n"></div><div class="s"></div></div>`;
+    d.querySelector('.n').textContent = s.title;
+    d.querySelector('.s').textContent = (s.episode_cnt||'?') + ' 集';
+    d.onclick = (ev)=>{
+      if(ev.target.classList.contains('chk')) return;
+      selectSeries(s.series_id);
+    };
+    d.querySelector('.chk').onchange = ()=>{
+      state.selSeries = d.querySelector('.chk').checked ? s.series_id : null;
+      if(!state.selSeries){ state.eps=[]; state.selEps=new Set(); renderEps(); }
+      else loadEpisodes(s.series_id);
+      renderShelf();
+    };
+    box.appendChild(d);
+  });
+}
+
+async function selectSeries(id){
+  state.selSeries = id;
+  state.selEps = new Set();
+  renderShelf();
+  await loadEpisodes(id);
+}
+
+async function loadEpisodes(id){
+  try{
+    const j = await api('/api/episodes?series_id=' + encodeURIComponent(id));
+    state.eps = j.episodes || [];
+    state.selEps = new Set(state.eps.map(e=>e.vid));
+    renderEps();
+    log(`已载入 ${state.eps.length} 集`);
+  }catch(e){ log('取分集失败：' + e.message); }
+}
+
+function renderEps(){
+  const box = document.getElementById('eps');
+  box.innerHTML = '';
+  document.getElementById('epCount').textContent =
+    state.eps.length ? `(${state.eps.length}，已选 ${state.selEps.size})` : '';
+  if(!state.eps.length){
+    box.innerHTML = '<div class="empty">左边选一部剧</div>';
+    document.getElementById('dlBtn').disabled = true;
+    return;
+  }
+  state.eps.forEach(e=>{
+    const d = document.createElement('div');
+    d.className = 'item';
+    const dur = e.duration ? Math.round(e.duration)+'s' : '';
+    d.innerHTML = `<input type="checkbox" class="chk" ${state.selEps.has(e.vid)?'checked':''}>
+      <div class="t"><div class="n"></div><div class="s"></div></div>`;
+    d.querySelector('.n').textContent = `${e.index}. ${e.title}`;
+    d.querySelector('.s').textContent = dur;
+    d.querySelector('.chk').onchange = ()=>{
+      if(d.querySelector('.chk').checked) state.selEps.add(e.vid);
+      else state.selEps.delete(e.vid);
+      renderEps();
+    };
+    d.onclick = (ev)=>{
+      if(ev.target.classList.contains('chk')) return;
+      const c = d.querySelector('.chk');
+      c.checked = !c.checked;
+      c.onchange();
+    };
+    box.appendChild(d);
+  });
+  document.getElementById('dlBtn').disabled = state.selEps.size===0;
+}
+
+function selectAll(on){
+  if(on && state.eps.length) state.selEps = new Set(state.eps.map(e=>e.vid));
+  else state.selEps = new Set();
+  renderEps();
+}
+
+async function startDownload(){
+  if(!state.selSeries) return;
+  const btn = document.getElementById('dlBtn');
+  btn.disabled = true;
+  try{
+    await api('/api/settings', {method:'POST', body:JSON.stringify({
+      out_dir: document.getElementById('outDir').value,
+      quality: document.getElementById('quality').value
+    })});
+    const r = await api('/api/download', {method:'POST', body:JSON.stringify({
+      series_id: state.selSeries, vids:[...state.selEps]
+    })});
+    log(`开始下载 ${r.count} 集`);
+  }catch(e){ log('启动失败：' + e.message); btn.disabled = false; }
+}
+
+async function stopAll(){
+  try{ await api('/api/stop',{method:'POST',body:'{}'}); log('已请求停止'); }
+  catch(e){ log(e.message); }
+}
+
+function fmtSize(n){
+  if(!n) return '-';
+  const u=['B','KB','MB','GB'];
+  let i=0; n=Number(n);
+  while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+  return n.toFixed(i?1:0)+' '+u[i];
+}
+function fmtSpeed(n){
+  if(!n) return '-';
+  return fmtSize(n)+'/s';
+}
+
+function renderJobs(){
+  const tb = document.getElementById('jobs');
+  const jobs = state.jobs || [];
+  if(!jobs.length){ tb.innerHTML = '<tr><td colspan="6" class="empty">还没有任务</td></tr>'; return; }
+  tb.innerHTML = jobs.map(j=>{
+    const pct = j.total ? Math.floor(j.down*100/j.total) : 0;
+    return `<tr>
+      <td><span class="st ${j.state}">${j.error ? '失败' : j.state}</span></td>
+      <td>${esc(j.series)}</td>
+      <td>${esc(j.episode)}</td>
+      <td class="num">${fmtSize(j.down)}</td>
+      <td class="num">${fmtSpeed(j.speed)}</td>
+      <td><div class="bar"><i style="width:${pct}%"></i></div>
+          <span class="num">${j.error ? esc(j.error).slice(0,60) : pct+'%'}</span></td>
+    </tr>`;
+  }).join('');
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function pullState(){
+  const s = await api('/api/state');
+  state.shelf = s.shelf || [];
+  state.jobs = s.jobs || [];
+  const ab = document.getElementById('auth');
+  if(s.logged_in){ ab.textContent = '已登录：' + (s.user_name||''); ab.classList.add('on'); }
+  else { ab.textContent = '未登录'; ab.classList.remove('on'); }
+  if(!document.getElementById('outDir').value) document.getElementById('outDir').value = s.out_dir||'';
+  document.getElementById('quality').value = s.quality||'360p';
+  renderShelf();
+  renderJobs();
+}
+
+(async function(){
+  await pullState();
+  renderEps();
+  setInterval(async ()=>{ try{ await pullState(); }catch(e){} }, 1000);
+})();
+</script>
+</body>
+</html>

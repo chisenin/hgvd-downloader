@@ -155,6 +155,7 @@ def cmd_download(args) -> int:
         ]
 
     total_ok = total_fail = 0
+    workers = args.workers or cfg.workers
     for t in targets:
         print(f"\n=== {t.title} ({t.series_id}) ===")
         try:
@@ -178,24 +179,19 @@ def cmd_download(args) -> int:
                     want.add(int(part))
             eps = [e for e in eps if e.index in want]
 
-        for e in eps:
-            try:
-                res = svc.download_episode(e, cb=_console_cb())
-            except Exception as ex:  # noqa: BLE001
-                print(f"  [{e.index}] 失败：{ex}")
-                total_fail += 1
-                continue
+        if not eps:
+            print("  没有要下的集")
+            continue
+
+        print(f"  共 {len(eps)} 集，并发 {workers}")
+        results = svc.download_series(
+            t.series_id, eps, cb=_console_cb(), quality=cfg.quality, workers=workers
+        )
+        for ep, res in results:
+            _print_result(ep, res)
             if res.ok:
-                if res.skipped:
-                    print(f"  [{e.index}] 已存在 {res.out_path}")
-                else:
-                    print(
-                        f"  [{e.index}] 完成 {fmt_size(res.size)} "
-                        f"{fmt_duration(res.duration)} → {res.out_path}"
-                    )
                 total_ok += 1
             else:
-                print(f"  [{e.index}] 失败：{res.error}")
                 total_fail += 1
 
     print(f"\n完成 {total_ok}，失败 {total_fail}")
@@ -203,12 +199,12 @@ def cmd_download(args) -> int:
 
 
 def _console_cb() -> DownloadCallbacks:
-    """控制台进度回调。"""
+    """控制台进度回调（多任务时按行刷新）。"""
     cb = DownloadCallbacks()
     state = {"t": 0.0}
 
     def _phase(p):
-        print(f"  · {p}…")
+        print(f"  · {p}…", flush=True)
 
     def _progress(down, total, speed):
         now = time.time()
@@ -216,14 +212,30 @@ def _console_cb() -> DownloadCallbacks:
             return
         state["t"] = now
         pct = int(down * 100 / total) if total else 0
-        print(f"\r    {pct:3d}%  {fmt_size(down)}/{fmt_size(total)}  "
-              f"{fmt_size(speed)}/s   ", end="", flush=True)
+        print(
+            f"\r    {pct:3d}%  {fmt_size(down)}/{fmt_size(total)}  "
+            f"{fmt_size(speed)}/s   ",
+            end="", flush=True,
+        )
         if total and down >= total:
-            print()
+            print(flush=True)
 
     cb.on_phase = _phase
     cb.on_progress = _progress
     return cb
+
+
+def _print_result(ep, res):
+    if res.ok:
+        if res.skipped:
+            print(f"  [{ep.index}] 已存在 {res.out_path}")
+        else:
+            print(
+                f"  [{ep.index}] 完成 {fmt_size(res.size)} "
+                f"{fmt_duration(res.duration)} → {res.out_path}"
+            )
+    else:
+        print(f"  [{ep.index}] 失败：{res.error}")
 
 
 def cmd_gui(args) -> int:
@@ -281,6 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--limit", type=int, default=0, help="每部剧最多下几集")
     pd.add_argument("--out", help="下载目录")
     pd.add_argument("--quality", choices=["360p", "720p", "1080p"])
+    pd.add_argument("--workers", type=int, default=0,
+                    help="集级并发数（默认取配置）")
     return p
 
 
