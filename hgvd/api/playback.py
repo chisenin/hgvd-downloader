@@ -62,6 +62,9 @@ def build_playback_body(
     definition: str = "",
     *,
     scene: str = "play",
+    video_id_type: int = 0,
+    video_platform: int = 3,
+    need_all: bool = True,
 ) -> bytes:
     """构造 video_model 的 request body。
 
@@ -74,14 +77,20 @@ def build_playback_body(
     ★ 字段与 Go 参考实现一致。**字节必须完全一致** ——
       ``x-gorgon`` 与 ``x-ss-stub`` 都覆盖 body，
       哪怕只差一个空格，服务端也会拒签。
+
+    ★★★ ``video_id_type`` 是决定性的（2026-11-13 实测）：
+
+      - ``0`` = 传 **vid**（短剧用）—— 教学类内容会返回 ``code=101000``
+      - ``1`` = 传 **series_id** —— 教学类内容（``content_type=1001``）
+        用这个才拿得到播放地址
     """
     import json as _json
 
     payload = {
         "biz_param": {
-            "need_all_video_definition": True,
-            "video_id_type": 0,
-            "video_platform": 3,
+            "need_all_video_definition": need_all,
+            "video_id_type": video_id_type,
+            "video_platform": video_platform,
         },
         "video_id": video_id,
     }
@@ -141,12 +150,19 @@ def fetch_playback(
     cookies: dict | None = None,
     definition: str = "",
     timeout: int = 25,
+    video_id_type: int = 0,
+    retries: int = 3,
+    pause: float = 2.0,
 ) -> dict:
     """取一集的播放模型。
 
     返回原始 JSON（含各清晰度地址、加密信息）。
+
+    ★ ``video_id_type``：``0`` = 传 vid（短剧），``1`` = 传 series_id（教学内容）。
+    ★ 必须用播放专用签名（``sign_playback``：真 argus/ladon、**不带 medusa**）——
+      用普通签名会被网关拦成 **HTTP 200 + 空 body**。
     """
-    body = build_playback_body(video_id, definition)
+    body = build_playback_body(video_id, definition, video_id_type=video_id_type)
     now_ms = int(time.time() * 1000)
     pairs = device_pairs(ident)
     query, headers = sign_playback(
@@ -176,20 +192,24 @@ def fetch_playback(
         hdr["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
 
     url = f"https://{API_HOST}{PATH_VIDEO_MODEL}?{query}"
-    r = session.post(url, data=body, headers=hdr, timeout=timeout)
-    if r.status_code != 200:
-        raise RuntimeError(f"video_model HTTP {r.status_code}")
-    if not r.content:
-        raise RuntimeError(
-            "video_model 返回空 body —— 签名被拒或设备被限流"
-            "（常见于未登录；请先执行 login）"
-        )
-    import json
-
-    try:
-        return json.loads(r.text)
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"video_model 返回非 JSON：{r.text[:200]}") from e
+    last = ""
+    for attempt in range(retries):
+        try:
+            r = session.post(url, data=body, headers=hdr, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            last = str(e)[:120]
+            time.sleep(pause * (attempt + 1))
+            continue
+        if not r.content:
+            last = f"空 body (HTTP {r.status_code})"
+            time.sleep(pause * (attempt + 1))
+            continue
+        try:
+            return r.json()
+        except Exception:  # noqa: BLE001
+            last = f"非 JSON (HTTP {r.status_code})"
+            time.sleep(pause * (attempt + 1))
+    raise RuntimeError(f"video_model 无响应：{last}")
 
 
 # ---------------------------------------------------------------- 解析

@@ -68,7 +68,12 @@ class ShelfItem:
 
 @dataclass
 class EpisodeItem:
-    """一集。"""
+    """一集。
+
+    ★ ``video_id_type`` 是播放接口的关键参数（2026-11-13 实测）：
+      ``0`` = 用 vid 查（短剧），``1`` = 用 series_id 查（教学内容）。
+      ``-1`` = 不确定，由下载时自动两种都试。
+    """
 
     vid: str
     index: int
@@ -76,6 +81,7 @@ class EpisodeItem:
     duration: float = 0.0
     series_id: str = ""
     series_title: str = ""
+    video_id_type: int = -1
 
     @property
     def key(self) -> str:
@@ -241,6 +247,8 @@ class HongguoService:
                 duration=ep.duration,
                 series_id=album_id,
                 series_title=ad.title,
+                # ★ 合集分集要用 series_id 查播放地址
+                video_id_type=1,
             )
             for n, ep in enumerate(ad.episodes, 1)
         ]
@@ -261,6 +269,8 @@ class HongguoService:
                 duration=e.duration,
                 series_id=s.series_id,
                 series_title=s.title,
+                # ★ 网页版短剧用 vid 查播放地址
+                video_id_type=0,
             )
             for e in eps
         ]
@@ -286,20 +296,26 @@ class HongguoService:
             self._ident = ensure_device()
         return self._ident
 
-    def resolve_full_url(self, vid: str, quality: str = "360p"):
+    def resolve_full_url(self, vid: str, quality: str = "360p",
+                          video_id_type: int = 0):
         """解析**完整正片**的播放地址。
 
-        ★ 走 App 网关的 ``video_model``，需要登录 + 完整签名。
+        ★ 走 App 网关的 ``video_model``，需要登录 + 播放专用签名。
         ★ 返回 ``(url, size, content_key)``；拿不到时 ``url`` 为空。
           ``content_key`` 非空表示该集是 CENC 加密的，下载后需要
           ``ffmpeg -decryption_key`` 解密。
+
+        ★★ ``video_id_type`` 是决定性的（2026-11-13 实测）：
+          ``0`` = 传 vid（短剧），``1`` = 传 series_id（教学内容）。
+          教学内容用 ``0`` 会返回 ``code=101000``。
         """
         if not self.logged_in:
             return "", None, None
         ident = self.device_identity()
         try:
             payload = playback_api.fetch_playback(
-                self.session, ident, vid, cookies=self.cookie_dict()
+                self.session, ident, vid, cookies=self.cookie_dict(),
+                video_id_type=video_id_type,
             )
         except Exception:  # noqa: BLE001
             return "", None, None
@@ -444,10 +460,22 @@ class HongguoService:
             except Exception:  # noqa: BLE001
                 ep.duration = 0.0
 
-        # ★ 优先走**完整正片**（App 网关 video_model，需登录 + 完整签名）
+        # ★ 优先走**完整正片**（App 网关 video_model，需登录 + 播放专用签名）
         url, _size, content_key = "", None, None
         if self.logged_in:
-            url, _size, content_key = self.resolve_full_url(ep.vid, quality)
+            # ★ video_id_type：短剧用 0（vid），教学内容用 1（series_id）。
+            #   不确定时两种都试。
+            types = (
+                [ep.video_id_type] if ep.video_id_type >= 0
+                else ([0, 1] if ep.series_id and ep.series_id != ep.vid else [0, 1])
+            )
+            for t in types:
+                url, _size, content_key = self.resolve_full_url(
+                    ep.vid, quality, video_id_type=t
+                )
+                if url:
+                    ep.video_id_type = t
+                    break
 
         # 兜底：网页版免签名直链（★ 只有 10 秒试看片段）
         if not url:

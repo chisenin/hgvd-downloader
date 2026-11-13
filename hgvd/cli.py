@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 from . import __version__
 from .api import web as web_api
@@ -175,15 +176,14 @@ def cmd_list(args) -> int:
     if args.album:
         eps = svc.list_album_episodes(args.series_id)
     else:
-        try:
-            eps = svc.list_episodes(args.series_id, max_count=args.limit or 0)
-        except Exception as e:  # noqa: BLE001
-            print(f"取分集失败：{e}")
-            return 1
-    if not eps:
-        # 回落：网页版 + 合集都试一遍
-        print("网页版没有分集，尝试合集端点…")
+        # ★ 先试合集端点 —— 教学类内容只有它能给出分集
         eps = svc.list_album_episodes(args.series_id)
+        if not eps:
+            try:
+                eps = svc.list_episodes(args.series_id, max_count=args.limit or 0)
+            except Exception as e:  # noqa: BLE001
+                print(f"取分集失败：{e}")
+                return 1
     if not eps:
         print("没有分集。")
         return 0
@@ -214,22 +214,29 @@ def cmd_download(args) -> int:
             print("收藏夹为空，没有可下载内容。")
             return 0
         targets = items
+        album_eps = {}
     else:
         if not args.series_id:
             print("请给 series_id，或用 --all 下载收藏夹全部。")
             return 2
-        # 用网页版详情拿剧名
-        try:
-            s, _ = web_api.fetch_series_detail(
-                svc.session, args.series_id, cookies=svc.cookie_dict()
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"取剧详情失败：{e}")
-            return 1
+        # ★ 先试合集端点（book_type=3 的教学内容只有它能给出分集），
+        #   失败再回落到网页版详情。
+        eps = svc.list_album_episodes(args.series_id)
+        title = eps[0].series_title if eps else args.series_id
+        album_eps = {args.series_id: eps} if eps else {}
+        if not eps:
+            try:
+                s, _ = web_api.fetch_series_detail(
+                    svc.session, args.series_id, cookies=svc.cookie_dict()
+                )
+                title = s.title
+            except Exception as e:  # noqa: BLE001
+                print(f"取剧详情失败：{e}")
+                return 1
         targets = [
             type(
-                "X", (), {"series_id": s.series_id, "title": s.title,
-                          "episode_cnt": s.episode_cnt, "key": s.series_id}
+                "X", (), {"series_id": args.series_id, "title": title,
+                          "episode_cnt": len(eps), "key": args.series_id}
             )()
         ]
 
@@ -237,12 +244,17 @@ def cmd_download(args) -> int:
     workers = args.workers or cfg.workers
     for t in targets:
         print(f"\n=== {t.title} ({t.series_id}) ===")
-        try:
-            eps = svc.list_episodes(t.series_id, max_count=args.limit or cfg.max_episodes)
-        except Exception as e:  # noqa: BLE001
-            print(f"  取分集失败：{e}")
-            total_fail += 1
-            continue
+        # ★ 合集分集（已在上面取过）优先；否则走网页版
+        eps = album_eps.get(t.series_id) or []
+        if not eps:
+            try:
+                eps = svc.list_episodes(
+                    t.series_id, max_count=args.limit or cfg.max_episodes
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  取分集失败：{e}")
+                total_fail += 1
+                continue
 
         if args.episodes:
             want = set()
@@ -324,6 +336,31 @@ def cmd_gui(args) -> int:
     return 0
 
 
+def cmd_cache(args) -> int:
+    """提取 MuMu 里红果 App 的视频缓存。
+
+    ★ App 播放过的视频会缓存成**标准 MP4**（HEVC/AAC），
+      这条路完全绕过服务端限流。
+    """
+    from .auth.cache_extract import extract_all, list_cache
+
+    if args.list:
+        entries = list_cache(args.instance)
+        if not entries:
+            print("没有缓存文件。")
+            return 0
+        print(f"缓存共 {len(entries)} 个视频：")
+        for e in sorted(entries, key=lambda x: -x["size"]):
+            print(f"  {e['size']:>10}  {e['mtime']}  {e['name']}")
+        return 0
+
+    out = args.out or str(Path.home() / "hgvd_cache")
+    print(f"从 MuMu 实例 {args.instance} 提取缓存到 {out} …")
+    res = extract_all(args.instance, out_dir=out, limit=args.limit or 0)
+    print(f"\n共提取 {len(res)} 个视频。")
+    return 0 if res else 1
+
+
 def cmd_history(args) -> int:
     """查看下载历史。"""
     svc = _svc()
@@ -365,11 +402,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="清除登录态").set_defaults(func=cmd_logout)
     sub.add_parser("gui", help="打开图形界面").set_defaults(func=cmd_gui)
 
+    pc = sub.add_parser("cache", help="提取 App 视频缓存（绕过服务端限流）")
+    pc.add_argument("--list", action="store_true", help="只列出缓存，不提取")
+    pc.add_argument("--instance", type=int, default=1, help="MuMu 实例号")
+    pc.add_argument("--out", help="输出目录")
+    pc.add_argument("--limit", type=int, default=0, help="最多提取几个")
+    pc.set_defaults(func=cmd_cache)
+
     pl = sub.add_parser("list", help="列出某部剧的分集")
     pl.add_argument("series_id")
     pl.add_argument("--limit", type=int, default=0)
     pl.add_argument("--album", action="store_true",
                     help="按「合集」查分集（book_type=3 的教学类内容用这个）")
+    pl.set_defaults(func=cmd_list)
 
     pd = sub.add_parser("download", help="下载")
     pd.add_argument("series_id", nargs="?")
@@ -380,6 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--quality", choices=["360p", "720p", "1080p"])
     pd.add_argument("--workers", type=int, default=0,
                     help="集级并发数（默认取配置）")
+    pd.set_defaults(func=cmd_download)
     return p
 
 

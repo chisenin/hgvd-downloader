@@ -1,0 +1,17 @@
+{
+ "BaseResp": {
+  "StatusCode": 0,
+  "StatusMessage": "success"
+ },
+ "code": 0,
+ "data": {
+  "disable_vsr": true,
+  "expire_time": 1794592749,
+  "video_height": 720,
+  "video_model": "{\"status\":10,\"message\":\"success\",\"version\":3,\"video_id\":\"v022b2g10005d9bo1g7og65l17o7ding\",\"enable_ssl\":true,\"video_duration\":258.531,\"media_type\":\"video\",\"url_expire\":1794593007,\"fallback_api\":{\"fallback_api\":\"https://vas-lf-x.snssdk.com/video/fplay/1/8a61b63ff2902554e74709189beb2568/v022b2g10005d9bo1g7og65l17o7ding?aid=8662&auth_policy=eyJ2bSI6MywidWlkIjoiMjM5MDM4Njk5OTQzNTA0In0%3D&channel=novel_short_play&codec_type=3&definition=3&device_id=744826091366314&device_platform=android&device_type=Xiaomi+14&encode_user_tag=only_roi_vcube_improve_1&force_fids=MTEyNA%3D%3D&imp=false&logo_type=default&os_version=14&ptoken=novel_pugc&sprite_image_version=1&ssl=true&stream_type=normal&update_version_code=73932&user_id=239038699943504&version_code=73932&vps=6\"},\"video_list\":[{\"main_url\":\"https://v5-se-gddgtc-reading-video-a.qznovelvod.com/1d72c92b77032098e935021b10bad7a9/6af750ef/video/tos/cn/tos-cn-v-0f0753/owjf4FDiUA2J1DqyEvJAAEyBDWErVqZCgQBNIf/?a=8662&ch=0&cr=7&dr=3&er=0&lr=default&cd=0%7C0%7C0%7C1&cv=1&bt=1133&cs=4&ds=3&eid=70400&ft=6NagjNB1ppftafLBMsO.C_fauVq0InL3J4pc6B3djROW2QdHDDMkEJKJeOLlGusZ.&mime_type=video_mp4&qs=0&rc=NzRmOzM4NzRkaDNkZjY6OUBpamw6Om85cmpyPDgzNDU1M0AvLl80YjEyXjMxYDQuM2NfYSNrYWwuMmQ0Ll9hLS1kXy9zcw%3D%3D&ult=1690&btag=c0000e00030000&dy_q=1794571149&feature_id=e8ee9cb74e9f9f70db560fbb2631858b&l=202611131959092006274E3507154BA52D\",\"backup_url\":\"https://v95-bjb-mc-reading-video.qznovelvod.com/cfb9d8d5dbe3f3e5c4c1877483d60b46/6af750ef/video/tos/cn/tos-cn-v-0f0753/owjf4FDiUA2J1DqyEvJAAEyBDWErVqZCgQBNIf/?a=8662&ch=0&cr=7&dr=3&er=0&lr=default&cd=0%7C0%7C0%7C1&cv=1&bt=1133&cs=4&ds=3&eid=70400&ft=6NagjNB1ppftafLBMsO.C_fauVq0InL3J4pc6B3djROW2QdHDDMkEJKJeOLlGusZ.&mime_type=video_mp4&qs=0&rc=NzRmOzM4NzRkaDNkZjY6OUBpamw6Om85cmpyPDgzNDU1M0AvLl80YjEyXjMxYDQuM2NfYSNrYWwuMmQ0Ll9hLS1kXy9zcw%3D%3D&ult=1690&btag=c0000e00030000&dy_q=1794571149&feature_id=e8ee9cb74e9f9f70db560fbb2631858b&l=202611131959092006274E3507154BA52D\",\"video_meta\":{\"definition\":\"720p\",\"quality\":\"normal\",\"vtype\":\"mp4\",\"vwidth\":1280,\"vheight\":720,\"bitrate\":1161007,\"codec_type\":\"bytevc1\",\"size\":37519549,\"file_id\":\"b6f7631c7ac04e6aa15445e078bc1124\",\"fps\":30,\"file_hash\":\"05f84fbe49e4edae02c075b29df9c327\",\"real_bitrate\":1161007,\"audio_channels\":\"2.0\",\"audio_layout\":\"L R\",\"encode_user_tag\":\"only_roi_vcube_improve_1\",\"audio_profile\":\"aac_lc\",\"audio_sample_rate\":\"44100\",\"audio_bitrate_target\":128,\"float_fps\":30},\"check_info\":{\"check_info\":\"c:0-282612-3f7f\"},\"quality_type\":10,\"feature_id\":\"e8ee9cb74e9f9f70db560fbb2631858b\",\"gear_des_key\":\"0:MP4|1:normal|2:h265_hvc1|4:720p|5:normal|6:only_roi_vcube_improve_1|10000:105\"}]}",
+  "video_width": 1280
+ },
+ "debug_info": "",
+ "log_id": "202611131959092006274E3507154BA52D",
+ "message": "请求成功"
+}

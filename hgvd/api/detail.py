@@ -17,7 +17,7 @@ import json
 import time
 
 from .. import net
-from ..sign.core import DeviceIdentity, sign_request
+from ..sign.core import DeviceIdentity, sign_playback, sign_request
 from ..util import j_int, j_str
 
 PATH_DETAIL = "/novel/player/multi_video_detail/preload/v1"
@@ -78,8 +78,13 @@ def signed_post(
     base_pause: float = 2.0,
     max_pause: float = 20.0,
     quiet: bool = False,
+    playback: bool = False,
 ) -> dict | None:
     """带签名的 POST，返回解析后的 JSON（失败返回 None）。
+
+    ★ ``playback=True`` 时用**播放专用签名** ``sign_playback``：
+      真实的 ``x-argus`` / ``x-ladon``，并且**去掉 ``x-medusa``**。
+      带 medusa 时网关会直接返回空 body（2026-11-10 与 11-13 两次实测）。
 
     ★ 服务端对密集请求会返回 **HTTP 200 + 空 body**（风控），
       或 ``code=101000 服务异常``。所以必须有指数退避重试。
@@ -88,10 +93,17 @@ def signed_post(
     last = "未知"
     for attempt in range(retries):
         now = int(time.time() * 1000)
-        query, headers = sign_request(
-            path, device_pairs(ident), now,
-            ident.device_id, ident.version_name, raw,
-        )
+        if playback:
+            query, headers = sign_playback(
+                path, device_pairs(ident), now,
+                ident.device_id, ident.version_name, raw,
+                install_id=ident.iid, aid="8662",
+            )
+        else:
+            query, headers = sign_request(
+                path, device_pairs(ident), now,
+                ident.device_id, ident.version_name, raw,
+            )
         hdr = {
             "User-Agent": UA,
             "Accept": "application/json",
