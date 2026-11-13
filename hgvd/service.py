@@ -248,6 +248,48 @@ class HongguoService:
             )
         return items
 
+    def remove_from_shelf(self, series_ids: list[str]) -> tuple[int, list[str]]:
+        """把指定条目从收藏夹移除。
+
+        ★ 用 ``bookshelf/video/update/v1/`` 端点（``video_shelf_operate_type=1``）。
+        ★ 用户的短剧可以一键清掉 —— 短剧是 bytevc 加密的，本来也不可下载。
+
+        返回 ``(成功数, 失败原因列表)``。
+        """
+        from .api import shelf_edit
+
+        # 先拿每个条目的 book_type（不同类型要用不同的值）
+        rows = shelf_api.list_shelf(
+            self.session,
+            cookies=self.cookie_dict(),
+            target_user_id=self.account.user_id or "",
+        )
+        btype = {r["series_id"]: r.get("book_type", 2) for r in rows}
+        targets = [(sid, btype.get(sid, 2)) for sid in series_ids]
+
+        def _post(path, body):
+            return detail_api.signed_post(
+                self.session, self.device_identity(), path, body,
+                self.cookie_dict(), quiet=True,
+            )
+
+        return shelf_edit.remove_many(_post, targets)
+
+    def remove_short_dramas(self) -> tuple[int, list[str]]:
+        """把收藏夹里所有**短剧**移除。
+
+        ★ 短剧是 bytevc 加密的、ffmpeg 解不出画面，对用户没有下载价值。
+        """
+        rows = shelf_api.list_shelf(
+            self.session,
+            cookies=self.cookie_dict(),
+            target_user_id=self.account.user_id or "",
+        )
+        ids = [r["series_id"] for r in rows if r.get("book_type") == 2]
+        if not ids:
+            return 0, []
+        return self.remove_from_shelf(ids)
+
     def list_album_episodes(
         self,
         album_id: str,

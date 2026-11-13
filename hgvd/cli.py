@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .api import shelf as shelf_api
 from .api import web as web_api
 from .auth import (
     clear_account,
@@ -373,6 +374,47 @@ def _print_result(ep, res):
         print(f"  [{ep.index}] 失败：{res.error}")
 
 
+def cmd_clean(args) -> int:
+    """清理收藏夹里的短剧。
+
+    ★ 短剧是字节私有 bytevc 加密编码，ffmpeg 解不出画面 ——
+      对「只想要教学内容」的场景没有下载价值，所以提供一键清除。
+
+    用法：
+        python -m hgvd clean              # 先看会删哪些（不执行）
+        python -m hgvd clean --apply      # 真的删
+    """
+    svc = _svc()
+    if not svc.logged_in:
+        print("未登录。先执行：python -m hgvd login")
+        return 1
+
+    rows = shelf_api.list_shelf(
+        svc.session, cookies=svc.cookie_dict(),
+        target_user_id=svc.account.user_id or "",
+    )
+    dramas = [r for r in rows if r.get("book_type") == 2]
+    if not dramas:
+        print("收藏夹里没有短剧，干净。")
+        return 0
+
+    print(f"收藏夹里的短剧（{len(dramas)} 部）：")
+    for r in dramas:
+        print(f"  · {r['series_id']}  book_type={r.get('book_type')}  "
+              f"category={r.get('video_category_type', '-')}")
+
+    if not args.apply:
+        print("\n这是预览。确认要删就加 --apply。")
+        return 0
+
+    print("\n删除中…")
+    ok, errors = svc.remove_from_shelf([r["series_id"] for r in dramas])
+    print(f"已删除 {ok} / {len(dramas)}")
+    for e in errors:
+        print(f"  ! {e}")
+    return 0 if not errors else 1
+
+
 def cmd_gui(args) -> int:
     """打开图形界面。"""
     from .gui.app import main as gui_main
@@ -445,6 +487,10 @@ def build_parser() -> argparse.ArgumentParser:
     pshelf.add_argument("--all", action="store_true", help="展开全部合集（慢）")
     pshelf.add_argument("--limit", type=int, default=30, help="最多展开几个合集")
     pshelf.set_defaults(func=cmd_shelf)
+
+    pclean = sub.add_parser("clean", help="清理收藏夹里的短剧")
+    pclean.add_argument("--apply", action="store_true", help="真的执行删除（默认只预览）")
+    pclean.set_defaults(func=cmd_clean)
     sub.add_parser("history", help="查看下载历史").set_defaults(func=cmd_history)
     sub.add_parser("logout", help="清除登录态").set_defaults(func=cmd_logout)
     sub.add_parser("gui", help="打开图形界面").set_defaults(func=cmd_gui)
