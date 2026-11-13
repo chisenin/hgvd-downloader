@@ -1,0 +1,18 @@
+<Project>
+  <!--
+    ★ 发布配置（只在 dotnet publish 时生效，Debug 构建不受影响）。
+    自包含单文件：目标机器不需要装 .NET。
+    注意：PublishSingleFile 需要 ILLink.Tasks 包，若离线环境报 NU1100，
+    加 -p:PublishTrimmed=false -p:PublishSingleFile=false 可退回到框架依赖发布。
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>
