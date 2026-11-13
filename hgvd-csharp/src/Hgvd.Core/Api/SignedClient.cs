@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -154,6 +154,7 @@ public sealed class SignedClient
 
     /// <summary>取合集详情（含完整分集列表）。</summary>
     public async Task<AlbumInfo?> AlbumAsync(string albumId, int bookType = 3,
+        int retries = 5, double basePause = 3.2, double maxPause = 12.0,
         CancellationToken ct = default)
     {
         string body = JsonSerializer.Serialize(new Dictionary<string, object>
@@ -161,7 +162,8 @@ public sealed class SignedClient
             ["album_id"] = albumId,
             ["book_type"] = bookType,
         });
-        using var doc = await PostAsync(PathAlbum, body, ct: ct);
+        using var doc = await PostAsync(PathAlbum, body, ct: ct,
+            retries: retries, basePause: basePause, maxPause: maxPause);
         if (doc is null) return null;
         if (!doc.RootElement.TryGetProperty("data", out var data)
             || !data.TryGetProperty("album_data", out var ad))
@@ -263,7 +265,7 @@ public sealed class SignedClient
     {
         try
         {
-            var album = await AlbumAsync(seriesId, bookType, ct);
+            var album = await AlbumAsync(seriesId, bookType, ct: ct);
             if (album != null && album.Episodes.Count > 0) return album.Episodes;
         }
         catch { /* 回落 */ }

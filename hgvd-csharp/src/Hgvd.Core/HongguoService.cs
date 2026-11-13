@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -208,6 +208,47 @@ public sealed class HongguoService
         }
     }
 
+    /// <summary>
+    /// **回落**补标题：批量详情接口没给标题的条目，单独查 <c>album_detail</c>。
+    ///
+    /// ★ 实测：批量接口**不会**给全部标题
+    ///   （全是 <c>book_type=3</c> 的合集）—— 这些在界面上就显示成一串
+    ///   <c>series_id</c> 数字。
+    ///   → 用 <c>album_detail</c> 单独查，约 **0.2s/条**，绝大多数能拿到标题
+    ///   （极少数是真的已下架，服务端什么都不返回）。
+    /// ★ 这个方法是**后台跑**的（不等它），因为它只影响少数几行，不该拖慢整个列表。
+    /// </summary>
+    public async Task FillMissingTitlesAsync(List<ShelfItem> items,
+        ShelfDetailHandler onDetail, CancellationToken ct = default)
+    {
+        var missing = items.Where(i => string.IsNullOrEmpty(i.Title)).ToList();
+        if (missing.Count == 0) return;
+
+        using var sem = new SemaphoreSlim(4);
+        var tasks = missing.Select(async it =>
+        {
+            await sem.WaitAsync(ct);
+            try
+            {
+                int bt = it.BookType > 0 ? it.BookType : 3;
+                // ★ 退避要短：album_detail 失败时 PostAsync 默认 5 次重试
+                //   累计能拖 40s+，这里只给 2 次 —— 已下架的条目快速放弃。
+                var album = await Client.AlbumAsync(it.SeriesId, bt, ct: ct,
+                    retries: 2, basePause: 1.0, maxPause: 3.0);
+                if (album == null && bt != 3)
+                    album = await Client.AlbumAsync(it.SeriesId, 3, ct: ct,
+                        retries: 1, basePause: 1.0, maxPause: 2.0);
+                if (album == null) return;
+                if (!string.IsNullOrEmpty(album.Title)) it.Title = album.Title;
+                if (album.EpisodeCnt > 0) it.EpisodeCnt = album.EpisodeCnt;
+                onDetail?.Invoke(it.SeriesId, it.Title, it.EpisodeCnt);
+            }
+            catch { }
+            finally { sem.Release(); }
+        }).ToList();
+        await Task.WhenAll(tasks);
+    }
+
     private static List<ShelfItem> BuildShelfItems(List<ShelfEntry> rows)
     {
         var items = new List<ShelfItem>(rows.Count);
@@ -314,7 +355,7 @@ public sealed class HongguoService
             {
                 try
                 {
-                    var album = await Client.AlbumAsync(id, 3, ct);
+                    var album = await Client.AlbumAsync(id, 3, ct: ct);
                     if (album == null) continue;
                     int cnt = album.EpisodeCnt > 0 ? album.EpisodeCnt : album.Episodes.Count;
                     outMap.TryGetValue(id, out var prev);
@@ -352,12 +393,61 @@ public sealed class HongguoService
     /// <summary>清空播放地址缓存（换账号 / 签名失败时可手动调用）。</summary>
     public static void ClearPlaybackCache() => PlaybackCache.Clear();
 
+    // ---------------------------------------------------------- 播放接口熔断
+
+    /// <summary>
+    /// ★ 播放接口熔断：连续 <see cref="PlaybackEmptyLimit"/> 次拿到空 body
+    ///   就**短路**掉后续所有播放请求。
+    ///
+    /// ★★ 为什么需要：被风控后，一次 <c>video_model</c> 请求要退避重试 5 次
+    ///   （3.2+6.4+9.6+12+12 ≈ 43s），一集还要试两个 <c>video_id_type</c>。
+    ///   批量下载几百部剧时，会在退避里空转几十分钟 —— 用户看到的是「卡住了」。
+    ///   熔断后**立刻**失败并提示改用 App 缓存路径。
+    ///
+    /// ★ 阈值取 2：一次下载会依次试两个 video_id_type，
+    ///   两个都空 = 不是参数错，是风控。
+    /// </summary>
+    private const int PlaybackEmptyLimit = 2;
+    private static int _playbackEmptyStreak;
+    private static bool _playbackBlocked;
+
+    /// <summary>播放接口是否已被熔断（服务端在风控）。</summary>
+    public static bool PlaybackBlocked
+    {
+        get { lock (PlaybackCache) return _playbackBlocked; }
+    }
+
+    /// <summary>重置熔断（重启程序 / 换了出片路径之后调用）。</summary>
+    public static void ResetPlaybackCircuit()
+    {
+        lock (PlaybackCache)
+        {
+            _playbackEmptyStreak = 0;
+            _playbackBlocked = false;
+        }
+    }
+
+    private static void NotePlaybackEmpty()
+    {
+        lock (PlaybackCache)
+        {
+            _playbackEmptyStreak++;
+            if (_playbackEmptyStreak >= PlaybackEmptyLimit) _playbackBlocked = true;
+        }
+    }
+
+    private static void NotePlaybackOk()
+    {
+        lock (PlaybackCache) _playbackEmptyStreak = 0;
+    }
+
     /// <summary>解析完整正片的播放地址（带缓存）。</summary>
     public async Task<(string Url, long Size, string Key, string Codec)>
         ResolveFullUrlAsync(string videoId, int videoIdType = 0, string quality = "720p",
         CancellationToken ct = default)
     {
         if (!LoggedIn) return ("", 0, "", "");
+        if (PlaybackBlocked) return ("", 0, "", "");
 
         string ck = $"{videoId}|{videoIdType}|{quality}";
         lock (PlaybackCache)
@@ -367,18 +457,20 @@ public sealed class HongguoService
         try
         {
             var model = await Client.PlaybackAsync(videoId, videoIdType, ct);
-            if (model.Streams.Count == 0) return ("", 0, "", "");
+            if (model.Streams.Count == 0) { NotePlaybackEmpty(); return ("", 0, "", ""); }
             var chosen = model.Streams.FirstOrDefault(
                 s => string.Equals(s.Definition, quality, StringComparison.OrdinalIgnoreCase))
                 ?? model.Streams[0];
             var result = (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec);
             lock (PlaybackCache) PlaybackCache[ck] = result;
+            NotePlaybackOk();
             return result;
         }
         catch (Exception e)
         {
             if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
                 Console.WriteLine($"[dbg] 播放地址失败：{e}");
+            NotePlaybackEmpty();
             return ("", 0, "", "");
         }
     }
@@ -416,6 +508,8 @@ public sealed class HongguoService
         {
             (url, size, key, codec) = await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
             if (!string.IsNullOrEmpty(url)) { ep.VideoIdType = t; break; }
+            // ★ 已被风控熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
+            if (PlaybackBlocked) break;
         }
 
         if (string.IsNullOrEmpty(url))
