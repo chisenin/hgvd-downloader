@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import net
+from .api import detail as detail_api
 from .api import playback as playback_api
 from .api import shelf as shelf_api
 from .api import web as web_api
@@ -35,17 +36,29 @@ from .util import fmt_duration, safe_name
 
 @dataclass
 class ShelfItem:
-    """收藏夹里的一部剧。"""
+    """收藏夹里的一项。
+
+    ★ ``book_type`` 决定它是**短剧视频**（2，服务端有视频分集）
+      还是番茄小说的**「书」**（3，图文/听书，服务端没有视频分集）。
+    """
 
     series_id: str
     title: str
     cover: str = ""
     episode_cnt: int = 0
     collect_time: int = 0
+    book_type: int = 0
+    content_type: int = 0
+    episodes: list = field(default_factory=list)
 
     @property
     def key(self) -> str:
         return self.series_id
+
+    @property
+    def is_video(self) -> bool:
+        """是不是有视频分集的内容。"""
+        return bool(self.episodes) or self.book_type == 2
 
 
 @dataclass
@@ -111,27 +124,49 @@ class HongguoService:
 
     # ---------------------------------------------------------- 收藏夹
 
-    def list_shelf(self) -> list[ShelfItem]:
+    def list_shelf(self, with_details: bool = True) -> list[ShelfItem]:
         """读收藏夹。
 
         ★ 没登录也能调（接口免签名），但没 cookie 时返回的是空列表 ——
-        这时要提示用户去登录，而不是报「空收藏夹」。
+          这时要提示用户去登录，而不是报「空收藏夹」。
+
+        ★ ``with_details`` 会额外用**带签名**的批量详情接口补标题、
+          集数与分集列表（收藏接口本身只给 ID）。
         """
         rows = shelf_api.list_shelf(
             self.session,
             cookies=self.cookie_dict(),
             target_user_id=self.account.user_id or "",
         )
-        return [
-            ShelfItem(
-                series_id=r["series_id"],
-                title=r["title"],
-                cover=r.get("cover", ""),
-                episode_cnt=r.get("episode_cnt", 0),
-                collect_time=r.get("collect_time", 0),
+        details = {}
+        if with_details and rows:
+            try:
+                details = detail_api.fetch_details(
+                    self.session,
+                    self.device_identity(),
+                    [r["series_id"] for r in rows],
+                    cookies=self.cookie_dict(),
+                )
+            except Exception:  # noqa: BLE001
+                details = {}
+
+        items = []
+        for r in rows:
+            d = details.get(r["series_id"], {})
+            eps = d.get("episodes") or []
+            items.append(
+                ShelfItem(
+                    series_id=r["series_id"],
+                    title=d.get("title") or r["title"],
+                    cover=r.get("cover") or d.get("cover", ""),
+                    episode_cnt=d.get("episode_cnt") or r["episode_cnt"] or len(eps),
+                    collect_time=r["collect_time"],
+                    book_type=r.get("book_type", 0),
+                    content_type=r.get("content_type", 0),
+                    episodes=eps,
+                )
             )
-            for r in rows
-        ]
+        return items
 
     def list_episodes(self, series_id: str, max_count: int = 0) -> list[EpisodeItem]:
         """取一部剧的分集列表。"""

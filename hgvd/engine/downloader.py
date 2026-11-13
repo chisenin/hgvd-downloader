@@ -185,8 +185,11 @@ def download(
             )
 
     headers = dict(req.headers)
-    headers.setdefault("Referer", "https://hongguoduanju.com/")
+    # ★ 默认 UA 用 App 的 —— CDN 认这个
     headers.setdefault("User-Agent", net.APP_UA)
+    # ★★ **不要设 Referer**：抖音系 CDN 会校验 Referer 白名单，
+    # 带 `Referer: https://hongguoduanju.com/` 会直接 403（实测）。
+    headers.pop("Referer", None)
     if req.cookies:
         headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in req.cookies.items() if v)
 
@@ -283,7 +286,9 @@ def download(
     if req.content_key:
         if cb.on_phase:
             cb.on_phase("解密")
-        dec = out.with_suffix(out.suffix + ".dec")
+        # ★ 输出名必须以 .mp4 结尾 —— ffmpeg 靠扩展名判断容器格式，
+        #   用「.mp4.dec」会报 "Error initializing the muxer ... Invalid argument"
+        dec = out.with_name(out.stem + ".dec.mp4")
         try:
             decrypt_file(str(out), str(dec), req.content_key)
         except Exception as e:  # noqa: BLE001

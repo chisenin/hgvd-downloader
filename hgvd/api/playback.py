@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import time
 
@@ -194,76 +195,84 @@ def fetch_playback(
 # ---------------------------------------------------------------- 解析
 
 
+def _video_model(payload: dict) -> dict:
+    """取出 ``data.video_model``（它本身是一个 **JSON 字符串**）。
+
+    ★ 服务端的响应是双层 JSON：外层 ``data.video_model`` 是字符串，
+      需要再 parse 一次才能拿到 ``video_list``。
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    vm = data.get("video_model")
+    if isinstance(vm, str):
+        try:
+            vm = json.loads(vm)
+        except Exception:  # noqa: BLE001
+            return {}
+    return vm if isinstance(vm, dict) else {}
+
+
 def parse_streams(payload: dict) -> list[dict]:
     """从播放模型里抽出各清晰度的直链。
 
-    ★ 服务端返回结构随版本变动，所以用「广度优先找 key」而不是写死路径。
+    ★ 真实结构（实测）：
+        data.video_model            ← JSON 字符串
+          .video_list[]             ← 每个清晰度一项
+            .main_url / .backup_url ← CDN 直链
+            .video_meta.definition  ← "360p" / "720p" / …
+            .video_meta.vtype        ← "mp4"
+            .video_meta.bitrate
+            .encrypt_info.spade_a    ← CENC 密钥材料（加密时才有）
     """
+    import json as _json
+
+    vm = _video_model(payload)
     out: list[dict] = []
-    seen: set[str] = set()
-
-    def walk(node, depth=0):
-        if depth > 8 or not isinstance(node, (dict, list)):
-            return
-        if isinstance(node, list):
-            for v in node:
-                walk(v, depth + 1)
-            return
-        # 一个清晰度对象：同时有 url 和 definition
-        url = None
-        for k in ("url", "play_url", "playUrl", "main_url", "backup_url_1"):
-            v = node.get(k)
-            if isinstance(v, str) and v.startswith("http"):
-                url = v
-                break
-        if url and url not in seen:
-            seen.add(url)
-            out.append(
-                {
-                    "url": url,
-                    "definition": j_str(node, "definition") or j_str(node, "quality"),
-                    "codec": j_str(node, "codec_type") or j_str(node, "codec"),
-                    "bitrate": j_int(node, "bitrate"),
-                    "size": j_int(node, "file_size") or j_int(node, "size"),
-                    "definition_list": node,
-                }
-            )
-        for v in node.values():
-            if isinstance(v, (dict, list)):
-                walk(v, depth + 1)
-
-    data = payload.get("data") if isinstance(payload, dict) else None
-    walk(data if data is not None else payload)
+    for item in vm.get("video_list") or []:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("video_meta")
+        meta = meta if isinstance(meta, dict) else {}
+        url = item.get("main_url") or item.get("backup_url") or ""
+        if not url:
+            continue
+        enc = item.get("encrypt_info")
+        enc = enc if isinstance(enc, dict) else {}
+        out.append(
+            {
+                "url": url,
+                "backup_url": item.get("backup_url") or "",
+                "definition": j_str(meta, "definition"),
+                "quality": j_str(meta, "quality"),
+                "codec": j_str(meta, "codec_type"),
+                "vtype": j_str(meta, "vtype"),
+                "width": j_int(meta, "vwidth"),
+                "height": j_int(meta, "vheight"),
+                "bitrate": j_int(meta, "bitrate"),
+                "size": j_int(meta, "size"),
+                "duration": float(vm.get("video_duration") or 0),
+                "encrypted": bool(enc.get("encrypt")),
+                "spade_a": j_str(enc, "spade_a"),
+                "kid": j_str(enc, "kid"),
+            }
+        )
     return out
 
 
 def extract_content_key(payload: dict) -> str | None:
     """提取 CENC 内容密钥（hex）。
 
-    ★ 加密分集在 ``encrypt_info.spade_a`` 里携带被包裹的密钥材料，
+    ★ 加密分集在每条清晰度的 ``encrypt_info.spade_a`` 里携带被包裹的密钥材料，
     需要按播放器规则解包（见 ``hgvd.drm``）。
+    ★ 同一集的所有清晰度共用一个内容密钥。
     """
     from ..drm import derive_content_key
 
-    found: list[str] = []
-
-    def walk(node, depth=0):
-        if depth > 8 or not isinstance(node, (dict, list)):
-            return
-        if isinstance(node, list):
-            for v in node:
-                walk(v, depth + 1)
-            return
-        spade = node.get("spade_a")
-        if isinstance(spade, str) and spade:
-            found.append(spade)
-        for v in node.values():
-            if isinstance(v, (dict, list)):
-                walk(v, depth + 1)
-
-    data = payload.get("data") if isinstance(payload, dict) else None
-    walk(data if data is not None else payload)
-    for spade in found:
+    for st in parse_streams(payload):
+        spade = st.get("spade_a") or ""
+        if not spade:
+            continue
         try:
             key = derive_content_key(spade)
         except Exception:  # noqa: BLE001

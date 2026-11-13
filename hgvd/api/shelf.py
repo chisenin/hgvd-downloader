@@ -138,7 +138,10 @@ def list_shelf(
 ) -> list[dict]:
     """取收藏夹条目列表（已归一化的 dict）。
 
-    每项：``{series_id, title, cover, episode_cnt, collect_time}``
+    每项：``{series_id, title, cover, episode_cnt, collect_time, book_type}``
+
+    ★ 收藏接口**只给 ID**（没有标题、没有集数），
+      标题要另外用带签名的 ``multi_video_detail/preload/v1`` 批量取。
     """
     data = list_shelf_raw(session, cookies, target_user_id)
     payload = data.get("data")
@@ -169,7 +172,15 @@ def list_shelf(
                 "cover": j_str(r, "series_cover_url") or j_str(vid, "cover"),
                 "episode_cnt": j_int(vid, "episode_cnt") or j_int(r, "episode_cnt"),
                 "collect_time": j_int(r, "collect_time"),
+                # ★ book_type：2 = 短剧视频，3 = 番茄小说的「书」（图文/听书，无视频）
+                "book_type": j_int(r, "book_type"),
+                "content_type": j_int(r, "content_type"),
                 "raw": r,
             }
         )
     return out
+
+
+# 收藏里这两类 book_type 的含义（实测统计见 docs/01-已验证事实.md）
+BOOK_TYPE_SHORT_DRAMA = 2      # 短剧视频 → 有 video_list 与完整正片
+BOOK_TYPE_NOVEL = 3            # 番茄小说的「书」→ 服务端无视频分集

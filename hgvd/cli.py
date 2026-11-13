@@ -40,6 +40,37 @@ def _svc() -> HongguoService:
 
 
 def cmd_login(args) -> int:
+    """登录。
+
+    ★ 默认从 MuMu 模拟器里的红果 App 读登录态 ——
+      网页版二维码只有约 58 秒有效期，手机号登录又常触发滑块验证，
+      这条路最快也最稳。
+    """
+    if args.qr:
+        return _login_qr()
+    if args.phone:
+        return _login_phone()
+    return _login_mumu()
+
+
+def _login_mumu() -> int:
+    """从 MuMu 里的红果 App 读取登录态。"""
+    from .auth.mumu import login_from_mumu
+
+    try:
+        acc = login_from_mumu()
+    except Exception as e:  # noqa: BLE001
+        print(f"从模拟器读取登录态失败：{e}")
+        print("其它方式：")
+        print("  python -m hgvd login --phone   （手机号验证码，可能要过滑块）")
+        print("  python -m hgvd login --qr       （扫码，二维码约 60 秒有效）")
+        return 1
+    print(f"已从模拟器读取登录态（cookie 字段：{', '.join(sorted(acc.cookies.keys()))}）")
+    print("现在可以执行：python -m hgvd shelf")
+    return 0
+
+
+def _login_qr() -> int:
     """扫码登录。二维码存到当前目录并自动打开。"""
     from .auth.login import login_by_qrcode, make_login_session, save_account
 
@@ -53,7 +84,33 @@ def cmd_login(args) -> int:
         return 1
     save_account(acc)
     print(f"登录成功：{acc.user_name or '(未取到昵称)'}  uid={acc.user_id}")
-    print(f"二维码已保存：{qr_path}（可删除）")
+    return 0
+
+
+def _login_phone() -> int:
+    """手机号 + 短信验证码登录。"""
+    from .auth.login import save_account
+    from .auth.phone import PhoneLoginError, prepare, send_code, verify
+
+    phone = args.phone or input("请输入手机号：").strip()
+    sess = prepare()
+    try:
+        info = send_code(sess, phone)
+    except PhoneLoginError as e:
+        print(f"发送验证码失败：{e}")
+        print("（红果有时会要求滑块验证 —— 那种情况请改用：python -m hgvd login --qr）")
+        return 1
+    print(f"验证码已发送到 {info['mobile']}")
+    if info["retry_time"]:
+        print(f"（{info['retry_time']} 秒内不要重复发送）")
+    code = input("请输入验证码：").strip()
+    try:
+        acc = verify(sess, phone, code)
+    except PhoneLoginError as e:
+        print(f"登录失败：{e}")
+        return 1
+    save_account(acc)
+    print(f"登录成功：{acc.user_name or '(未取到昵称)'}  uid={acc.user_id}")
     return 0
 
 
@@ -65,6 +122,7 @@ def save_qr_png(qr: dict, path: str) -> None:
         save_qrcode_png(qr["qrcode_b64"], path)
         print(f"\n二维码已保存：{path}")
         print("请用「抖音」App 扫描该二维码（红果 App 亦可），并在手机上确认。")
+        print("⚠ 二维码只有约 60 秒有效期，请提前打开抖音的扫一扫。")
         try:
             if sys.platform == "win32":
                 os.startfile(path)  # noqa: S606
@@ -92,9 +150,17 @@ def cmd_shelf(args) -> int:
     if not items:
         print("收藏夹为空。")
         return 0
-    print(f"收藏夹（{len(items)} 部）：")
-    for i, it in enumerate(items, 1):
-        print(f"  [{i:2d}] {it.title}  (id={it.series_id}, {it.episode_cnt} 集)")
+    videos = [i for i in items if i.is_video]
+    books = [i for i in items if not i.is_video]
+    print(f"收藏夹共 {len(items)} 项：短剧视频 {len(videos)} 部，"
+          f"图书/听书 {len(books)} 部（无视频分集）")
+    print()
+    for i, it in enumerate(videos, 1):
+        print(f"  [{i:2d}] {it.title}  ({it.episode_cnt} 集)  id={it.series_id}")
+    if books:
+        print("\n  —— 以下是图书/听书类，服务端没有视频分集 ——")
+        for i, it in enumerate(books, 1):
+            print(f"  [{i:2d}] {it.title}  (无视频)  id={it.series_id}")
     return 0
 
 
@@ -276,7 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"hgvd {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("login", help="扫码登录").set_defaults(func=cmd_login)
+    plogin = sub.add_parser("login", help="登录（默认手机号验证码）")
+    plogin.add_argument("--qr", action="store_true", help="改用扫码登录（二维码约 60 秒有效）")
+    plogin.add_argument("--phone", help="改用手机号验证码登录")
+    plogin.add_argument("--list-mumu", action="store_true", help="列出所有 MuMu 实例")
+    plogin.set_defaults(func=cmd_login)
     sub.add_parser("shelf", help="列出收藏夹").set_defaults(func=cmd_shelf)
     sub.add_parser("history", help="查看下载历史").set_defaults(func=cmd_history)
     sub.add_parser("logout", help="清除登录态").set_defaults(func=cmd_logout)
