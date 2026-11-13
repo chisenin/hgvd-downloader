@@ -158,28 +158,41 @@ def cmd_shelf(args) -> int:
         print("收藏夹为空。")
         return 0
 
-    dramas = [i for i in items if i.book_type == 2]
+    dramas = [i for i in items if i.is_short_drama]
+    singles = [i for i in items if i.book_type == 4]
     albums = [i for i in items if i.book_type == 3 and i.is_album]
     pending = [i for i in items if i.book_type == 3 and not i.is_album]
-    others = [i for i in items if i.book_type not in (2, 3)]
+    others = [i for i in items if i.book_type not in (2, 3, 4)]
 
     print(f"\n收藏夹共 {len(items)} 项：")
-    print(f"  短剧 {len(dramas)} 部 · 教学合集 {len(albums) + len(pending)} 部"
+    print(f"  ★ 教学合集 {len(albums) + len(pending)} 部"
           + (f"（已展开 {len(albums)}）" if pending else "")
-          + (f" · 其他 {len(others)} 项" if others else ""))
+          + f" · 单个视频 {len(singles)} 部"
+          + f" · 短剧 {len(dramas)} 部（消遣，不建议下载）")
     if pending and not args.all:
         print(f"  提示：还有 {len(pending)} 个合集未展开（--all 展开全部）")
-    print()
 
+    # ★ 短剧单独提到最前面标注 —— 用户明确说它们没有下载价值
+    if dramas:
+        print("\n  ┌─ 短剧（bytevc 加密，解码受限，仅供消遣）──────────")
+        for it in dramas:
+            print(f"  │  {it.title[:34]:36s} {it.episode_cnt:>4} 集  id={it.series_id}")
+        print("  └──────────────────────────────────────────────")
+
+    print()
     n = 0
-    for it in dramas + albums:
+    for it in albums + singles:
         n += 1
-        print(f"  [{n:3d}] {it.title[:44]:46s} ({it.episode_cnt:>4} 集)  id={it.series_id}")
+        print(f"  [{n:3d}] {it.title[:42]:44s} ({it.episode_cnt:>4} 集)  id={it.series_id}")
     if pending:
         print("\n  —— 未展开的合集（用 list <id> 查分集）——")
         for it in pending[:20]:
             n += 1
             print(f"  [{n:3d}] {it.series_id}")
+    if others:
+        print(f"\n  —— 其他 {len(others)} 项 ——")
+        for it in others:
+            print(f"        {it.series_id}")
     return 0
 
 
@@ -224,13 +237,23 @@ def cmd_download(args) -> int:
 
     if args.all:
         try:
-            items = svc.list_shelf()
+            items = svc.list_shelf(album_limit=0 if args.all_album else 30)
         except Exception as e:  # noqa: BLE001
             print(f"读取收藏夹失败：{e}")
             return 1
         if not items:
             print("收藏夹为空，没有可下载内容。")
             return 0
+        # ★ 短剧默认跳过 —— 用户明确说它们只是消遣、没下载价值。
+        #   真要下就加 --include-dramas。
+        skipped = [i for i in items if i.is_short_drama]
+        if not args.include_dramas:
+            items = [i for i in items if not i.is_short_drama]
+            if skipped:
+                print(f"\n跳过 {len(skipped)} 部短剧（bytevc 加密，仅供消遣）：")
+                for i in skipped:
+                    print(f"  · {i.title}  ({i.episode_cnt} 集)  id={i.series_id}")
+                print("  需要的话加 --include-dramas\n")
         targets = items
         album_eps = {}
     else:
@@ -262,8 +285,11 @@ def cmd_download(args) -> int:
     workers = args.workers or cfg.workers
     for t in targets:
         print(f"\n=== {t.title} ({t.series_id}) ===")
-        # ★ 合集分集（已在上面取过）优先；否则走网页版
+        # ★ 分集来源：合集（album）优先 —— 教学类内容只有它能给出分集；
+        #   短剧走 preload；网页版只作最后的兜底。
         eps = album_eps.get(t.series_id) or []
+        if not eps:
+            eps = svc.list_album_episodes(t.series_id)
         if not eps:
             try:
                 eps = svc.list_episodes(
@@ -446,6 +472,10 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--quality", choices=["360p", "720p", "1080p"])
     pd.add_argument("--workers", type=int, default=0,
                     help="集级并发数（默认取配置）")
+    pd.add_argument("--include-dramas", action="store_true",
+                    help="--all 时也下载短剧（默认跳过：bytevc 加密，仅供消遣）")
+    pd.add_argument("--all-album", action="store_true",
+                    help="--all 时展开全部合集（慢，默认只展开 30 个）")
     pd.set_defaults(func=cmd_download)
     return p
 

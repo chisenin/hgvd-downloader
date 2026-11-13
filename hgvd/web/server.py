@@ -140,7 +140,10 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.shelf = [
                     {"series_id": i.series_id, "title": i.title,
-                     "episode_cnt": i.episode_cnt, "cover": i.cover}
+                     "episode_cnt": i.episode_cnt, "cover": i.cover,
+                     # ★ 类型标记：短剧 / 教学合集 / 单个视频
+                     "type_label": i.type_label,
+                     "is_drama": i.is_short_drama}
                     for i in items
                 ]
             self._json({"ok": True, "count": len(items)})

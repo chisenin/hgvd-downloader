@@ -38,10 +38,19 @@ from .util import fmt_duration, safe_name
 class ShelfItem:
     """收藏夹里的一项。
 
-    ★ ``book_type`` 决定它是**短剧视频**（2，服务端有视频分集）
-      还是**合集/教学视频**（3，藏在 album 里）。
+    ★ ``book_type`` 决定它是什么类型（实测 2026-11-13）：
 
-    ★ 重要修正（2026-11-13）：``book_type=3`` **并不是**「没有视频」，
+      ======  ==========  ==========================================
+      值      content_type 含义
+      ======  ==========  ==========================================
+      2       1004        **真短剧**（多集）—— 字节私有 bytevc2
+                              加密编码，ffmpeg 解不出画面
+      3       1003        **教学合集**（多集）—— 标准 h264/hevc，
+                              不加密，★ 本工具的主目标
+      4       1001        **用户推送的单个视频**（1 集）—— 教学内容
+      ======  ==========  ==========================================
+
+    ★ 重要修正：``book_type=3`` **并不是**「没有视频」，
       而是要用 ``album_detail`` 端点才能拿到分集 ——
       用 ``preload`` 查会得到 ``episode_cnt=0``，看起来像没有。
     """
@@ -63,7 +72,27 @@ class ShelfItem:
     @property
     def is_video(self) -> bool:
         """是不是有视频分集的内容。"""
-        return bool(self.episodes) or self.book_type == 2 or self.is_album
+        return bool(self.episodes) or self.book_type in (2, 3, 4) or self.is_album
+
+    @property
+    def is_short_drama(self) -> bool:
+        """是不是**真短剧**（bytevc 加密，ffmpeg 解不出画面）。
+
+        ★ 用户明确表示短剧只是消遣，没有下载价值 —— 所以
+          ``download --all`` 会默认跳过它们。
+        """
+        return self.book_type == 2 or self.content_type == 1004
+
+    @property
+    def type_label(self) -> str:
+        """给用户看的中文类型标签。"""
+        if self.is_short_drama:
+            return "短剧"
+        if self.book_type == 4:
+            return "单个视频"
+        if self.book_type == 3:
+            return "教学合集"
+        return "其他"
 
 
 @dataclass
@@ -228,6 +257,12 @@ class HongguoService:
 
         ★ 对 ``book_type=3`` 的教学合集，这是唯一能拿到分集的接口。
         ★ 每集还要再查一次 ``video_detail`` 才拿得到 ``vid``。
+
+        ★★★ 取不到时**回落到** ``multi_video_detail/preload/v1`` ——
+          那条路径覆盖另外两种类型：
+            - ``book_type=4``（用户推送的单个视频）：``video_list`` 有 1 项，
+              ``vid == series_id``
+            - ``book_type=2``（真短剧）：``video_list`` 有全部集
         """
         raw = detail_api.signed_post(
             self.session,
@@ -237,24 +272,75 @@ class HongguoService:
             self.cookie_dict(),
             quiet=True,
         )
-        if not raw:
-            return []
-        from .api import album as album_api
+        if raw:
+            from .api import album as album_api
 
-        ad = album_api.parse_album(raw)
-        return [
-            EpisodeItem(
-                vid=ep.series_id,
-                index=n,
-                title=ep.title,
-                duration=ep.duration,
-                series_id=album_id,
-                series_title=ad.title,
-                # ★ 合集分集要用 series_id 查播放地址
-                video_id_type=1,
-            )
-            for n, ep in enumerate(ad.episodes, 1)
-        ]
+            try:
+                ad = album_api.parse_album(raw)
+            except Exception:  # noqa: BLE001
+                ad = None
+            if ad and ad.episodes:
+                return [
+                    EpisodeItem(
+                        vid=ep.series_id,
+                        index=n,
+                        title=ep.title,
+                        duration=ep.duration,
+                        series_id=album_id,
+                        series_title=ad.title,
+                        # ★ 合集分集要用 series_id 查播放地址
+                        video_id_type=1,
+                    )
+                    for n, ep in enumerate(ad.episodes, 1)
+                ]
+
+        # ★ 回落到 preload（短剧 / 单个视频）
+        raw2 = detail_api.signed_post(
+            self.session,
+            self.device_identity(),
+            detail_api.PATH_DETAIL,
+            {
+                "dr_scene": "preload",
+                "series_id": album_id,
+                "biz_param": {
+                    "detail_page_version": 0,
+                    "disable_digg_stat": False,
+                    "source": 7,
+                    "need_all_video_definition": False,
+                },
+            },
+            self.cookie_dict(),
+            quiet=True,
+        )
+        data = (raw2 or {}).get("data") or {}
+        out: list[EpisodeItem] = []
+        for item in data.values():
+            if not isinstance(item, dict):
+                continue
+            vd = item.get("video_data")
+            vd = vd if isinstance(vd, dict) else {}
+            title = vd.get("series_title") or album_id
+            for n, e in enumerate(vd.get("video_list") or [], 1):
+                if not isinstance(e, dict):
+                    continue
+                vid = e.get("vid") or ""
+                if not vid:
+                    continue
+                out.append(
+                    EpisodeItem(
+                        vid=vid,
+                        index=n,
+                        title=e.get("title") or f"第{n}集",
+                        duration=float(e.get("duration") or 0),
+                        series_id=album_id,
+                        series_title=title,
+                        # ★ vid == series_id 时要用 type=1（教学内容那套）
+                        video_id_type=(1 if vid == album_id else 0),
+                    )
+                )
+            if out:
+                break
+        return out
 
     def list_episodes(self, series_id: str, max_count: int = 0) -> list[EpisodeItem]:
         """取一部剧的分集列表。"""
@@ -467,11 +553,12 @@ class HongguoService:
         url, _size, content_key = "", None, None
         if self.logged_in:
             # ★ video_id_type：短剧用 0（vid），教学内容用 1（series_id）。
-            #   不确定时两种都试。
-            types = (
-                [ep.video_id_type] if ep.video_id_type >= 0
-                else ([0, 1] if ep.series_id and ep.series_id != ep.vid else [0, 1])
-            )
+            #   两种都试 —— 失败的那个返回 code=101000，很快。
+            #   先试「猜对的那个」，再试另一个。
+            if ep.video_id_type >= 0:
+                types = [ep.video_id_type, 1 - ep.video_id_type]
+            else:
+                types = [0, 1]
             for t in types:
                 url, _size, content_key = self.resolve_full_url(
                     ep.vid, quality, video_id_type=t

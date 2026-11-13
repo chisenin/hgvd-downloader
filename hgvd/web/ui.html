@@ -43,6 +43,10 @@
   .item .t{flex:1;min-width:0}
   .item .n{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .item .s{font-size:11px;color:var(--fg2);margin-top:2px}
+  /* ★ 短剧：淡化显示（解码受限，仅供消遣） */
+  .item.drama{opacity:.5}
+  .item.drama .n{text-decoration:line-through;text-decoration-color:rgba(200,80,80,.6)}
+  .item.drama .s{color:#c85a5a}
   .empty{padding:28px 16px;text-align:center;color:var(--fg2);font-size:13px}
   .foot{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;
         align-items:center;flex-wrap:wrap}
@@ -165,11 +169,15 @@ function renderShelf(){
   }
   state.shelf.forEach(s=>{
     const d = document.createElement('div');
-    d.className = 'item' + (state.selSeries===s.series_id ? ' sel':'');
+    // ★ 短剧加一个标记样式（解码受限，仅供消遣）
+    d.className = 'item' + (state.selSeries===s.series_id ? ' sel':'')
+                + (s.is_drama ? ' drama':'');
     d.innerHTML = `<input type="checkbox" class="chk" ${state.selSeries===s.series_id?'checked':''}>
       <div class="t"><div class="n"></div><div class="s"></div></div>`;
     d.querySelector('.n').textContent = s.title;
-    d.querySelector('.s').textContent = (s.episode_cnt||'?') + ' 集';
+    d.querySelector('.s').textContent =
+      (s.type_label ? '[' + s.type_label + '] ' : '')
+      + (s.episode_cnt||'?') + ' 集';
     d.onclick = (ev)=>{
       if(ev.target.classList.contains('chk')) return;
       selectSeries(s.series_id);
