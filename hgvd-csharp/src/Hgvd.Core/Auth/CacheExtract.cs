@@ -239,13 +239,101 @@ public static class CacheExtract
     }
 
     /// <summary>
+    /// 判断缓存文件是否**下载完成**。
+    ///
+    /// ★★★ 精确判据（实测推导，文档 Y13）：
+    ///   App 是**流式边下边存**。MP4 结构 = <c>ftyp</c> + <c>moov</c>（**先写**，
+    ///   含完整时长与轨道信息）+ <c>free</c> + <c>mdat</c>（**边播边追加**）。
+    ///   ⇒ <c>mdat</c> box 头里声明的总大小 &gt; 文件实际剩余字节 ⇒ 未写完。
+    ///
+    /// ★★ 「有没有音视频轨」这个启发式**不可靠** —— moov 里轨道信息是全的，
+    ///   未完成的文件同样能解析出 hevc+aac 和完整 duration。
+    /// </summary>
+    public static bool IsComplete(string path)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            int n = data.Length;
+            int i = 0;
+            while (i + 8 <= n)
+            {
+                long size = (uint)((data[i] << 24) | (data[i + 1] << 16)
+                                  | (data[i + 2] << 8) | data[i + 3]);
+                string typ = System.Text.Encoding.ASCII.GetString(data, i + 4, 4);
+                if (size == 0) size = n - i;
+                else if (size == 1)
+                {
+                    if (i + 16 > n) return false;
+                    size = 0;
+                    for (int k = 7; k >= 0; k--) size = (size << 8) | data[i + 8 + k];
+                }
+                if (size < 8) return false;
+                if (typ == "mdat") return size <= (n - i);
+                i += (int)size;
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 从 <c>mdat</c> 头读出完整文件的应有大小（0 = 解析不出）。
+    /// </summary>
+    public static long ExpectedSize(string path)
+    {
+        try
+        {
+            byte[] data = File.ReadAllBytes(path);
+            int n = data.Length;
+            int i = 0;
+            while (i + 8 <= n)
+            {
+                long size = (uint)((data[i] << 24) | (data[i + 1] << 16)
+                                  | (data[i + 2] << 8) | data[i + 3]);
+                string typ = System.Text.Encoding.ASCII.GetString(data, i + 4, 4);
+                if (size == 0) size = n - i;
+                else if (size == 1)
+                {
+                    if (i + 16 > n) break;
+                    size = 0;
+                    for (int k = 7; k >= 0; k--) size = (size << 8) | data[i + 8 + k];
+                }
+                if (size < 8) break;
+                if (typ == "mdat") return i + size;
+                i += (int)size;
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>
+    /// 用深链调起红果 App。
+    ///
+    /// ★ 红果唯一有用的自有 scheme 是 <c>dragon8662://</c>（文档 Y2a），
+    ///   收器是 <c>com.dragon.read.push.AppSdkActivity</c>。
+    /// ★★ 但它**跳不到指定剧集详情页**（实测 5 种路径均无效，文档 Y2f）——
+    ///   调用后 App 会回到首页，**仍需用户在 App 里手动点开目标剧集**。
+    /// </summary>
+    public static string LaunchApp(string mumu, int instance, string seriesId)
+    {
+        string url = $"dragon8662://detail?series_id={seriesId}";
+        return Sh(mumu, instance,
+            "am start -a android.intent.action.VIEW -c android.intent.category.BROWSABLE "
+            + $"-d '{url}' 2>&1 | head -3");
+    }
+
+    /// <summary>
     /// 把缓存里所有视频提取到本机并探测格式。
     /// </summary>
     /// <param name="minSize">小于这个大小的不提取（大多是碎片）。</param>
     /// <param name="limit">最多提取几个；0 = 不限。</param>
+    /// <param name="onlyComplete">只提取**已写完**的（按 mdat 判据）。</param>
     public static List<CacheEntry> ExtractAll(
         string mumu, int instance, string outDir = null,
-        long minSize = 100_000, int limit = 0, Action<string> log = null)
+        long minSize = 100_000, int limit = 0, Action<string> log = null,
+        bool onlyComplete = true)
     {
         string dir = outDir ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "hgvd_cache");
@@ -278,9 +366,19 @@ public static class CacheExtract
                 log?.Invoke($"  ! 提取失败 {e.Name}：{ex.Message}");
                 continue;
             }
-            if (new FileInfo(dest).Length == 0)
+            long len = new FileInfo(dest).Length;
+            if (len == 0)
             {
                 log?.Invoke($"  ! 提取为空 {e.Name}（RPC 传输可能截断）");
+                continue;
+            }
+
+            // ★★ 流式缓存可能没写完 —— 按 mdat 判据精确过滤
+            if (onlyComplete && !IsComplete(dest))
+            {
+                long exp = ExpectedSize(dest);
+                log?.Invoke($"  … {e.Name}  {len}/{exp} 字节  未写完（跳过）");
+                try { File.Delete(dest); } catch { }
                 continue;
             }
 
@@ -296,7 +394,8 @@ public static class CacheExtract
                 Codec = info.TryGetValue("codec_name", out var c) ? c?.ToString() ?? "" : "",
                 Width = info.TryGetValue("width", out var w) && int.TryParse(w?.ToString(), out int wi) ? wi : 0,
                 Height = info.TryGetValue("height", out var h) && int.TryParse(h?.ToString(), out int hi) ? hi : 0,
-                Duration = info.TryGetValue("duration", out var d) && double.TryParse(d?.ToString(), out double dd) ? dd : 0,            };
+                Duration = info.TryGetValue("duration", out var d) && double.TryParse(d?.ToString(), out double dd) ? dd : 0,
+            };
             result.Add(ce);
             log?.Invoke($"  ✓ {e.Name} → {ce.Size} 字节  {ce.Codec} {ce.Width}x{ce.Height} {ce.Duration:F1}s");
         }
