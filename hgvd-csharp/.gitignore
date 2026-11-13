@@ -1,0 +1,19 @@
+# ── .NET 构建产物 ──
+bin/
+obj/
+*.user
+*.suo
+
+# ── 发布产物 ──
+dist/
+publish/
+*.exe
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+
+# ── 运行时数据 ──
+*.log
+gui-diag.log
+gui-crash.log
