@@ -76,7 +76,7 @@ public sealed class SignedClient
     public async Task<JsonDocument?> PostAsync(
         string path, string jsonBody,
         bool playback = false,
-        int retries = 4, double basePause = 2.0, double maxPause = 20.0,
+        int retries = 5, double basePause = 3.2, double maxPause = 12.0,
         CancellationToken ct = default)
     {
         byte[] raw = Encoding.UTF8.GetBytes(jsonBody);
@@ -133,6 +133,10 @@ public sealed class SignedClient
                 last = $"code={code} {J.Str(doc.RootElement, "message")}";
                 // 100001 = 参数错，重试没用
                 if (code == 100001) break;
+                // ★ 服务端对 video_model 的限流是「全局节奏」——
+                //   实测约每 3 秒才放行一次，同一 id 连续请求时
+                //   前 3 次空 body、第 4 次才成功。
+                //   所以这里固定 3.2s 起步，不要太短。
                 await Task.Delay(TimeSpan.FromSeconds(
                     Math.Min(basePause * (attempt + 1), maxPause)), ct);
             }

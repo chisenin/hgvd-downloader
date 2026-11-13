@@ -60,6 +60,17 @@ public sealed class HongguoService
         _client = null;
     }
 
+    /// <summary>
+    /// 设备身份（签名必需）。
+    ///
+    /// ★★ <c>iid</c> / <c>device_id</c> 必须与 cookie **同源**
+    ///   （文档 S2 / I 节实测结论）：
+    ///   <c>iid</c> = cookie 里的 <c>install_id</c>，
+    ///   <c>device_id</c> = App 的 <c>applog_stats.xml</c> 里的 <c>device_id</c>。
+    ///   ★ 两个都来自**实例 1**（用户实际在用的那台）。
+    ///   ★ 曾经试过用「另一个注册设备的 install_id」当 iid，
+    ///     播放成功率并没有提升，反而破坏了同源关系 —— 已废弃。
+    /// </summary>
     public DeviceIdentity Device
     {
         get
@@ -69,11 +80,19 @@ public sealed class HongguoService
                 _ident = MumuAuth.LoadDevice();
                 if (string.IsNullOrEmpty(_ident.DeviceId))
                 {
-                    // 兜底：从登录态的 install_id 推导
-                    _ident.Iid = _account.Cookies.TryGetValue("install_id", out var i) ? i : "";
-                    _ident.VersionName = "7.3.9.32";
-                    _ident.VersionCode = "73932";
+                    // 兜底：实例 1 的 App 真机 device_id
+                    _ident.DeviceId = "744826091366314";
                 }
+                if (string.IsNullOrEmpty(_ident.Iid))
+                {
+                    // 兜底：cookie 的 install_id（与 device_id 同源）
+                    _ident.Iid = _account.Cookies.TryGetValue("install_id", out var iid)
+                        ? iid : "744826091370410";
+                }
+                if (string.IsNullOrEmpty(_ident.VersionName))
+                    _ident.VersionName = "7.3.9.32";
+                if (string.IsNullOrEmpty(_ident.VersionCode))
+                    _ident.VersionCode = "73932";
             }
             return _ident;
         }
@@ -207,12 +226,32 @@ public sealed class HongguoService
 
     // ---------------------------------------------------------- 下载
 
-    /// <summary>解析完整正片的播放地址。</summary>
+    /// <summary>
+    /// 播放地址缓存。
+    ///
+    /// ★★ 服务端对 <c>video_model</c> 的风控是**账号级**的（文档 X6）：
+    ///   密集请求会持续返回 HTTP 200 + 空 body，退避 60~120s 也未必恢复。
+    ///   ⇒ 同一集**只打一次**播放接口，之后从缓存取。
+    ///   缓存键：<c>videoId</c> + <c>videoIdType</c> + <c>quality</c>。
+    /// </summary>
+    private static readonly Dictionary<string, (string Url, long Size, string Key, string Codec)>
+        PlaybackCache = new();
+
+    /// <summary>清空播放地址缓存（换账号 / 签名失败时可手动调用）。</summary>
+    public static void ClearPlaybackCache() => PlaybackCache.Clear();
+
+    /// <summary>解析完整正片的播放地址（带缓存）。</summary>
     public async Task<(string Url, long Size, string Key, string Codec)>
         ResolveFullUrlAsync(string videoId, int videoIdType = 0, string quality = "720p",
         CancellationToken ct = default)
     {
         if (!LoggedIn) return ("", 0, "", "");
+
+        string ck = $"{videoId}|{videoIdType}|{quality}";
+        lock (PlaybackCache)
+            if (PlaybackCache.TryGetValue(ck, out var hit) && !string.IsNullOrEmpty(hit.Url))
+                return hit;
+
         try
         {
             var model = await Client.PlaybackAsync(videoId, videoIdType, ct);
@@ -220,7 +259,9 @@ public sealed class HongguoService
             var chosen = model.Streams.FirstOrDefault(
                 s => string.Equals(s.Definition, quality, StringComparison.OrdinalIgnoreCase))
                 ?? model.Streams[0];
-            return (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec);
+            var result = (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec);
+            lock (PlaybackCache) PlaybackCache[ck] = result;
+            return result;
         }
         catch (Exception e)
         {
@@ -270,7 +311,12 @@ public sealed class HongguoService
             {
                 Ok = false, OutPath = outPath,
                 Error = $"无法解析播放地址（vid={ep.Vid}）"
-                    + (LoggedIn ? "" : "（未登录：请先执行 python -m hgvd login）"),
+                    + (LoggedIn ? "" : "（未登录：请先执行 hgvd login）")
+                    // ★ 服务端对 video_model 的风控是账号级的（文档 X6）——
+                    //   密集请求后持续返回 HTTP 200 + 空 body，退避也不一定恢复。
+                    //   这时唯一的出片路径是 App 缓存。
+                    + "。★ 若日志显示「空 body (HTTP 200)」，是服务端风控，"
+                    + "请改用「提取App缓存」（hgvd cache）——完全绕过风控。",
             };
 
         var req = new DownloadRequest
