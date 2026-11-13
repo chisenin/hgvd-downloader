@@ -6,6 +6,14 @@
 
 ★ 这是验证「服务端是否还在用同一套协议」的快捷方式 ——
   服务端改版后，先跑它，看是哪一环开始不对。
+
+★ 六环对应：
+  1 登录态（MuMu 读 App）
+  2 网页版详情（免签名）
+  3 网页版直链（★ 仅 10 秒试看片段）
+  4 收藏夹（免签名，需要 Cookie）
+  5 合集分集（★ album_detail，book_type=3 的唯一路径）
+  6 播放地址（★ 播放专用签名 + video_id_type）
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from hgvd import net  # noqa: E402
+from hgvd.api import album as album_api  # noqa: E402
 from hgvd.api import detail as detail_api  # noqa: E402
 from hgvd.api import playback as pb  # noqa: E402
 from hgvd.api import shelf as sh  # noqa: E402
@@ -23,7 +32,8 @@ from hgvd.api import web as web  # noqa: E402
 from hgvd.auth import load_account  # noqa: E402
 from hgvd.device import ensure_device  # noqa: E402
 
-TEST_SERIES = "7697459724635098174"   # 网页版首页上的真实剧目
+TEST_SERIES = "7697459724635098174"   # 网页版首页上的真实短剧
+TEST_ALBUM = "7662738851323989016"   # 教学合集「颠覆你的动植物科普」
 
 
 def main() -> int:
@@ -77,50 +87,62 @@ def main() -> int:
     try:
         rows = sh.list_shelf(sess, cookies=cookies, target_user_id=acc.user_id)
         drama = [r for r in rows if r.get("book_type") == 2]
-        mark(True, f"接口通，收藏 {len(rows)} 项（短剧视频 {len(drama)} 部，"
-                   f"图书/听书 {len(rows) - len(drama)} 部）")
+        album = [r for r in rows if r.get("book_type") == 3]
+        mark(True, f"接口通，收藏 {len(rows)} 项（短剧 {len(drama)} 部，"
+                   f"教学合集 {len(album)} 部）")
     except Exception as e:  # noqa: BLE001
         mark(False, str(e))
 
-    # 5 批量详情（带签名）
-    head(5, "批量详情（带签名，补标题与分集）")
-    details = {}
-    if rows:
+    # 5 合集分集（★ album_detail）
+    head(5, "合集分集（★ album_detail，book_type=3 的唯一路径）")
+    eps: list = []
+    if not acc.ok:
+        mark(False, "跳过（未登录）")
+    else:
         try:
-            details = detail_api.fetch_details(
-                sess, ident, [r["series_id"] for r in rows[:40]], cookies=cookies
+            raw = detail_api.signed_post(
+                sess, ident, detail_api.PATH_ALBUM,
+                {"album_id": TEST_ALBUM, "book_type": 3}, cookies,
+                quiet=True,
             )
-            titled = [d for d in details.values() if d.get("title")]
-            mark(bool(details), f"取到 {len(details)} 部详情（含标题 {len(titled)} 部）")
-            for d in list(details.values())[:3]:
-                if d.get("title"):
-                    print(f"      · {d['title'][:26]:28s} {d.get('episode_cnt', 0)} 集 "
-                          f"分集 {len(d.get('episodes') or [])}")
+            if raw:
+                ad = album_api.parse_album(raw)
+                eps = ad.episodes
+                mark(bool(eps), f"「{ad.title}」{ad.episode_cnt} 集，取到 {len(eps)} 项")
+                for e in eps[:3]:
+                    print(f"      · {e.index if hasattr(e, 'index') else ''}"
+                          f"{e.title[:30]:32s} {e.duration:.0f}s  id={e.series_id}")
+            else:
+                mark(False, "album_detail 无响应")
         except Exception as e:  # noqa: BLE001
             mark(False, str(e))
 
-    # 6 播放地址
-    head(6, "App 网关 video_model（需完整签名 + 登录）")
-    sample = next((d for d in details.values() if d.get("episodes")), None)
+    # 6 播放地址（★ 播放专用签名 + video_id_type=1）
+    head(6, "App 网关 video_model（★ 播放专用签名 + video_id_type）")
     if not acc.ok:
         mark(False, "跳过（未登录）")
-    elif not sample:
-        mark(False, "跳过（收藏里没取到带分集的内容）")
+    elif not eps:
+        mark(False, "跳过（没取到合集分集）")
     else:
-        vid = sample["episodes"][0]["vid"]
+        target = eps[0].series_id
         try:
-            payload = pb.fetch_playback(sess, ident, vid, cookies=cookies)
+            payload = pb.fetch_playback(
+                sess, ident, target, cookies=cookies, video_id_type=1
+            )
             streams = pb.parse_streams(payload)
             key = pb.extract_content_key(payload)
             mark(bool(streams),
                  f"{len(streams)} 档清晰度，codec="
                  f"{streams[0]['codec'] if streams else '?'}，"
+                 f"加密={'是' if streams and streams[0]['encrypted'] else '否'}，"
                  f"内容密钥={'有' if key else '无'}")
             if streams:
-                print(f"      · {streams[0]['definition']} {streams[0]['size']} 字节 "
-                      f"加密={streams[0]['encrypted']}")
+                for x in streams:
+                    print(f"      · {x['definition']:8s} {x['codec']:10s} "
+                          f"{x['width']}x{x['height']} {x['size']} 字节 "
+                          f"加密={x['encrypted']}")
         except Exception as e:  # noqa: BLE001
-            mark(False, f"{e}（空 body = 限流或未登录）")
+            mark(False, f"{e}（★ 确认用的是 sign_playback 而不是 sign_request）")
 
     print(f"\n===== 通过 {ok} 项，失败 {bad} 项 =====")
     return 0 if bad == 0 else 1

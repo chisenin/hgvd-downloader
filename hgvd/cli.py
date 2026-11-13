@@ -137,31 +137,49 @@ def save_qr_png(qr: dict, path: str) -> None:
 
 
 def cmd_shelf(args) -> int:
-    """列出收藏夹。"""
+    """列出收藏夹。
+
+    ★ 默认只展开前 30 个合集（album 端点是逐个请求的，222 个要好几分钟）。
+      用 ``--all`` 展开全部，或用 ``--limit N`` 调整。
+    """
     svc = _svc()
     if not svc.logged_in:
         print("未登录。先执行：python -m hgvd login")
         print("（收藏夹接口本身免签名，但没有 Cookie 会返回空列表）")
         return 1
+    limit = 0 if args.all else (args.limit or 30)
+    print("读取收藏夹…")
     try:
-        items = svc.list_shelf()
+        items = svc.list_shelf(album_limit=limit)
     except Exception as e:  # noqa: BLE001
         print(f"读取收藏夹失败：{e}")
         return 1
     if not items:
         print("收藏夹为空。")
         return 0
-    videos = [i for i in items if i.is_video]
-    books = [i for i in items if not i.is_video]
-    print(f"收藏夹共 {len(items)} 项：短剧视频 {len(videos)} 部，"
-          f"图书/听书 {len(books)} 部（无视频分集）")
+
+    dramas = [i for i in items if i.book_type == 2]
+    albums = [i for i in items if i.book_type == 3 and i.is_album]
+    pending = [i for i in items if i.book_type == 3 and not i.is_album]
+    others = [i for i in items if i.book_type not in (2, 3)]
+
+    print(f"\n收藏夹共 {len(items)} 项：")
+    print(f"  短剧 {len(dramas)} 部 · 教学合集 {len(albums) + len(pending)} 部"
+          + (f"（已展开 {len(albums)}）" if pending else "")
+          + (f" · 其他 {len(others)} 项" if others else ""))
+    if pending and not args.all:
+        print(f"  提示：还有 {len(pending)} 个合集未展开（--all 展开全部）")
     print()
-    for i, it in enumerate(videos, 1):
-        print(f"  [{i:2d}] {it.title}  ({it.episode_cnt} 集)  id={it.series_id}")
-    if books:
-        print("\n  —— 以下是图书/听书类，服务端没有视频分集 ——")
-        for i, it in enumerate(books, 1):
-            print(f"  [{i:2d}] {it.title}  (无视频)  id={it.series_id}")
+
+    n = 0
+    for it in dramas + albums:
+        n += 1
+        print(f"  [{n:3d}] {it.title[:44]:46s} ({it.episode_cnt:>4} 集)  id={it.series_id}")
+    if pending:
+        print("\n  —— 未展开的合集（用 list <id> 查分集）——")
+        for it in pending[:20]:
+            n += 1
+            print(f"  [{n:3d}] {it.series_id}")
     return 0
 
 
@@ -397,7 +415,10 @@ def build_parser() -> argparse.ArgumentParser:
     plogin.add_argument("--phone", help="改用手机号验证码登录")
     plogin.add_argument("--list-mumu", action="store_true", help="列出所有 MuMu 实例")
     plogin.set_defaults(func=cmd_login)
-    sub.add_parser("shelf", help="列出收藏夹").set_defaults(func=cmd_shelf)
+    pshelf = sub.add_parser("shelf", help="列出收藏夹")
+    pshelf.add_argument("--all", action="store_true", help="展开全部合集（慢）")
+    pshelf.add_argument("--limit", type=int, default=30, help="最多展开几个合集")
+    pshelf.set_defaults(func=cmd_shelf)
     sub.add_parser("history", help="查看下载历史").set_defaults(func=cmd_history)
     sub.add_parser("logout", help="清除登录态").set_defaults(func=cmd_logout)
     sub.add_parser("gui", help="打开图形界面").set_defaults(func=cmd_gui)

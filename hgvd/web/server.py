@@ -103,7 +103,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "缺 series_id"}, 400)
                 return
             try:
-                eps = STATE.svc.list_episodes(sid)
+                # ★ 先试合集端点 —— book_type=3 的教学内容只有它能给出分集
+                eps = STATE.svc.list_album_episodes(sid)
+                if not eps:
+                    eps = STATE.svc.list_episodes(sid)
             except Exception as e:  # noqa: BLE001
                 self._json({"error": str(e)}, 500)
                 return

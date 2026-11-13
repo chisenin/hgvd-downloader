@@ -187,7 +187,11 @@ def find_usable_instance(mumu: str | None = None) -> tuple[int, dict]:
     """找一个能用（有登录态）的实例。
 
     ★ 优先选**最近活动过**的实例 —— 用户刚在 App 里收藏完剧的那个。
-      判断依据是 App 的数据库文件 mtime。
+      判断依据是 App 的**数据库文件 mtime**。
+
+    ★★ 必须用 ``ls -lt``（按 mtime 排），**不能用 ``ls -t``** ——
+      后者按**文件名**排序，数据库文件名里没有时间信息，
+      结果会随机挑一个实例（实测挑到了很久没启动过的实例 0）。
     """
     mumu = mumu or find_mumu()
     instances = [i for i in list_instances(mumu) if i["started"]]
@@ -197,22 +201,22 @@ def find_usable_instance(mumu: str | None = None) -> tuple[int, dict]:
     best = None
     for info in instances:
         idx = int(info.get("index", 0))
-        try:
-            latest = sh(
-                mumu, idx,
-                f"ls -t {PACKAGE}/databases/ 2>/dev/null | head -1",
-                timeout=20,
-            ).strip()
-            if not latest:
-                latest = sh(
+        stamp = ""
+        for path in (f"{PACKAGE}/databases/", f"{PACKAGE}/files/disk_collect/",
+                     f"{PACKAGE}/shared_prefs/"):
+            try:
+                out = sh(
                     mumu, idx,
-                    f"ls -t {PACKAGE}/shared_prefs/ 2>/dev/null | head -1",
+                    f"ls -lt {path} 2>/dev/null | awk 'NR==2{{print $6, $7}}'",
                     timeout=20,
                 ).strip()
-        except MumuError:
-            continue
-        if not best or (latest and latest > best[1]):
-            best = (idx, latest)
+            except MumuError:
+                continue
+            if out:
+                stamp = out
+                break
+        if not best or (stamp and stamp > best[1]):
+            best = (idx, stamp)
 
     order = [best[0]] if best else []
     order += [i["index"] for i in instances if i["index"] not in order]

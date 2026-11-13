@@ -139,7 +139,7 @@ class HongguoService:
         self,
         with_details: bool = True,
         with_albums: bool = True,
-        album_limit: int = 0,
+        album_limit: int = 30,
     ) -> list[ShelfItem]:
         """读收藏夹。
 
@@ -151,8 +151,10 @@ class HongguoService:
 
         ★ ``with_albums`` 会对 ``book_type=3`` 的项调用 **album_detail**
           端点补上真正的分集列表 —— 这是拿到教学合集分集的**唯一路径**。
-          ``album_limit`` 限制最多查多少个（0 = 不限）；服务端限流较严，
-          查太多会失败。
+
+        ★★ 但 album 端点是**逐个请求**的（222 个合集要 222 次），
+          所以默认 ``album_limit=30`` —— 列表里显示前 30 个合集的集数，
+          其余的按需用 ``list_album_episodes(series_id)`` 单独查。
         """
         rows = shelf_api.list_shelf(
             self.session,
@@ -188,6 +190,7 @@ class HongguoService:
                         self.device_identity(),
                         album_ids,
                         cookies=self.cookie_dict(),
+                        pause=0.6,
                     )
                 except Exception:  # noqa: BLE001
                     albums = {}
