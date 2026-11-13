@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Hgvd.Core.Api;
@@ -110,109 +111,220 @@ public sealed class HongguoService
 
     // ---------------------------------------------------------- 收藏夹
 
-    /// <summary>读收藏夹。</summary>
+    /// <summary>
+    /// 收藏夹详情回调：标题 / 集数**增量**到达时触发（同一 id 可能触发多次）。
+    /// </summary>
+    public delegate void ShelfDetailHandler(string seriesId, string title, int episodeCnt);
+
+    /// <summary>
+    /// 读收藏夹（一次性拿全，CLI 用）。
+    /// </summary>
+    /// <param name="withDetails">是否补标题 / 集数。</param>
+    /// <param name="albumLimit">
+    /// 最多逐个查多少个合集的真实集数。★ 每查一个是一次带签名的 album_detail
+    /// 请求（实测 0.2s，但要串行 + 间隔）—— 界面不要用这个，see
+    /// <see cref="ListShelfStreamingAsync"/>。
+    /// </param>
     public async Task<List<ShelfItem>> ListShelfAsync(
         bool withDetails = true, int albumLimit = 30,
         CancellationToken ct = default)
     {
-        var rows = await Shelf.ListAsync(_account.CookieHeader,
-            _account.UserId, ct);
-
-        var titles = new Dictionary<string, (string Title, int Cnt)>();
-        if (withDetails && rows.Count > 0)
+        var rows = await Shelf.ListAsync(_account.CookieHeader, _account.UserId, ct);
+        var items = BuildShelfItems(rows);
+        if (withDetails && items.Count > 0)
         {
-            try { titles = await FetchTitlesAsync(rows, albumLimit, ct); }
-            catch { }
-        }
-
-        var items = new List<ShelfItem>();
-        foreach (var r in rows)
-        {
-            titles.TryGetValue(r.SeriesId, out var t);
-            items.Add(new ShelfItem
-            {
-                SeriesId = r.SeriesId,
-                Title = t.Title,
-                EpisodeCnt = t.Cnt,
-                BookType = r.BookType,
-                ContentType = r.ContentType,
-            });
+            var titles = await FetchTitlesAsync(rows, albumLimit, ct);
+            foreach (var it in items)
+                if (titles.TryGetValue(it.SeriesId, out var t))
+                {
+                    if (!string.IsNullOrEmpty(t.Title)) it.Title = t.Title;
+                    if (t.Cnt > 0) it.EpisodeCnt = t.Cnt;
+                }
         }
         return items;
     }
 
     /// <summary>
-    /// 批量取标题与集数。
+    /// **渐进式**读收藏夹 —— 界面专用。
     ///
-    /// ★ 两路并行：
+    /// ★★ 为什么不能用 <see cref="ListShelfAsync"/>：
+    ///   它最后会**串行**把前 N 个合集逐个查 album_detail（每个还要 600ms 间隔），
+    ///   实测 30 个 ≈ 20~60s，界面只能对着空白干等。
+    ///   → 参考量级：
+    ///     · 收藏夹原始列表：      **0.44s**（只给 id，不给标题/集数）
+    ///     · 批量标题（20 个/批）：串行 12 批 6.4s，**并发 4 路 0.3s/4 批**
+    ///     · 单个合集 album_detail：**0.2s**
+    /// ★★ 这里的做法：
+    ///   1) <paramref name="onRaw"/> —— 原始列表一到就逐条回调，界面**立刻**
+    ///      就能列出全部条目（~0.5s），不用等标题；
+    ///   2) <paramref name="onDetail"/> —— 标题靠 multi_video_detail 批量取，
+    ///      **并发 4 路**，每批回来就把那 20 行的标题补上（逐项可见）；
+    ///   3) ★ **启动时不再查合集集数** —— 集数在用户点开该剧时随分集一起拿
+    ///      （album_detail 只要 0.2s），省掉几十秒空等。
+    /// </summary>
+    public async Task<List<ShelfItem>> ListShelfStreamingAsync(
+        Action<ShelfItem> onRaw, ShelfDetailHandler onDetail,
+        int titleConcurrency = 4, CancellationToken ct = default)
+    {
+        var rows = await Shelf.ListAsync(_account.CookieHeader, _account.UserId, ct);
+        var items = BuildShelfItems(rows);
+        foreach (var it in items) onRaw?.Invoke(it);
+        if (items.Count == 0) return items;
+
+        var byId = new Dictionary<string, ShelfItem>();
+        foreach (var it in items) byId[it.SeriesId] = it;
+
+        // 标题批量取：每批 20 个，最多 titleConcurrency 路并发
+        var chunks = new List<List<ShelfEntry>>();
+        for (int i = 0; i < rows.Count; i += 20)
+            chunks.Add(rows.Skip(i).Take(20).ToList());
+
+        using var sem = new SemaphoreSlim(Math.Max(1, titleConcurrency));
+        var tasks = new List<Task>();
+        foreach (var chunk in chunks)
+            tasks.Add(FetchChunkAsync(chunk));
+
+        await Task.WhenAll(tasks);
+        return items;
+
+        async Task FetchChunkAsync(List<ShelfEntry> chunk)
+        {
+            await sem.WaitAsync(ct);
+            try
+            {
+                var map = await FetchChunkDetailAsync(chunk, ct);
+                foreach (var kv in map)
+                {
+                    if (byId.TryGetValue(kv.Key, out var it))
+                    {
+                        if (!string.IsNullOrEmpty(kv.Value.Title)) it.Title = kv.Value.Title;
+                        if (kv.Value.Cnt > 0) it.EpisodeCnt = kv.Value.Cnt;
+                    }
+                    onDetail?.Invoke(kv.Key, kv.Value.Title, kv.Value.Cnt);
+                }
+            }
+            catch { /* 单批失败不影响其它批 */ }
+            finally { sem.Release(); }
+        }
+    }
+
+    private static List<ShelfItem> BuildShelfItems(List<ShelfEntry> rows)
+    {
+        var items = new List<ShelfItem>(rows.Count);
+        foreach (var r in rows)
+            items.Add(new ShelfItem
+            {
+                SeriesId = r.SeriesId,
+                BookType = r.BookType,
+                ContentType = r.ContentType,
+            });
+        return items;
+    }
+
+    /// <summary>
+    /// 一批（≤20 个）id 的标题 + 集数（批量详情接口，免不了签名但一次 20 个）。
+    /// </summary>
+    private async Task<Dictionary<string, (string Title, int Cnt)>> FetchChunkDetailAsync(
+        List<ShelfEntry> chunk, CancellationToken ct)
+    {
+        var outMap = new Dictionary<string, (string Title, int Cnt)>();
+        string body = JsonSerializer.Serialize(
+            new Dictionary<string, object>
+            {
+                ["dr_scene"] = "preload",
+                ["series_id"] = string.Join(",", chunk.Select(r => r.SeriesId)),
+                ["biz_param"] = new Dictionary<string, object>
+                {
+                    ["detail_page_version"] = 0,
+                    ["disable_digg_stat"] = false,
+                    ["source"] = 7,
+                    ["need_all_video_definition"] = false,
+                },
+            });
+        using var doc = await Client.PostAsync(
+            SignedClient.PathDetailBatch, body, ct: ct,
+            // ★ 批量详情不是播放接口，风控轻；但也别用播放那套 3.2s 起步的退避，
+            //   否则一批失败要拖 40s+。这里 3 次 / 2s 起步。
+            retries: 3, basePause: 2.0, maxPause: 6.0);
+        if (doc is null) return outMap;
+        if (doc.RootElement.TryGetProperty("data", out var data)
+            && data.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in data.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                if (!prop.Value.TryGetProperty("video_data", out var vd)) continue;
+                string title = J.Str(vd, "series_title");
+                int cnt = J.Int(vd, "episode_cnt");
+                if (cnt == 0 && vd.TryGetProperty("video_list", out var vl)
+                    && vl.ValueKind == JsonValueKind.Array)
+                    cnt = vl.GetArrayLength();
+                if (!string.IsNullOrEmpty(title)) outMap[prop.Name] = (title, cnt);
+            }
+        }
+        return outMap;
+    }
+
+    /// <summary>
+    /// 批量取标题与集数（CLI 用的一次性版本）。
+    ///
+    /// ★ 两路：
     ///   1. <c>multi_video_detail/preload/v1</c> —— **一次 20 个**就能拿到
     ///      所有条目的标题（合集也返回 <c>series_title</c>），但 <c>episode_cnt</c> 是 0。
     ///   2. <c>album_detail/v1/</c> —— 逐个查，**才有真实的集数**，
     ///      但 222 个合集要 222 次请求，慢且容易被限流。
-    ///   所以：**先用第 1 路把标题全补齐**，第 2 路只查前 <c>albumLimit</c> 个。
+    ///   所以：**先用第 1 路把标题全补齐**（并发 4 路），第 2 路只查前
+    ///   <c>albumLimit</c> 个。
     /// </summary>
-    private async Task<Dictionary<string, (string, int)>> FetchTitlesAsync(
+    private async Task<Dictionary<string, (string Title, int Cnt)>> FetchTitlesAsync(
         List<ShelfEntry> rows, int albumLimit, CancellationToken ct)
     {
-        var outMap = new Dictionary<string, (string, int)>();
+        var outMap = new Dictionary<string, (string Title, int Cnt)>();
 
-        // ---- 第 1 路：批量拿标题（全部条目，一次 20 个） ----
-        var allIds = rows.Select(r => r.SeriesId).ToList();
-        for (int i = 0; i < allIds.Count; i += 20)
+        // ---- 第 1 路：批量拿标题（全部条目，一次 20 个，并发 4 路） ----
+        var chunks = new List<List<ShelfEntry>>();
+        for (int i = 0; i < rows.Count; i += 20)
+            chunks.Add(rows.Skip(i).Take(20).ToList());
+
+        using var sem = new SemaphoreSlim(4);
+        var tasks = new List<Task>();
+        foreach (var chunk in chunks)
         {
-            var chunk = allIds.Skip(i).Take(20);
-            string body = System.Text.Json.JsonSerializer.Serialize(
-                new Dictionary<string, object>
-                {
-                    ["dr_scene"] = "preload",
-                    ["series_id"] = string.Join(",", chunk),
-                    ["biz_param"] = new Dictionary<string, object>
-                    {
-                        ["detail_page_version"] = 0,
-                        ["disable_digg_stat"] = false,
-                        ["source"] = 7,
-                        ["need_all_video_definition"] = false,
-                    },
-                });
-            try
+            var c = chunk;
+            tasks.Add(Task.Run(async () =>
             {
-                using var doc = await Client.PostAsync(
-                    SignedClient.PathDetailBatch, body, ct: ct);
-                if (doc is null) continue;
-                if (doc.RootElement.TryGetProperty("data", out var data))
+                await sem.WaitAsync(ct);
+                try
                 {
-                    foreach (var prop in data.EnumerateObject())
-                    {
-                        if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-                        if (!prop.Value.TryGetProperty("video_data", out var vd)) continue;
-                        string title = J.Str(vd, "series_title");
-                        int cnt = J.Int(vd, "episode_cnt");
-                        if (cnt == 0 && vd.TryGetProperty("video_list", out var vl)
-                            && vl.ValueKind == System.Text.Json.JsonValueKind.Array)
-                            cnt = vl.GetArrayLength();
-                        if (!string.IsNullOrEmpty(title))
-                            outMap[prop.Name] = (title, cnt);
-                    }
+                    var map = await FetchChunkDetailAsync(c, ct);
+                    lock (outMap) foreach (var kv in map) outMap[kv.Key] = kv.Value;
                 }
-            }
-            catch { }
-            await Task.Delay(350, ct);
+                catch { }
+                finally { sem.Release(); }
+            }, ct));
         }
+        await Task.WhenAll(tasks);
 
         // ---- 第 2 路：给前 albumLimit 个合集补真实集数 ----
-        var albums = rows.Where(r => r.BookType == 3).Select(r => r.SeriesId).ToList();
-        if (albumLimit > 0) albums = albums.Take(albumLimit).ToList();
-        foreach (var id in albums)
+        if (albumLimit > 0)
         {
-            try
+            var albums = rows.Where(r => r.BookType == 3)
+                             .Select(r => r.SeriesId).Take(albumLimit).ToList();
+            foreach (var id in albums)
             {
-                var album = await Client.AlbumAsync(id, 3, ct);
-                if (album == null) continue;
-                int cnt = album.EpisodeCnt > 0 ? album.EpisodeCnt : album.Episodes.Count;
-                outMap[id] = (album.Title, cnt);
+                try
+                {
+                    var album = await Client.AlbumAsync(id, 3, ct);
+                    if (album == null) continue;
+                    int cnt = album.EpisodeCnt > 0 ? album.EpisodeCnt : album.Episodes.Count;
+                    outMap.TryGetValue(id, out var prev);
+                    string title = !string.IsNullOrEmpty(album.Title)
+                        ? album.Title : prev.Title;
+                    outMap[id] = (title, cnt);
+                }
+                catch { }
+                await Task.Delay(600, ct);
             }
-            catch { }
-            await Task.Delay(600, ct);
         }
         return outMap;
     }
