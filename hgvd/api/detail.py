@@ -21,6 +21,10 @@ from ..sign.core import DeviceIdentity, sign_request
 from ..util import j_int, j_str
 
 PATH_DETAIL = "/novel/player/multi_video_detail/preload/v1"
+PATH_ALBUM = "/novel/player/album_detail/v1/"
+PATH_PLAYBACK = "/novel/player/video_model/v1/"
+
+HOST = "api5-normal-sinfonlinea.fqnovel.com"
 
 UA = (
     "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC; "
@@ -63,6 +67,76 @@ def device_pairs(ident: DeviceIdentity) -> list[tuple[str, str]]:
     ]
 
 
+def signed_post(
+    session,
+    ident: DeviceIdentity,
+    path: str,
+    body: dict,
+    cookies: dict | None = None,
+    *,
+    retries: int = 4,
+    base_pause: float = 2.0,
+    max_pause: float = 20.0,
+    quiet: bool = False,
+) -> dict | None:
+    """带签名的 POST，返回解析后的 JSON（失败返回 None）。
+
+    ★ 服务端对密集请求会返回 **HTTP 200 + 空 body**（风控），
+      或 ``code=101000 服务异常``。所以必须有指数退避重试。
+    """
+    raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    last = "未知"
+    for attempt in range(retries):
+        now = int(time.time() * 1000)
+        query, headers = sign_request(
+            path, device_pairs(ident), now,
+            ident.device_id, ident.version_name, raw,
+        )
+        hdr = {
+            "User-Agent": UA,
+            "Accept": "application/json",
+            "X-SS-DP": "8662",
+            "Content-Type": "application/json; charset=UTF-8",
+            **headers,
+        }
+        if cookies:
+            hdr["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+
+        try:
+            r = session.post(
+                f"https://{HOST}{path}?{query}",
+                data=raw, headers=hdr, timeout=30,
+            )
+        except Exception as e:  # noqa: BLE001
+            last = f"网络错误 {str(e)[:80]}"
+            time.sleep(min(base_pause * (attempt + 1), max_pause))
+            continue
+
+        if not r.content:
+            last = f"空 body (HTTP {r.status_code})"
+            time.sleep(min(base_pause * (attempt + 1), max_pause))
+            continue
+        try:
+            payload = r.json()
+        except Exception:  # noqa: BLE001
+            last = f"非 JSON (HTTP {r.status_code})"
+            time.sleep(min(base_pause * (attempt + 1), max_pause))
+            continue
+
+        code = payload.get("code")
+        if code == 0:
+            return payload
+        last = f"code={code} {payload.get('message') or payload.get('debug_info')}"
+        # 100001 是参数错（重试没用），101000 是服务端异常（可重试）
+        if code == 100001:
+            break
+        time.sleep(min(base_pause * (attempt + 1), max_pause))
+
+    if not quiet:
+        print(f"  ! {path} 失败：{last}")
+    return None
+
+
 def fetch_details(
     session,
     ident: DeviceIdentity,
@@ -90,35 +164,10 @@ def fetch_details(
                 "need_all_video_definition": False,
             },
         }
-        raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
-        now = int(time.time() * 1000)
-        query, headers = sign_request(
-            PATH_DETAIL, device_pairs(ident), now,
-            ident.device_id, ident.version_name, raw,
+        payload = signed_post(
+            session, ident, PATH_DETAIL, body, cookies,
+            retries=retries, quiet=True,
         )
-        hdr = {
-            "User-Agent": UA,
-            "Accept": "application/json",
-            "X-SS-DP": "8662",
-            "Content-Type": "application/json; charset=UTF-8",
-            **headers,
-        }
-        if cookies:
-            hdr["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
-
-        payload = None
-        for attempt in range(retries):
-            try:
-                r = session.post(
-                    f"https://api5-normal-sinfonlinea.fqnovel.com{PATH_DETAIL}?{query}",
-                    data=raw, headers=hdr, timeout=25,
-                )
-                if r.content:
-                    payload = r.json()
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-            time.sleep(1.2 * (attempt + 1))
         if not payload:
             continue
 
@@ -151,5 +200,65 @@ def fetch_details(
                 "episodes": episodes,
             }
         if i + chunk_size < len(series_ids):
+            time.sleep(pause)
+    return out
+
+
+def fetch_albums(
+    session,
+    ident: DeviceIdentity,
+    album_ids: list[str],
+    *,
+    cookies: dict | None = None,
+    book_type: int = 3,
+    retries: int = 4,
+    pause: float = 2.0,
+    progress=None,
+) -> dict:
+    """批量取合集详情（含完整分集列表）。
+
+    ★ 这是拿到 ``book_type=3`` 那批「教学合集」分集的**唯一可用端点**。
+    ★ 每个合集一个请求，服务端限流较严，所以 ``pause`` 别设太小。
+    """
+    from .album import parse_album
+
+    out: dict[str, dict] = {}
+    total = len(album_ids)
+    for i, aid in enumerate(album_ids, 1):
+        body = {"album_id": aid, "book_type": book_type}
+        payload = signed_post(
+            session, ident, PATH_ALBUM, body, cookies,
+            retries=retries, quiet=True,
+        )
+        if not payload:
+            continue
+        try:
+            ad = parse_album(payload)
+        except Exception:  # noqa: BLE001
+            continue
+        out[aid] = {
+            "series_id": aid,
+            "title": ad.title,
+            "intro": ad.intro,
+            "cover": ad.cover,
+            "episode_cnt": ad.episode_cnt or len(ad.episodes),
+            "follow_cnt": ad.follow_cnt,
+            "entrance_text": ad.entrance_text,
+            "is_album": True,
+            "episodes": [
+                {
+                    "vid": "",  # ★ 合集的分集要再查 preload 才拿得到 vid
+                    "series_id": ep.series_id,
+                    "index": n,
+                    "title": ep.title,
+                    "duration": ep.duration,
+                    "content_type": ep.content_type,
+                }
+                for n, ep in enumerate(ad.episodes, 1)
+            ],
+        }
+        if progress:
+            progress(i, total, ad.title, len(ad.episodes))
+        if i < total:
             time.sleep(pause)
     return out

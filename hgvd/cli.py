@@ -165,19 +165,32 @@ def cmd_shelf(args) -> int:
 
 
 def cmd_list(args) -> int:
-    """列出某部剧的分集。"""
+    """列出某部剧的分集。
+
+    ★ 对 ``book_type=3`` 的教学合集，走 ``album_detail`` 端点
+      （``preload`` 对这类永远返回 0 集）。
+    """
     svc = _svc()
-    try:
-        eps = svc.list_episodes(args.series_id, max_count=args.limit or 0)
-    except Exception as e:  # noqa: BLE001
-        print(f"取分集失败：{e}")
-        return 1
+    eps: list = []
+    if args.album:
+        eps = svc.list_album_episodes(args.series_id)
+    else:
+        try:
+            eps = svc.list_episodes(args.series_id, max_count=args.limit or 0)
+        except Exception as e:  # noqa: BLE001
+            print(f"取分集失败：{e}")
+            return 1
+    if not eps:
+        # 回落：网页版 + 合集都试一遍
+        print("网页版没有分集，尝试合集端点…")
+        eps = svc.list_album_episodes(args.series_id)
     if not eps:
         print("没有分集。")
         return 0
-    print(f"共 {len(eps)} 集：")
+    title = eps[0].series_title if eps else ""
+    print(f"共 {len(eps)} 集" + (f"（{title}）" if title else "") + "：")
     for e in eps:
-        print(f"  {e.index:3d}. {e.title}  (vid={e.vid})")
+        print(f"  {e.index:3d}. {e.title}  ({e.duration:.0f}s, vid={e.vid})")
     return 0
 
 
@@ -355,6 +368,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("list", help="列出某部剧的分集")
     pl.add_argument("series_id")
     pl.add_argument("--limit", type=int, default=0)
+    pl.add_argument("--album", action="store_true",
+                    help="按「合集」查分集（book_type=3 的教学类内容用这个）")
 
     pd = sub.add_parser("download", help="下载")
     pd.add_argument("series_id", nargs="?")

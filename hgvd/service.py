@@ -39,7 +39,11 @@ class ShelfItem:
     """收藏夹里的一项。
 
     ★ ``book_type`` 决定它是**短剧视频**（2，服务端有视频分集）
-      还是番茄小说的**「书」**（3，图文/听书，服务端没有视频分集）。
+      还是**合集/教学视频**（3，藏在 album 里）。
+
+    ★ 重要修正（2026-11-13）：``book_type=3`` **并不是**「没有视频」，
+      而是要用 ``album_detail`` 端点才能拿到分集 ——
+      用 ``preload`` 查会得到 ``episode_cnt=0``，看起来像没有。
     """
 
     series_id: str
@@ -50,6 +54,7 @@ class ShelfItem:
     book_type: int = 0
     content_type: int = 0
     episodes: list = field(default_factory=list)
+    is_album: bool = False
 
     @property
     def key(self) -> str:
@@ -58,7 +63,7 @@ class ShelfItem:
     @property
     def is_video(self) -> bool:
         """是不是有视频分集的内容。"""
-        return bool(self.episodes) or self.book_type == 2
+        return bool(self.episodes) or self.book_type == 2 or self.is_album
 
 
 @dataclass
@@ -124,7 +129,12 @@ class HongguoService:
 
     # ---------------------------------------------------------- 收藏夹
 
-    def list_shelf(self, with_details: bool = True) -> list[ShelfItem]:
+    def list_shelf(
+        self,
+        with_details: bool = True,
+        with_albums: bool = True,
+        album_limit: int = 0,
+    ) -> list[ShelfItem]:
         """读收藏夹。
 
         ★ 没登录也能调（接口免签名），但没 cookie 时返回的是空列表 ——
@@ -132,6 +142,11 @@ class HongguoService:
 
         ★ ``with_details`` 会额外用**带签名**的批量详情接口补标题、
           集数与分集列表（收藏接口本身只给 ID）。
+
+        ★ ``with_albums`` 会对 ``book_type=3`` 的项调用 **album_detail**
+          端点补上真正的分集列表 —— 这是拿到教学合集分集的**唯一路径**。
+          ``album_limit`` 限制最多查多少个（0 = 不限）；服务端限流较严，
+          查太多会失败。
         """
         rows = shelf_api.list_shelf(
             self.session,
@@ -150,23 +165,85 @@ class HongguoService:
             except Exception:  # noqa: BLE001
                 details = {}
 
+        # ★ book_type=3 的项在 preload 里永远是 episode_cnt=0，
+        #   必须用 album_detail 才能拿到分集。
+        albums = {}
+        if with_albums and rows:
+            album_ids = [
+                r["series_id"] for r in rows
+                if r.get("book_type") == 3 and not details.get(r["series_id"], {}).get("episodes")
+            ]
+            if album_limit:
+                album_ids = album_ids[:album_limit]
+            if album_ids:
+                try:
+                    albums = detail_api.fetch_albums(
+                        self.session,
+                        self.device_identity(),
+                        album_ids,
+                        cookies=self.cookie_dict(),
+                    )
+                except Exception:  # noqa: BLE001
+                    albums = {}
+
         items = []
         for r in rows:
-            d = details.get(r["series_id"], {})
-            eps = d.get("episodes") or []
+            sid = r["series_id"]
+            d = details.get(sid, {})
+            a = albums.get(sid, {})
+            eps = d.get("episodes") or a.get("episodes") or []
             items.append(
                 ShelfItem(
-                    series_id=r["series_id"],
-                    title=d.get("title") or r["title"],
-                    cover=r.get("cover") or d.get("cover", ""),
-                    episode_cnt=d.get("episode_cnt") or r["episode_cnt"] or len(eps),
+                    series_id=sid,
+                    title=a.get("title") or d.get("title") or r["title"],
+                    cover=a.get("cover") or r.get("cover") or d.get("cover", ""),
+                    episode_cnt=(
+                        a.get("episode_cnt") or d.get("episode_cnt")
+                        or r["episode_cnt"] or len(eps)
+                    ),
                     collect_time=r["collect_time"],
                     book_type=r.get("book_type", 0),
                     content_type=r.get("content_type", 0),
                     episodes=eps,
+                    is_album=bool(a),
                 )
             )
         return items
+
+    def list_album_episodes(
+        self,
+        album_id: str,
+        book_type: int = 3,
+    ) -> list[EpisodeItem]:
+        """取一个合集的分集列表（带标题与时长）。
+
+        ★ 对 ``book_type=3`` 的教学合集，这是唯一能拿到分集的接口。
+        ★ 每集还要再查一次 ``video_detail`` 才拿得到 ``vid``。
+        """
+        raw = detail_api.signed_post(
+            self.session,
+            self.device_identity(),
+            detail_api.PATH_ALBUM,
+            {"album_id": album_id, "book_type": book_type},
+            self.cookie_dict(),
+            quiet=True,
+        )
+        if not raw:
+            return []
+        from .api import album as album_api
+
+        ad = album_api.parse_album(raw)
+        return [
+            EpisodeItem(
+                vid=ep.series_id,
+                index=n,
+                title=ep.title,
+                duration=ep.duration,
+                series_id=album_id,
+                series_title=ad.title,
+            )
+            for n, ep in enumerate(ad.episodes, 1)
+        ]
 
     def list_episodes(self, series_id: str, max_count: int = 0) -> list[EpisodeItem]:
         """取一部剧的分集列表。"""
