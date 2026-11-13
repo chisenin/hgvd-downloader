@@ -1,0 +1,13 @@
+# 依赖
+requests>=2.31
+
+# Argus 签名用标准 AES-128-CBC。装任一即可；
+# 都没有时会退到 hgvd/sign/aes_cbc.py 里的纯 Python 实现（慢但正确）。
+cryptography>=41.0
+# pycryptodome>=3.19
+
+# 说明：
+# - 不需要 PySide6 / PyQt（GUI 用标准库 Tkinter）
+# - 不需要 .NET / Go
+# - 不需要模拟器
+# - ffmpeg / ffprobe 需在 PATH（用于成品时长校验与加密流解密）

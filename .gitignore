@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 测试产物
+.testhome/
+
+# 登录态与凭据（★ 绝不入库）
+.qr_token
+.qr_cookies.json
+.login_state.json
+*.mp4.part
+*.mp4.dec
+
+# 二维码（每次登录生成）
+hongguo_qrcode.png
+
+# 调研材料：第三方项目的源码片段，仅供对照，不在运行时链路。
+# 如需保留请单独提交并注明出处与许可。
+_ref/
+
+# 成品
+*.mp4
+!docs/**/*.mp4
+
+# IDE
+.vscode/
+.idea/
