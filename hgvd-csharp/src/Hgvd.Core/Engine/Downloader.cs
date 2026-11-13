@@ -1,0 +1,196 @@
+using System.Collections.Generic;
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Hgvd.Core.Engine;
+
+/// <summary>下载请求。</summary>
+public sealed class DownloadRequest
+{
+    public string Url = "";
+    public string OutPath = "";
+    public double ExpectDuration;
+    public Dictionary<string, string> Headers = new();
+    public string Cookie = "";
+    /// <summary>CENC 内容密钥（hex）。非空则下载后用 ffmpeg 解密。</summary>
+    public string ContentKey = "";
+}
+
+/// <summary>下载结果。</summary>
+public sealed class DownloadResult
+{
+    public bool Ok;
+    public string OutPath = "";
+    public long Size;
+    public double Duration;
+    public string Error = "";
+    public bool Skipped;
+}
+
+/// <summary>进度回调。</summary>
+public sealed class DownloadCallbacks
+{
+    public Action<string> OnPhase;
+    public Action<long, long, double> OnProgress;
+}
+
+/// <summary>下载引擎。</summary>
+public static class Downloader
+{
+    /// <summary>下载一集（支持断点续传、进度回调、ffprobe 校验、CENC 解密）。</summary>
+    public static async Task<DownloadResult> DownloadAsync(
+        DownloadRequest req, DownloadCallbacks cb = null,
+        CancellationToken ct = default)
+    {
+        cb ??= new DownloadCallbacks();
+        var outFull = Path.GetFullPath(req.OutPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        string part = outFull + ".part";
+
+        cb.OnPhase?.Invoke("下载");
+
+        long total = 0;
+        long have = 0;
+        try
+        {
+            using var httpReq = new HttpRequestMessage(HttpMethod.Get, req.Url);
+            foreach (var kv in req.Headers)
+                httpReq.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            if (!string.IsNullOrEmpty(req.Cookie))
+                httpReq.Headers.TryAddWithoutValidation("Cookie", req.Cookie);
+
+            // ★ 断点续传
+            if (File.Exists(part))
+            {
+                have = new FileInfo(part).Length;
+                httpReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
+            }
+
+            using var resp = await Net.Client.SendAsync(httpReq, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                // 本地已有完整文件
+                have = new FileInfo(part).Length;
+                resp.Dispose();
+                File.Move(part, outFull, true);
+            }
+            else
+            {
+                resp.EnsureSuccessStatusCode();
+                total = resp.Content.Headers.ContentLength ?? 0;
+                if (total > 0 && have > 0) total += have;
+
+                await using var fs = new FileStream(part, FileMode.Append, FileAccess.Write);
+                await using var src = await resp.Content.ReadAsStreamAsync(ct);
+                var buf = new byte[262144];
+                var sw = Stopwatch.StartNew();
+                long done = have;
+                int n;
+                while ((n = await src.ReadAsync(buf, ct)) > 0)
+                {
+                    await fs.WriteAsync(buf.AsMemory(0, n), ct);
+                    done += n;
+                    double speed = sw.Elapsed.TotalSeconds > 0 ? done / sw.Elapsed.TotalSeconds : 0;
+                    cb.OnProgress?.Invoke(done, total, speed);
+                }
+                await fs.FlushAsync(ct);
+            }
+        }
+        catch (Exception e)
+        {
+            return new DownloadResult { Ok = false, OutPath = outFull, Error = $"下载失败：{e.Message}" };
+        }
+
+        long size = new FileInfo(part).Length;
+
+        // ★ 原子改名
+        try
+        {
+            if (File.Exists(outFull)) File.Delete(outFull);
+            File.Move(part, outFull);
+        }
+        catch (Exception e)
+        {
+            return new DownloadResult { Ok = false, OutPath = outFull, Error = $"落盘失败：{e.Message}" };
+        }
+
+        // ★ CENC 解密
+        if (!string.IsNullOrEmpty(req.ContentKey))
+        {
+            cb.OnPhase?.Invoke("解密");
+            string dec = outFull + ".dec.mp4";
+            if (!await DecryptAsync(outFull, dec, req.ContentKey, ct))
+            {
+                try { if (File.Exists(dec)) File.Delete(dec); } catch { }
+                return new DownloadResult
+                {
+                    Ok = false, OutPath = outFull, Size = size,
+                    Error = "解密失败（ffmpeg 调用出错）",
+                };
+            }
+            try
+            {
+                if (File.Exists(outFull)) File.Delete(outFull);
+                File.Move(dec, outFull, true);
+            }
+            catch { }
+            size = new FileInfo(outFull).Length;
+        }
+
+        // ★ 时长校验
+        cb.OnPhase?.Invoke("校验");
+        double dur = Util.ProbeDuration(outFull);
+        if (dur <= 0)
+            return new DownloadResult
+            {
+                Ok = false, OutPath = outFull, Size = size,
+                Error = "成品无法解析（可能损坏）",
+            };
+        if (req.ExpectDuration > 0)
+        {
+            double tol = Math.Max(3.0, req.ExpectDuration * 0.02);
+            if (Math.Abs(dur - req.ExpectDuration) > tol)
+                return new DownloadResult
+                {
+                    Ok = false, OutPath = outFull, Size = size, Duration = dur,
+                    Error = $"时长不符（标称 {req.ExpectDuration:0.0}s，实测 {dur:0.0}s）",
+                };
+        }
+
+        return new DownloadResult
+        {
+            Ok = true, OutPath = outFull, Size = size, Duration = dur,
+        };
+    }
+
+    /// <summary>用 ffmpeg 解密 CENC 流。</summary>
+    public static async Task<bool> DecryptAsync(
+        string src, string dst, string keyHex, CancellationToken ct = default)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("ffmpeg")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (string a in new[]
+            {
+                "-y", "-v", "error",
+                "-decryption_key", keyHex,
+                "-i", src, "-c", "copy", "-movflags", "+faststart", dst,
+            }) psi.ArgumentList.Add(a);
+
+            using var proc = Process.Start(psi)!;
+            await proc.WaitForExitAsync(ct);
+            return proc.ExitCode == 0 && File.Exists(dst) && new FileInfo(dst).Length > 0;
+        }
+        catch { return false; }
+    }
+}

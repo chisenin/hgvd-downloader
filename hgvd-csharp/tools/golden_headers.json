@@ -1,0 +1,21 @@
+{
+ "query": "iid=4351246100332768&device_id=4351246100902096&ac=wifi&aid=8662&app_name=novelread&version_name=7.3.9.32&ts=1700000000&_rticket=1700000000000",
+ "headers": {
+  "Accept": "application/json; charset=utf-8,application/x-protobuf",
+  "x-xs-from-web": "0",
+  "x-ss-req-ticket": "1700000000000",
+  "x-tt-request-tag": "t=0;n=0",
+  "sdk-version": "2",
+  "passport-sdk-version": "50561",
+  "x-vc-bdturing-sdk-version": "3.7.2.cn",
+  "x-khronos": "1700000000",
+  "x-ladon": "APFTZQ==",
+  "x-argus": "APFTZQ==",
+  "x-gorgon": "84043412400114a0e50a6bc0e7191364e71df6105a46126993c2",
+  "x-helios": "eFYAABUk423nzLi+XvaYyOcWvfk3JhM9eZjkt2Fq5pS1/+rM",
+  "x-medusa": "A/FTZfcZDJ/XJo9e1tubFVc+Mn3w3gAB3zUENzIZAbeKGCEIig8uS8da+qNLUjCGtMtZU60HhSyUdmK0AF7hSFubMj1B6jR7ZRLOqvuz+OT1Y6xOvFdlUKPciq7yw+a77oomQz2+WI5WMM6NfPVcZ3M5wfQ+Fiz8058G6cXQCL+15uipM/74AIDMDl4RORjQ2uI9xazIECxlJDlhjgDaPqDGGD2H+AxwdqayYPQBi1IFYw89SkUKkN8BTC1od0IKiDqlWKB4OuiXnoz2rUClry8MNzDJ/ddP5NpB8qiE2OZOJvrd+iJLRg3NULut4pzI/4PbwCnQWRLoi74PCvRYDkBNw+4icZKnen3cGiNlGEVJD41/kGH9ELtNt9RDiOkpQJJRyoQxn5EQixd6otofY9TBZd9zEauMITDIZZ9QHqXZcjvPO0TPe86jeLY3+qoxnI/YiSPjr4cksWMKzJ/1wcTafhy0s3Adr8sNCui+UFwdoWc4DzD4jbGzLpQt3oRqxRJNObuQ/tBe2bNMpB604pOR47b5m0mLN1z1cnO8ZcR9pbdwvc+6Cn8WSc204dqiO/yeeC+yROAoBmMVHV2NQXCmxeGJjUwku6M7uOnX1nCsKZKgqc1LP33ImdZSqw4VWA2o3eRklpH858/ZGiAKxtg1SUeQYnqLKnXVa0WYkEoqLgtcjPuq9uGUm67YRVOi6XXN8S/GeRIcX4OT967x3j/FKLcvZM/Ted8FmazNxG1u+EkyTxQfRNXfAFiNis6hwQ3+ZHfm2a9TlSZSpgrnggyyYD0jEpocQ++roraUebtir8wZM057S2yvz41PnAI0PZE8i5eHenI4BTLp1G4eb2ofokVUcX4QN8tVHA7/OB+/McgFOHFH6TPiK6akMViw62Lj4fK6R9Je+tKYIAAuGfcLyuJt2KMF6EnAYs1YlgFEMuWBb5fLn3QQDNrHJp1cgMqvsg+YYzav9Up832tFdldqFgBtbSbSfaMZxHHc//of3P/7X7ya",
+  "x-tt-dt": "",
+  "Content-Type": "application/json; charset=UTF-8",
+  "x-ss-stub": "BEA616B09FDC717803E032DFA65BD0EC"
+ }
+}
