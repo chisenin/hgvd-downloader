@@ -1,14 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>Hgvd.Tests</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hgvd.Core\Hgvd.Core.csproj" />
+    <!-- ★ 界面层（EpisodeRow）的回归测试需要引用 GUI 工程 -->
+    <ProjectReference Include="..\Hgvd.Gui\Hgvd.Gui.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- 黄金向量随测试一起复制到输出目录 -->

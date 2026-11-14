@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -38,6 +38,7 @@ public static class Shot
 
         int clickX = -1, clickY = -1;
         bool usePost = false;
+        int dragX1 = -1, dragY1 = -1, dragX2 = -1, dragY2 = -1;
         for (int i = 2; i < args.Length - 2; i++)
         {
             if (args[i] == "--click" || args[i] == "--pclick")
@@ -45,6 +46,13 @@ public static class Shot
                 if (args[i] == "--pclick") usePost = true;
                 int.TryParse(args[i + 1], out clickX);
                 int.TryParse(args[i + 2], out clickY);
+            }
+            if (args[i] == "--drag" && i + 4 < args.Length)
+            {
+                int.TryParse(args[i + 1], out dragX1);
+                int.TryParse(args[i + 2], out dragY1);
+                int.TryParse(args[i + 3], out dragX2);
+                int.TryParse(args[i + 4], out dragY2);
             }
         }
 
@@ -99,6 +107,31 @@ public static class Shot
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
             }
             System.Threading.Thread.Sleep(250);
+        }
+
+        if (dragX1 >= 0)
+        {
+            // ★ 真实拖动：按下 → 分步移动 → 松开。
+            //   必须用真实鼠标事件（不是 PostMessage），才能验证
+            //   「鼠标滑出控件后还能继续拖」这种行为。
+            int sx1 = r.Left + dragX1, sy1 = r.Top + dragY1;
+            int sx2 = r.Left + dragX2, sy2 = r.Top + dragY2;
+            Console.WriteLine($"拖动 ({dragX1},{dragY1}) → ({dragX2},{dragY2})");
+            SetCursorPos(sx1, sy1);
+            System.Threading.Thread.Sleep(250);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
+            System.Threading.Thread.Sleep(200);
+            for (int k = 1; k <= 12; k++)
+            {
+                SetCursorPos(sx1 + (sx2 - sx1) * k / 12, sy1 + (sy2 - sy1) * k / 12);
+                System.Threading.Thread.Sleep(40);
+            }
+            System.Threading.Thread.Sleep(200);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+            System.Threading.Thread.Sleep(600);
+            GetWindowRect(h, out var rd);
+            Console.WriteLine($"拖后窗口位置 {rd.Left},{rd.Top}（原 {r.Left},{r.Top}）"
+                + (rd.Left != r.Left || rd.Top != r.Top ? "  -> 窗口已移动 OK" : "  -> 窗口没动 FAIL"));
         }
 
         if (!GetWindowRect(h, out var r2)) { Console.WriteLine("取窗口位置失败"); return 1; }

@@ -534,7 +534,13 @@ public sealed class HongguoService
         {
             (url, size, key, codec, failure, backupUrl) =
                 await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
-            if (!string.IsNullOrEmpty(url)) { ep.VideoIdType = t; break; }
+            if (!string.IsNullOrEmpty(url))
+            {
+                ep.VideoIdType = t;
+                // ★ 已知总大小 → 通知界面（下载前就能显示「≈ 29.1 MB」）
+                if (size > 0) cb?.OnResolvedSize?.Invoke(size);
+                break;
+            }
             // ★ 已被限流熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
             if (PlaybackBlocked) break;
         }

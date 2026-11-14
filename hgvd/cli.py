@@ -231,8 +231,9 @@ def cmd_download(args) -> int:
     svc = _svc()
     cfg = svc.cfg
     if args.out:
+        # ★ --out 只对**本次运行**生效，不写进配置文件。
+        #   否则命令行的一次性测试会悄悄改掉 GUI 里设置的下载目录。
         cfg.out_dir = args.out
-        cfg.save()
     if args.quality:
         cfg.quality = args.quality
 

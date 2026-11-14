@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -42,6 +42,12 @@ public sealed class DownloadCallbacks
 {
     public Action<string> OnPhase;
     public Action<long, long, double> OnProgress;
+    /// <summary>
+    /// 播放地址解析成功、**已知总大小**时回调一次。
+    /// ★ 用途：下载开始前就能在列表里显示「≈ 29.1 MB」，
+    ///   不用等下完才知道多大。
+    /// </summary>
+    public Action<long> OnResolvedSize;
 }
 
 /// <summary>下载引擎。</summary>
