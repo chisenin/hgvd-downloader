@@ -29,3 +29,9 @@ _ref/
 # IDE
 .vscode/
 .idea/
+
+# 探针临时产物（抓包/矩阵扫描）
+probe_*.json
+*-selftest.log
+*-crash.log
+*-uef.log

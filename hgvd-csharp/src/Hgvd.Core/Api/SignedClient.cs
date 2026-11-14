@@ -85,6 +85,30 @@ public sealed class SignedClient
     public const string Host = "api5-normal-sinfonlinea.fqnovel.com";
 
     /// <summary>
+    /// ★★★ 播放接口（<c>/novel/player/video_model/v1/</c>）的**网关列表**。
+    ///
+    /// ★★ 2026-11-14 实测：<c>api5-normal-*.fqnovel.com</c> 这组网关会把
+    ///   <c>video_model</c> 请求**静默丢弃**（HTTP 200 + 零字节 body），
+    ///   而**同一份签名**打到 <c>reading.snssdk.com</c> 正常返回
+    ///   （code=0 + 各清晰度直链）。
+    ///
+    /// ★ 鉴别证据（证明不是签名错 / 不是账号 / 不是内容）：
+    ///   · 同一时刻同一签名换 host ⇒ fqnovel 空 body、snssdk code=0
+    ///   · 连**不存在的 vid** 在 fqnovel 上也空 body ⇒ 请求在业务逻辑前被丢弃
+    ///   · 同一 host 的 <c>video_detail</c> 返回 JSON code=100001
+    ///     ⇒ 签名被接受（否则也是空 body）
+    ///   · 两个网关返回的 video_model 结构逐字段一致
+    ///
+    /// ⇒ 网关侧策略问题，不是客户端实现问题。
+    ///   修法：按顺序试多个网关，遇到**空 body 立刻换下一个**（不等退避）。
+    /// </summary>
+    public static readonly string[] PlaybackHosts =
+    {
+        "reading.snssdk.com",
+        "api5-normal-sinfonlinea.fqnovel.com",
+    };
+
+    /// <summary>
     /// ★ 实际使用的网关地址。可用环境变量 <c>HGVD_HOST</c> 覆盖
     /// （诊断用：指向本地抓包代理，拿到 C# 真实发出的请求字节，
     ///   与 Python 版逐字节对比）。
@@ -158,85 +182,104 @@ public sealed class SignedClient
     {
         byte[] raw = Encoding.UTF8.GetBytes(jsonBody);
         string last = "未知";
+        bool paramError = false;
+
+        // ★ 播放接口：多网关故障转移（见 PlaybackHosts 的说明）。
+        //   非播放接口仍走单一网关（收藏夹/合集那些端点在 fqnovel 上一直正常）。
+        var hosts = playback ? PlaybackBaseUrls() : new[] { BaseUrl };
 
         for (int attempt = 0; attempt < retries; attempt++)
         {
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var (query, headers) = playback
-                ? Signer.SignPlayback(path, DevicePairs(), now, _ident.DeviceId,
-                    _ident.VersionName, raw, installId: _ident.Iid, aid: "8662")
-                : Signer.SignRequest(path, DevicePairs(), now, _ident.DeviceId,
-                    _ident.VersionName, raw);
-
-            try
+            foreach (string baseUrl in hosts)
             {
-                using var req = new HttpRequestMessage(
-                    HttpMethod.Post, $"{BaseUrl}{path}?{query}")
-                {
-                    Content = new ByteArrayContent(raw),
-                };
-                req.Content.Headers.ContentType =
-                    new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
-                    { CharSet = "UTF-8" };
-                // ★★ 不要在这里手动加 x-xs-from-web 等签名头 ——
-                //   TryAddWithoutValidation 对已存在的 key 会**追加**第二个值，
-                //   变成 "0, 0"，服务端就报
-                //   「IsFromWeb: invalid request value, expected bool, actual value: 0, 0」。
-                //   这些头统一由下面的 headers 循环提供。
-                req.Headers.TryAddWithoutValidation("X-SS-DP", "8662");
-                if (!string.IsNullOrEmpty(_cookie))
-                    req.Headers.TryAddWithoutValidation("Cookie", _cookie);
-                foreach (var kv in headers)
-                    req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var (query, headers) = playback
+                    ? Signer.SignPlayback(path, DevicePairs(), now, _ident.DeviceId,
+                        _ident.VersionName, raw, installId: _ident.Iid, aid: "8662")
+                    : Signer.SignRequest(path, DevicePairs(), now, _ident.DeviceId,
+                        _ident.VersionName, raw);
 
-                using var resp = await Net.Client.SendAsync(req, ct);
-                string text = await resp.Content.ReadAsStringAsync(ct);
-                if (string.IsNullOrWhiteSpace(text))
+                try
                 {
-                    last = $"空 body (HTTP {(int)resp.StatusCode})";
-                    await Task.Delay(TimeSpan.FromSeconds(
-                        Math.Min(basePause * (attempt + 1), maxPause)), ct);
-                    continue;
+                    using var req = new HttpRequestMessage(
+                        HttpMethod.Post, $"{baseUrl}{path}?{query}")
+                    {
+                        Content = new ByteArrayContent(raw),
+                    };
+                    req.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+                        { CharSet = "UTF-8" };
+                    // ★★ 不要在这里手动加 x-xs-from-web 等签名头 ——
+                    //   TryAddWithoutValidation 对已存在的 key 会**追加**第二个值，
+                    //   变成 "0, 0"，服务端就报
+                    //   「IsFromWeb: invalid request value, expected bool, actual value: 0, 0」。
+                    //   这些头统一由下面的 headers 循环提供。
+                    req.Headers.TryAddWithoutValidation("X-SS-DP", "8662");
+                    if (!string.IsNullOrEmpty(_cookie))
+                        req.Headers.TryAddWithoutValidation("Cookie", _cookie);
+                    foreach (var kv in headers)
+                        req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+
+                    using var resp = await Net.Client.SendAsync(req, ct);
+                    string text = await resp.Content.ReadAsStringAsync(ct);
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        last = $"空 body (HTTP {(int)resp.StatusCode}) @ {baseUrl}";
+                        // ★★ 空 body = 这个网关把请求丢了 ——
+                        //   立刻换下一个网关（不退避），全挂了才退避重试。
+                        continue;
+                    }
+                    var doc = JsonDocument.Parse(text);
+                    int code = J.Int(doc.RootElement, "code");
+                    if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
+                    {
+                        var dbg = doc.RootElement.ToString();
+                        if (dbg.Length > 600) dbg = dbg[..600] + "…";
+                        Console.WriteLine($"[dbg] {path} → {dbg}");
+                    }
+                    if (code == 0) return doc;
+                    last = $"code={code} {J.Str(doc.RootElement, "message")}";
+                    // 100001 = 参数错，重试没用
+                    if (code == 100001) { paramError = true; break; }
+                    // ★★ 播放接口：拿到 **JSON**（哪怕 code != 0）说明签名是通的 ——
+                    //   空 body 才是「被服务端丢弃/限流」的信号。
+                    //   code=101000 多半是 **video_id_type 用错了**（教学类内容要用 1），
+                    //   这时重试 5 次纯属浪费（3.2+6.4+9.6+12+12 ≈ 43 秒），
+                    //   而且会把请求密度推高、反而更容易触发限流。
+                    //   ⇒ 直接把 doc 交回调用方，由它换另一种 video_id_type 再试。
+                    if (playback)
+                    {
+                        throw new ApiException(path, ApiFailure.ErrorCode, code,
+                            J.Str(doc.RootElement, "message"));
+                    }
+                    // ★ 服务端对 video_model 的限流是「全局节奏」——
+                    //   实测约每 3 秒才放行一次，同一 id 连续请求时
+                    //   前 3 次空 body、第 4 次才成功。
+                    //   所以这里固定 3.2s 起步，不要太短。
+                    break;
                 }
-                var doc = JsonDocument.Parse(text);
-                int code = J.Int(doc.RootElement, "code");
-                if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
+                catch (ApiException) { throw; }
+                catch (Exception e)
                 {
-                    var dbg = doc.RootElement.ToString();
-                    if (dbg.Length > 600) dbg = dbg[..600] + "…";
-                    Console.WriteLine($"[dbg] {path} → {dbg}");
+                    last = $"{e.Message} @ {baseUrl}";
+                    break;
                 }
-                if (code == 0) return doc;
-                last = $"code={code} {J.Str(doc.RootElement, "message")}";
-                // 100001 = 参数错，重试没用
-                if (code == 100001) break;
-                // ★★ 播放接口：拿到 **JSON**（哪怕 code != 0）说明签名是通的 ——
-                //   空 body 才是「被服务端丢弃/限流」的信号。
-                //   code=101000 多半是 **video_id_type 用错了**（教学类内容要用 1），
-                //   这时重试 5 次纯属浪费（3.2+6.4+9.6+12+12 ≈ 43 秒），
-                //   而且会把请求密度推高、反而更容易触发限流。
-                //   ⇒ 直接把 doc 交回调用方，由它换另一种 video_id_type 再试。
-                if (playback)
-                {
-                    throw new ApiException(path, ApiFailure.ErrorCode, code,
-                        J.Str(doc.RootElement, "message"));
-                }
-                // ★ 服务端对 video_model 的限流是「全局节奏」——
-                //   实测约每 3 秒才放行一次，同一 id 连续请求时
-                //   前 3 次空 body、第 4 次才成功。
-                //   所以这里固定 3.2s 起步，不要太短。
-                await Task.Delay(TimeSpan.FromSeconds(
-                    Math.Min(basePause * (attempt + 1), maxPause)), ct);
             }
-            catch (ApiException) { throw; }
-            catch (Exception e)
-            {
-                last = e.Message;
-                await Task.Delay(TimeSpan.FromSeconds(
-                    Math.Min(basePause * (attempt + 1), maxPause)), ct);
-            }
+            if (paramError) break;
+            await Task.Delay(TimeSpan.FromSeconds(
+                Math.Min(basePause * (attempt + 1), maxPause)), ct);
         }
         throw new ApiException(path, ApiFailure.EmptyBody, 0, last);
+    }
+
+    /// <summary>播放接口要试的网关地址（含 scheme）。</summary>
+    private static string[] PlaybackBaseUrls()
+    {
+        // ★ 诊断模式（HGVD_HOST 指向本地抓包代理）下**不要** failover ——
+        //   否则抓到的就不是「客户端真实发出的那一枪」了。
+        string v = Environment.GetEnvironmentVariable("HGVD_HOST");
+        if (!string.IsNullOrWhiteSpace(v)) return new[] { v.TrimEnd('/') };
+        return PlaybackHosts.Select(h => "https://" + h).ToArray();
     }
 
     // ---------------------------------------------------------------- 合集

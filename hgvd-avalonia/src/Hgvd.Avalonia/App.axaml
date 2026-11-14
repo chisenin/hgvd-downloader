@@ -1,0 +1,251 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctl="using:Hgvd.Avalonia.Controls"
+             xmlns:presenters="using:Avalonia.Controls.Presenters"
+             x:Class="Hgvd.Avalonia.App"
+             RequestedThemeVariant="Light">
+
+  <!-- ══════════════ 配色（沿用 WPF 版：红果的暖橙色调） ══════════════ -->
+  <Application.Resources>
+    <SolidColorBrush x:Key="AppBgBrush" Color="#F4F6FA" />
+    <SolidColorBrush x:Key="TextDarkBrush" Color="#2B3445" />
+    <SolidColorBrush x:Key="MutedBrush" Color="#8494A8" />
+    <SolidColorBrush x:Key="SectionTitleBrush" Color="#2F3D52" />
+    <SolidColorBrush x:Key="CardBorderBrush" Color="#E0E5EE" />
+    <SolidColorBrush x:Key="HeaderBgBrush" Color="#EEF2F8" />
+    <SolidColorBrush x:Key="HeaderTextBrush" Color="#4A5A72" />
+    <SolidColorBrush x:Key="AltRowBrush" Color="#FAFBFD" />
+    <SolidColorBrush x:Key="SelectRowBrush" Color="#FDF0EB" />
+    <SolidColorBrush x:Key="LogBgBrush" Color="#1F2733" />
+    <SolidColorBrush x:Key="LogFgBrush" Color="#C9D6E5" />
+    <SolidColorBrush x:Key="PrimaryBrush" Color="#C75B39" />
+    <SolidColorBrush x:Key="BrandSubBrush" Color="#F7DCD2" />
+    <SolidColorBrush x:Key="StatusBgBrush" Color="#E8EDF5" />
+    <SolidColorBrush x:Key="HintBrush" Color="#A8B2C1" />
+
+    <SolidColorBrush x:Key="BannerInfoBg" Color="#FFF8E6" />
+    <SolidColorBrush x:Key="BannerInfoBd" Color="#F0DFAE" />
+    <SolidColorBrush x:Key="BannerInfoFg" Color="#8A6D1A" />
+    <SolidColorBrush x:Key="BannerOkBg" Color="#EAF7EE" />
+    <SolidColorBrush x:Key="BannerOkBd" Color="#B8E0C4" />
+    <SolidColorBrush x:Key="BannerOkFg" Color="#1F7A3D" />
+    <SolidColorBrush x:Key="BannerErrBg" Color="#FDEEEE" />
+    <SolidColorBrush x:Key="BannerErrBd" Color="#F0C2C2" />
+    <SolidColorBrush x:Key="BannerErrFg" Color="#B03030" />
+
+    <!-- ★ 进度条填充的渐变（浅→深，数字压在中间也能看清） -->
+    <LinearGradientBrush x:Key="ProgressFillBlue" StartPoint="0%,0%" EndPoint="100%,0%">
+      <GradientStop Color="#9ED9FC" Offset="0" />
+      <GradientStop Color="#4C9EEA" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ProgressFillGreen" StartPoint="0%,0%" EndPoint="100%,0%">
+      <GradientStop Color="#A8E3C4" Offset="0" />
+      <GradientStop Color="#3FAE72" Offset="1" />
+    </LinearGradientBrush>
+
+    <!-- 顶栏渐变 -->
+    <LinearGradientBrush x:Key="BrandGradient" StartPoint="0%,0%" EndPoint="100%,0%">
+      <GradientStop Color="#C75B39" Offset="0" />
+      <GradientStop Color="#A84628" Offset="1" />
+    </LinearGradientBrush>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme />
+
+    <!-- ══════════════ 卡片 ══════════════ -->
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="12" />
+    </Style>
+
+    <!-- ══════════════ 圆角按钮 ══════════════ -->
+    <!-- ★ 必须给自定义模板：Avalonia 的 Button 没有 CornerRadius 属性，
+         默认模板画出来是直角。 -->
+    <Style Selector="Button.modern">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="#33415C" />
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="#D3DAE6" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="12,6" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <ControlTemplate TargetType="Button">
+          <Border Name="PART_Root"
+                  Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="6"
+                  Padding="{TemplateBinding Padding}">
+            <presenters:ContentPresenter Content="{TemplateBinding Content}"
+                                         ContentTemplate="{TemplateBinding ContentTemplate}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="Button.modern:pointerover /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#F6EFE9" />
+      <Setter Property="BorderBrush" Value="#D8A692" />
+    </Style>
+    <Style Selector="Button.modern:pressed /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#F0E0D8" />
+    </Style>
+    <Style Selector="Button.modern:disabled /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#EEF0F4" />
+      <Setter Property="BorderBrush" Value="#E0E4EA" />
+    </Style>
+    <Style Selector="Button.modern:disabled">
+      <Setter Property="Foreground" Value="#A8B2C1" />
+      <Setter Property="Cursor" Value="Arrow" />
+    </Style>
+
+    <!-- 主按钮 -->
+    <Style Selector="Button.primary">
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Button.primary:pointerover /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#D86A45" />
+      <Setter Property="BorderBrush" Value="#D86A45" />
+    </Style>
+    <Style Selector="Button.primary:pressed /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#B04E2E" />
+      <Setter Property="BorderBrush" Value="#B04E2E" />
+    </Style>
+    <Style Selector="Button.primary:disabled /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#E2E5EA" />
+      <Setter Property="BorderBrush" Value="#E2E5EA" />
+    </Style>
+    <Style Selector="Button.primary:disabled">
+      <Setter Property="Foreground" Value="#F0F2F5" />
+    </Style>
+
+    <!-- 危险按钮 -->
+    <Style Selector="Button.danger">
+      <Setter Property="Foreground" Value="#B03030" />
+    </Style>
+
+    <!-- ══════════════ 输入框 ══════════════ -->
+    <Style Selector="TextBox.round">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="#2B3445" />
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="#D3DAE6" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="8,5" />
+      <Setter Property="MinHeight" Value="30" />
+    </Style>
+    <Style Selector="TextBox.round:focus">
+      <Setter Property="BorderBrush" Value="#C75B39" />
+    </Style>
+
+    <!-- ══════════════ 文本样式 ══════════════ -->
+    <Style Selector="TextBlock.section">
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource SectionTitleBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource HintBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <!-- ══════════════ 列表项 ══════════════ -->
+    <!-- ★ 用 Background 属性改选中/悬停底色：Avalonia 的 ListBoxItem 默认模板
+         就是 Background="{TemplateBinding Background}"，不用自己写模板。 -->
+    <Style Selector="ListBox.shelf ListBoxItem">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0,1" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="ListBox.shelf ListBoxItem:pointerover">
+      <Setter Property="Background" Value="#F6EFE9" />
+    </Style>
+    <Style Selector="ListBox.shelf ListBoxItem:selected">
+      <Setter Property="Background" Value="{DynamicResource SelectRowBrush}" />
+    </Style>
+    <Style Selector="ListBox.shelf ListBoxItem:selected:focus">
+      <Setter Property="Background" Value="{DynamicResource SelectRowBrush}" />
+    </Style>
+
+    <!-- 分集表行 -->
+    <Style Selector="ListBox.ep ListBoxItem">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="ListBox.ep ListBoxItem:pointerover">
+      <Setter Property="Background" Value="#F7F9FC" />
+    </Style>
+    <Style Selector="ListBox.ep ListBoxItem:selected">
+      <Setter Property="Background" Value="{DynamicResource SelectRowBrush}" />
+    </Style>
+
+    <!-- ══════════════ 表头 ══════════════ -->
+    <Style Selector="Border.thead">
+      <Setter Property="Background" Value="{DynamicResource HeaderBgBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource CardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="0,0,0,1" />
+    </Style>
+    <Style Selector="TextBlock.thead">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource HeaderTextBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <!-- ══════════════ 日志框 ══════════════ -->
+    <Style Selector="TextBox.log">
+      <Setter Property="Background" Value="{DynamicResource LogBgBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource LogFgBrush}" />
+      <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
+      <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="AcceptsReturn" Value="True" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Padding" Value="8,6" />
+      <!-- ★ 日志框不需要焦点框（Fluent 默认画一圈绿环） -->
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+    </Style>
+
+    <!-- ══════════════ 视图切换（单选按钮组） ══════════════ -->
+    <Style Selector="RadioButton.pill">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="#4A5A72" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <ControlTemplate TargetType="RadioButton">
+          <Border Name="PART_Root" Background="Transparent" CornerRadius="5" Padding="8,3">
+            <presenters:ContentPresenter Content="{TemplateBinding Content}"
+                                         ContentTemplate="{TemplateBinding ContentTemplate}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="RadioButton.pill:pointerover /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#F6EFE9" />
+    </Style>
+    <Style Selector="RadioButton.pill:checked /template/ Border#PART_Root">
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="RadioButton.pill:checked">
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+  </Application.Styles>
+</Application>

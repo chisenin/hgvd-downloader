@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Hgvd.Avalonia</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <!-- ★ 反射绑定：与 WPF 版行为一致，XAML 里不必到处写 x:DataType -->
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- ★ exe 名带版本号：hgvd-downloader-vX.Y.Z.exe（与 C++/WPF 版同名，方便替换） -->
+    <PkgVersion Condition="'$(PkgVersion)' == ''">1.0.0</PkgVersion>
+    <AssemblyName>hgvd-downloader-v$(PkgVersion)</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.23" Condition="'$(Configuration)' == 'Debug'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ★ 与 C++ 版 / WPF 版共用同一套核心（签名链、下载器、配置目录） -->
+    <ProjectReference Include="..\..\..\hgvd-csharp\src\Hgvd.Core\Hgvd.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,79 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Hgvd.Avalonia.Views.AboutWindow"
+        Title="关于 红果视频下载器"
+        Width="520" Height="470"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        ShowInTaskbar="False"
+        FontFamily="Microsoft YaHei UI, Microsoft YaHei, Segoe UI"
+        FontSize="13"
+        Background="{DynamicResource AppBgBrush}"
+        Foreground="{DynamicResource TextDarkBrush}">
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- 标题条 -->
+    <Border Grid.Row="0" Background="{DynamicResource BrandGradient}" Padding="22,18">
+      <StackPanel>
+        <TextBlock Text="红果视频下载器" FontSize="20" FontWeight="SemiBold"
+                   Foreground="White" />
+        <TextBlock x:Name="LblVersionLine" FontSize="12"
+                   Foreground="{DynamicResource BrandSubBrush}" Margin="0,4,0,0" />
+      </StackPanel>
+    </Border>
+
+    <!-- 正文 -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+      <StackPanel Margin="22,16,22,10">
+        <TextBlock Text="从红果 App 的收藏夹批量下载剧集，保存为通用 MP4。"
+                   TextWrapping="Wrap" FontSize="13"
+                   Foreground="{DynamicResource TextDarkBrush}" />
+
+        <TextBlock Text="怎么用" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap"
+                   LineHeight="21"
+                   Text="1. 左栏是收藏夹，勾选要下的剧；&#10;2. 点开某部剧，右栏出现分集列表；&#10;3. 点「下载」下当前视图，或点左下角「批量下载 (N)」下所有勾选的剧；&#10;4. 已下载过的会自动跳过，短剧默认跳过（字节私有 bytevc 编码，解不出画面）。" />
+
+        <TextBlock Text="关于授权" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap"
+                   LineHeight="21"
+                   Text="登录态来自本机 MuMu 模拟器里的红果 App（点「重新授权」可重读），&#10;不上传任何账号信息，全部请求都直接发往红果自己的服务器。" />
+
+        <TextBlock Text="说明" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap"
+                   LineHeight="21"
+                   Text="本工具仅供个人学习与备份收藏内容使用，请遵守红果的服务条款与著作权规定。&#10;下载得到的文件版权仍归原作者与平台所有。" />
+
+        <TextBlock Text="技术栈" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap"
+                   LineHeight="21"
+                   Text="界面为 C# / Avalonia 11（跨平台），核心与 C++ / WPF 版共用同一套签名链与数据目录。" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- 按钮 -->
+    <Border Grid.Row="2" Background="{DynamicResource StatusBgBrush}"
+            BorderBrush="#E0E5EE" BorderThickness="0,1,0,0" Padding="22,10">
+      <DockPanel>
+        <Button x:Name="BtnCopy" DockPanel.Dock="Left" Content="复制版本信息"
+                Classes="modern" Click="BtnCopy_Click" />
+        <Button Content="关闭" Width="88" HorizontalAlignment="Right"
+                Classes="primary" Click="BtnClose_Click" />
+      </DockPanel>
+    </Border>
+  </Grid>
+</Window>

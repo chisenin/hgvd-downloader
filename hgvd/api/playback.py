@@ -22,6 +22,28 @@ from ..sign.core import DeviceIdentity, sign_playback
 from ..util import j_int, j_str
 
 API_HOST = "api5-normal-sinfonlinea.fqnovel.com"
+
+# ★★★ 播放接口的**网关故障转移**（2026-11-14 17:0x 定位）
+#
+# 现象：``api5-normal-*.fqnovel.com`` 这组网关会把 ``video_model`` 请求
+#       **静默丢弃**（HTTP 200 + 零字节 body），而**同一份签名**打到
+#       ``reading.snssdk.com`` 却能正常返回（code=0 + 各清晰度直链）。
+#
+# ★ 关键鉴别实验（证明不是签名错、不是账号、不是内容）：
+#   · 同一时刻同一签名换 host ⇒ fqnovel 空 body / snssdk code=0
+#   · 连**不存在的 vid** 在 fqnovel 上也是空 body ⇒ 请求在业务逻辑之前
+#     就被丢弃，不是「内容查不到」
+#   · 同一 host 上的 ``video_detail`` 返回 JSON code=100001
+#     ⇒ **签名被接受**（否则也会空 body）
+#   · 两个网关返回的 video_model 结构**逐字段一致**（同清晰度阶梯 360~1080p）
+#
+# ⇒ 所以是**网关侧策略**，不是客户端实现问题。
+#   修法：按顺序试多个网关，遇到空 body 立刻换下一个（不等退避）。
+API_HOSTS: tuple[str, ...] = (
+    "reading.snssdk.com",
+    "api5-normal-sinfonlinea.fqnovel.com",
+)
+
 PATH_VIDEO_MODEL = "/novel/player/video_model/v1/"
 
 APP_UA = (
@@ -142,27 +164,19 @@ def device_pairs(ident: DeviceIdentity) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------- 请求
 
 
-def fetch_playback(
+def _post_playback(
     session,
     ident: DeviceIdentity,
-    video_id: str,
-    *,
-    cookies: dict | None = None,
-    definition: str = "",
-    timeout: int = 25,
-    video_id_type: int = 0,
-    retries: int = 3,
-    pause: float = 2.0,
-) -> dict:
-    """取一集的播放模型。
+    body: bytes,
+    cookies: dict | None,
+    host: str,
+    timeout: int,
+) -> tuple[dict | None, str]:
+    """向**一个**网关打一枪播放请求。
 
-    返回原始 JSON（含各清晰度地址、加密信息）。
-
-    ★ ``video_id_type``：``0`` = 传 vid（短剧），``1`` = 传 series_id（教学内容）。
-    ★ 必须用播放专用签名（``sign_playback``：真 argus/ladon、**不带 medusa**）——
-      用普通签名会被网关拦成 **HTTP 200 + 空 body**。
+    返回 ``(payload, last_error)``：拿到 JSON 就返回 ``(payload, "")``；
+    空 body / 网络错 / 非 JSON 都返回 ``(None, 原因)``。
     """
-    body = build_playback_body(video_id, definition, video_id_type=video_id_type)
     now_ms = int(time.time() * 1000)
     pairs = device_pairs(ident)
     query, headers = sign_playback(
@@ -191,24 +205,77 @@ def fetch_playback(
     if cookies:
         hdr["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
 
-    url = f"https://{API_HOST}{PATH_VIDEO_MODEL}?{query}"
+    url = f"https://{host}{PATH_VIDEO_MODEL}?{query}"
+    try:
+        r = session.post(url, data=body, headers=hdr, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        return None, f"{host}: {str(e)[:120]}"
+    if not r.content:
+        # ★ 空 body = 这个网关把请求丢了 —— 立刻换下一个网关，不退避
+        return None, f"{host}: 空 body (HTTP {r.status_code})"
+    try:
+        return r.json(), ""
+    except Exception:  # noqa: BLE001
+        return None, f"{host}: 非 JSON (HTTP {r.status_code})"
+
+
+def fetch_playback(
+    session,
+    ident: DeviceIdentity,
+    video_id: str,
+    *,
+    cookies: dict | None = None,
+    definition: str = "",
+    timeout: int = 25,
+    video_id_type: int = 0,
+    retries: int = 3,
+    pause: float = 2.0,
+    hosts: tuple[str, ...] | None = None,
+) -> dict:
+    """取一集的播放模型。
+
+    返回原始 JSON（含各清晰度地址、加密信息）。
+
+    ★ ``video_id_type``：``0`` = 传 vid（短剧），``1`` = 传 series_id（教学内容）。
+    ★ 必须用播放专用签名（``sign_playback``：真 argus/ladon、**不带 medusa**）——
+      用普通签名会被网关拦成 **HTTP 200 + 空 body**。
+
+    ★★ **网关故障转移**：``fqnovel`` 那组网关会静默丢弃 ``video_model`` 请求
+      （HTTP 200 + 空 body），``reading.snssdk.com`` 正常。
+      ⇒ 依次试 ``API_HOSTS``，遇到**空 body 立刻换下一个网关**（不等退避），
+      所有网关都空 body 才退避重试一轮。
+
+    ★★★ **video_id_type 自动回退**：拿到 JSON 且 ``code=101000`` 说明
+      **签名是通的**（否则会空 body），只是 id 类型对不上
+      （短剧用 0、教学用 1，且两个网关的语义还不完全一样：
+      snssdk 上短剧用 1 反而正常）。
+      ⇒ 这时**换另一种 type 再打一枪**。
+    """
+    host_list = tuple(hosts) if hosts else API_HOSTS
+    body = build_playback_body(video_id, definition, video_id_type=video_id_type)
     last = ""
     for attempt in range(retries):
-        try:
-            r = session.post(url, data=body, headers=hdr, timeout=timeout)
-        except Exception as e:  # noqa: BLE001
-            last = str(e)[:120]
-            time.sleep(pause * (attempt + 1))
-            continue
-        if not r.content:
-            last = f"空 body (HTTP {r.status_code})"
-            time.sleep(pause * (attempt + 1))
-            continue
-        try:
-            return r.json()
-        except Exception:  # noqa: BLE001
-            last = f"非 JSON (HTTP {r.status_code})"
-            time.sleep(pause * (attempt + 1))
+        for host in host_list:
+            payload, err = _post_playback(
+                session, ident, body, cookies, host, timeout)
+            if payload is None:
+                last = err
+                continue
+            code = payload.get("code")
+            if code == 101000 and video_id_type in (0, 1):
+                # ★ id 类型对不上 —— 换另一种再试（只试一次）
+                alt = build_playback_body(
+                    video_id, definition, video_id_type=1 - video_id_type)
+                alt_payload, alt_err = _post_playback(
+                    session, ident, alt, cookies, host, timeout)
+                if alt_payload is not None and alt_payload.get("code") in (0, None):
+                    return alt_payload
+                if alt_err:
+                    last = alt_err
+                elif alt_payload is not None:
+                    last = f"{host}: code={alt_payload.get('code')}"
+            return payload
+        time.sleep(pause * (attempt + 1))
     raise RuntimeError(f"video_model 无响应：{last}")
 
 
