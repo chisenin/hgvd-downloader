@@ -22,6 +22,13 @@ hongguo_qrcode.png
 # 如需保留请单独提交并注明出处与许可。
 _ref/
 
+# ★ 已归档、不再维护的版本（C++/Rust/C#+WPF 的完整源码与完整 git 历史）。
+#   2026-11-14 起只维护 Python（想法验证）与 C#+Avalonia（发行版），
+#   这三个版本的代码**不上传 GitHub**，只留在本地工作副本里。
+#   （GitHub 历史里也已用 filter-branch 彻底剔除，见 docs/01-已验证事实.md AF 章）
+#   完整历史备份：archive/hgvd-full-history.bundle
+archive/
+
 # 成品
 *.mp4
 !docs/**/*.mp4

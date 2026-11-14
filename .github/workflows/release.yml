@@ -1,0 +1,90 @@
+name: Release
+
+# ★ 打 vX.Y.Z 标签即发布：
+#     git tag v1.0.0 && git push origin main v1.0.0
+#   → 自动构建自包含单文件 exe → 跑离线回归 → 创建 Release 并上传 exe。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的标签（如 v1.0.0）'
+        required: true
+
+permissions:
+  contents: write          # ★ 创建 Release + 上传附件需要
+
+jobs:
+  release:
+    name: 构建并发布
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ── 1. 先跑回归：回归不过就不发版 ──
+      #    ★ 用的是**离线**回归（C# 62 项 + Python 85 项），不发网络请求。
+      #    界面自检 --uitest 需要真实登录态与收藏夹，CI 上跑不了，故不纳入。
+      - name: C# 离线回归（62 项：签名黄金向量 / 请求头 / 发行版界面 / 命名）
+        shell: pwsh
+        run: |
+          dotnet restore hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj --configfile .github/nuget.ci.config
+          dotnet build   hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug --no-restore
+          ./hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe
+
+      - name: Python 离线回归（85 项）
+        shell: pwsh
+        run: |
+          pip install -r requirements.txt
+          python -m tests.run
+
+      # ── 2. 按标签版本号发布单文件 exe ──
+      - name: 发布自包含单文件 exe
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $ver = $env:TAG -replace '^v',''
+          if (-not $ver) { throw "拿不到版本号（TAG=$env:TAG）" }
+          Write-Host ">>> 发布版本: $ver"
+          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj --configfile .github/nuget.ci.config -r win-x64
+          dotnet publish  hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o hgvd-avalonia/dist -p:PkgVersion=$ver
+          Get-ChildItem hgvd-avalonia/dist | Format-Table Name, Length
+
+      # ── 3. 核对产物：文件名 + 文件版本都要跟标签一致 ──
+      #    ★ 界面上的版本号读的是程序集版本（AboutWindow.AppVersion），
+      #      csproj 里 <Version>$(PkgVersion)</Version> 保证二者一致。
+      - name: 核对产物版本
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $ver = $env:TAG -replace '^v',''
+          $exe = "hgvd-avalonia/dist/hgvd-downloader-v$ver.exe"
+          if (-not (Test-Path $exe)) { throw "产物不对：$exe 不存在" }
+          $fv = (Get-Item $exe).VersionInfo.FileVersion
+          Write-Host ">>> 产物: $exe   FileVersion=$fv"
+          # FileVersion 形如 "1.0.1.0"，用前缀比较（别用等值）
+          if (-not $fv.StartsWith($ver)) { throw "文件版本($fv) 与标签($ver) 不一致" }
+          $len = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host ">>> 自包含单文件，大小 ${len} MB"
+
+      # ── 4. 建 Release、传附件 ──
+      - name: 创建 Release 并上传 exe
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: 红果视频下载器 ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          files: |
+            hgvd-avalonia/dist/hgvd-downloader-v*.exe

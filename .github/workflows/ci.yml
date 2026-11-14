@@ -1,0 +1,49 @@
+name: CI
+
+# ★ 每次 push / PR 都跑一遍「离线回归」——不发任何网络请求，
+#   几秒出结果，用来挡住签名链/请求头/界面回归的破坏。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regression:
+    name: 离线回归
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: C# 离线回归（62 项：签名黄金向量 / 请求头 / 发行版界面 / 命名）
+        shell: pwsh
+        run: |
+          dotnet restore hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj --configfile .github/nuget.ci.config
+          dotnet build   hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug --no-restore
+          ./hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python 离线回归（85 项）
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m tests.run
+
+      - name: 发行版能构建出单文件 exe
+        shell: pwsh
+        run: |
+          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj --configfile .github/nuget.ci.config -r win-x64
+          dotnet publish  hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o hgvd-avalonia/dist -p:PkgVersion=0.0.0-ci
+          Get-ChildItem hgvd-avalonia/dist | Format-Table Name, Length
