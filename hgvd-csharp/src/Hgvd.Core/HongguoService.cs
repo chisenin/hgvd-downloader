@@ -150,10 +150,10 @@ public sealed class HongguoService
     /// ★★ 为什么不能用 <see cref="ListShelfAsync"/>：
     ///   它最后会**串行**把前 N 个合集逐个查 album_detail（每个还要 600ms 间隔），
     ///   实测 30 个 ≈ 20~60s，界面只能对着空白干等。
-    ///   → 参考量级：
-    ///     · 收藏夹原始列表：      **0.44s**（只给 id，不给标题/集数）
-    ///     · 批量标题（20 个/批）：串行 12 批 6.4s，**并发 4 路 0.3s/4 批**
-    ///     · 单个合集 album_detail：**0.2s**
+    ///   → 参考量级（单次网络往返 ~0.2s）：
+    ///     · 收藏夹原始列表：      **~0.4s**（只给 id，不给标题/集数）
+    ///     · 批量标题（20 个/批）：串行 12 批 ~6s，**并发 4 路 ~0.3s/4 批**
+    ///     · 单个合集 album_detail：**~0.2s**
     /// ★★ 这里的做法：
     ///   1) <paramref name="onRaw"/> —— 原始列表一到就逐条回调，界面**立刻**
     ///      就能列出全部条目（~0.5s），不用等标题；
@@ -211,12 +211,12 @@ public sealed class HongguoService
     /// <summary>
     /// **回落**补标题：批量详情接口没给标题的条目，单独查 <c>album_detail</c>。
     ///
-    /// ★ 实测：批量接口**不会**给全部标题
-    ///   （全是 <c>book_type=3</c> 的合集）—— 这些在界面上就显示成一串
-    ///   <c>series_id</c> 数字。
+    /// ★ 批量接口**不会**给全部标题：缺标题的都是 <c>book_type=3</c> 的合集，
+    ///   它们在界面上会显示成一串 <c>series_id</c> 数字。
     ///   → 用 <c>album_detail</c> 单独查，约 **0.2s/条**，绝大多数能拿到标题
     ///   （极少数是真的已下架，服务端什么都不返回）。
-    /// ★ 这个方法是**后台跑**的（不等它），因为它只影响少数几行，不该拖慢整个列表。
+    /// ★ 这个方法是**后台跑**的（不等它），因为它只影响少数几行，
+    ///   不该拖慢整个列表。
     /// </summary>
     public async Task FillMissingTitlesAsync(List<ShelfItem> items,
         ShelfDetailHandler onDetail, CancellationToken ct = default)

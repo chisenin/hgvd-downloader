@@ -1,7 +1,7 @@
 """Android SDK 镜像代理：把 dl.google.com / dl-ssl.google.com 重定向到腾讯云镜像。
 
-★ 背景：某些网络环境下 `dl.google.com` 直连不通，走常规代理也可能不通
-  —— 代理只对国内源有效。而 sdkmanager 的仓库地址**硬编码在 jar 里**，无法通过
+★ 背景：某些网络环境下 `dl.google.com` 直连不通，走常规代理也可能不通 ——
+  代理只对国内源有效。而 sdkmanager 的仓库地址**硬编码在 jar 里**，无法通过
   配置文件改。所以用一个本地 HTTP 代理做 URL 重写。
 
 用法：
