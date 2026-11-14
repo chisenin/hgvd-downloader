@@ -44,6 +44,27 @@ API_HOSTS: tuple[str, ...] = (
     "api5-normal-sinfonlinea.fqnovel.com",
 )
 
+
+def playback_hosts() -> tuple[str, ...]:
+    """本次要试的播放网关（按顺序）。
+
+    ★ 可用环境变量 ``HGVD_PLAYBACK_HOST`` 覆盖（逗号分隔），例如::
+
+        HGVD_PLAYBACK_HOST=api5-normal-sinfonlinea.fqnovel.com,reading.snssdk.com
+
+    —— 故意把「会丢请求的网关」放第一位，**用来验证故障转移分支**：
+    第一个网关空 body 时应当立刻换第二个并成功。
+    """
+    import os
+
+    raw = (os.environ.get("HGVD_PLAYBACK_HOST") or "").strip()
+    if raw:
+        hosts = tuple(h.strip() for h in raw.split(",") if h.strip())
+        if hosts:
+            return hosts
+    return API_HOSTS
+
+
 PATH_VIDEO_MODEL = "/novel/player/video_model/v1/"
 
 APP_UA = (
@@ -251,7 +272,7 @@ def fetch_playback(
       snssdk 上短剧用 1 反而正常）。
       ⇒ 这时**换另一种 type 再打一枪**。
     """
-    host_list = tuple(hosts) if hosts else API_HOSTS
+    host_list = tuple(hosts) if hosts else playback_hosts()
     body = build_playback_body(video_id, definition, video_id_type=video_id_type)
     last = ""
     for attempt in range(retries):

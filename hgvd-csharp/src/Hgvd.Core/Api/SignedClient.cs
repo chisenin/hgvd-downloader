@@ -279,6 +279,17 @@ public sealed class SignedClient
         //   否则抓到的就不是「客户端真实发出的那一枪」了。
         string v = Environment.GetEnvironmentVariable("HGVD_HOST");
         if (!string.IsNullOrWhiteSpace(v)) return new[] { v.TrimEnd('/') };
+
+        // ★ 可用 HGVD_PLAYBACK_HOST 覆盖网关顺序（逗号分隔）——
+        //   故意把「会丢请求的网关」放第一位，用来验证故障转移分支。
+        string order = Environment.GetEnvironmentVariable("HGVD_PLAYBACK_HOST");
+        if (!string.IsNullOrWhiteSpace(order))
+        {
+            var list = order.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => "https://" + x.Trim().TrimEnd('/'))
+                .ToArray();
+            if (list.Length > 0) return list;
+        }
         return PlaybackHosts.Select(h => "https://" + h).ToArray();
     }
 
