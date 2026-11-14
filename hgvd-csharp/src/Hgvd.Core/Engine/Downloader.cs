@@ -18,6 +18,12 @@ public sealed class DownloadRequest
     public string Cookie = "";
     /// <summary>CENC 内容密钥（hex）。非空则下载后用 ffmpeg 解密。</summary>
     public string ContentKey = "";
+    /// <summary>
+    /// 备用直链（同一清晰度的 backup_url）。
+    /// ★ 实测（2026-11-14）：主 CDN 主机偶尔直接连不上
+    ///   （「由于连接方在一段时间后没有正确答复…」），换 backup_url 就好了。
+    /// </summary>
+    public string BackupUrl = "";
 }
 
 /// <summary>下载结果。</summary>
@@ -70,12 +76,35 @@ public static class Downloader
                 httpReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
             }
 
-            using var resp = await Net.Client.SendAsync(httpReq, ct);
+            HttpResponseMessage? resp = null;
+            try
+            {
+                resp = await Net.Client.SendAsync(httpReq, ct);
+            }
+            catch (Exception ex)
+            {
+                // ★ 主 CDN 主机连不上 → 换备用直链再试一次
+                //   （实测 2026-11-14：某集的 main_url 主机超时，backup_url 正常）
+                if (string.IsNullOrEmpty(req.BackupUrl) || req.BackupUrl == req.Url)
+                    throw;
+                using var alt = new HttpRequestMessage(HttpMethod.Get, req.BackupUrl);
+                foreach (var kv in req.Headers)
+                    alt.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+                if (!string.IsNullOrEmpty(req.Cookie))
+                    alt.Headers.TryAddWithoutValidation("Cookie", req.Cookie);
+                if (File.Exists(part))
+                {
+                    have = new FileInfo(part).Length;
+                    alt.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
+                }
+                resp = await Net.Client.SendAsync(alt, ct);
+            }
+            using (resp)
+            {
             if (resp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
             {
                 // 本地已有完整文件
                 have = new FileInfo(part).Length;
-                resp.Dispose();
                 File.Move(part, outFull, true);
             }
             else
@@ -98,6 +127,7 @@ public static class Downloader
                     cb.OnProgress?.Invoke(done, total, speed);
                 }
                 await fs.FlushAsync(ct);
+            }
             }
         }
         catch (Exception e)

@@ -56,6 +56,10 @@ class DownloadRequest:
     headers: dict = field(default_factory=dict)
     cookies: dict = field(default_factory=dict)
     content_key: str = ""      # CENC 内容密钥（hex）；非空则需 ffmpeg 解密
+    # ★ 备用直链（同一清晰度的 backup_url）。
+    #   实测（2026-11-14）：主 CDN 主机偶尔直接连不上
+    #   （「由于连接方在一段时间后没有正确答复…」），换 backup_url 就好了。
+    backup_url: str = ""
 
 
 class CancelToken:
@@ -206,7 +210,20 @@ def download(
     try:
         r = session.get(req.url, headers=headers, timeout=timeout, stream=True)
     except Exception as e:  # noqa: BLE001
-        return DownloadResult(ok=False, out_path=str(out), error=f"请求失败：{e}"[:200])
+        # ★ 主 CDN 主机连不上 → 换备用直链再试一次
+        #   （实测 2026-11-14：某集的 main_url 主机超时，backup_url 正常）
+        if req.backup_url and req.backup_url != req.url:
+            try:
+                r = session.get(req.backup_url, headers=headers, timeout=timeout,
+                                stream=True)
+            except Exception as e2:  # noqa: BLE001
+                return DownloadResult(
+                    ok=False, out_path=str(out),
+                    error=f"请求失败（主链 + 备用链都不通）：{e} / {e2}"[:200],
+                )
+        else:
+            return DownloadResult(ok=False, out_path=str(out),
+                                  error=f"请求失败：{e}"[:200])
 
     if r.status_code not in (200, 206):
         r.close()

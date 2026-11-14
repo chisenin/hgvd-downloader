@@ -442,7 +442,7 @@ class HongguoService:
           教学内容用 ``0`` 会返回 ``code=101000``。
         """
         if not self.logged_in:
-            return "", None, None, "未登录：请先 python -m hgvd login"
+            return "", None, None, "未登录：请先 python -m hgvd login", ""
         ident = self.device_identity()
         try:
             payload = playback_api.fetch_playback(
@@ -450,7 +450,7 @@ class HongguoService:
                 video_id_type=video_id_type,
             )
         except Exception as e:  # noqa: BLE001
-            return "", None, None, str(e)
+            return "", None, None, str(e), ""
 
         code = payload.get("code")
         if code not in (0, None):
@@ -459,11 +459,11 @@ class HongguoService:
             return "", None, None, (
                 f"服务端返回 code={code} {payload.get('message') or ''}".strip()
                 + "（多半是 video_id_type 与内容类型不匹配：短剧用 0、教学用 1）"
-            )
+            ), ""
 
         streams = playback_api.parse_streams(payload)
         if not streams:
-            return "", None, None, "服务端返回了数据但没有可用的清晰度"
+            return "", None, None, "服务端返回了数据但没有可用的清晰度", ""
 
         # 优先选符合目标清晰度的流
         want = (quality or "360p").lower()
@@ -476,7 +476,8 @@ class HongguoService:
             chosen = streams[0]
 
         key = playback_api.extract_content_key(payload)
-        return chosen["url"], chosen["size"], key, ""
+        return (chosen["url"], chosen["size"], key, "",
+                chosen.get("backup_url") or "")
 
     def download_series(
         self,
@@ -602,7 +603,7 @@ class HongguoService:
                 ep.duration = 0.0
 
         # ★ 优先走**完整正片**（App 网关 video_model，需登录 + 播放专用签名）
-        url, _size, content_key, reason = "", None, None, ""
+        url, _size, content_key, reason, backup_url = "", None, None, "", ""
         if self.logged_in:
             # ★ video_id_type：短剧用 0（vid），教学内容用 1（series_id）。
             #   两种都试 —— 失败的那个返回 code=101000，很快。
@@ -612,7 +613,7 @@ class HongguoService:
             else:
                 types = [0, 1]
             for t in types:
-                url, _size, content_key, reason = self.resolve_full_url(
+                url, _size, content_key, reason, backup_url = self.resolve_full_url(
                     ep.vid, quality, video_id_type=t
                 )
                 if url:
@@ -640,6 +641,8 @@ class HongguoService:
             out_path=str(out),
             expect_duration=ep.duration,
             cookies=self.cookie_dict(),
+            # ★ 主 CDN 主机连不上时自动换备用直链
+            backup_url=backup_url or "",
         )
         res = download_with_history(self, req, ep, cb, cancel, content_key=content_key)
         return res

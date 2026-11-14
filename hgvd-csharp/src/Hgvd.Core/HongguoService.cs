@@ -387,7 +387,7 @@ public sealed class HongguoService
     ///   ⇒ 同一集**只打一次**播放接口，之后从缓存取。
     ///   缓存键：<c>videoId</c> + <c>videoIdType</c> + <c>quality</c>。
     /// </summary>
-    private static readonly Dictionary<string, (string Url, long Size, string Key, string Codec)>
+    private static readonly Dictionary<string, (string Url, long Size, string Key, string Codec, string Backup)>
         PlaybackCache = new();
 
     /// <summary>清空播放地址缓存（换账号 / 签名失败时可手动调用）。</summary>
@@ -448,19 +448,19 @@ public sealed class HongguoService
     /// (地址, 大小, 内容密钥, 编码, 失败原因)。<paramref name="failure"/> 非空说明没拿到地址，
     /// 且里面写的是**真实原因**（限流 / 参数错 / 网络错），不再是笼统的「风控」。
     /// </returns>
-    public async Task<(string Url, long Size, string Key, string Codec, string Failure)>
+    public async Task<(string Url, long Size, string Key, string Codec, string Failure, string Backup)>
         ResolveFullUrlAsync(string videoId, int videoIdType = 0, string quality = "720p",
         CancellationToken ct = default)
     {
-        if (!LoggedIn) return ("", 0, "", "", "未登录：请先执行 hgvd login");
+        if (!LoggedIn) return ("", 0, "", "", "未登录：请先执行 hgvd login", "");
         if (PlaybackBlocked)
             return ("", 0, "", "", "播放接口已被服务端限流并熔断（连续多次空 body）。" +
-                "等待几分钟后重试，或改用「提取App缓存」");
+                "等待几分钟后重试，或改用「提取App缓存」", "");
 
         string ck = $"{videoId}|{videoIdType}|{quality}";
         lock (PlaybackCache)
             if (PlaybackCache.TryGetValue(ck, out var hit) && !string.IsNullOrEmpty(hit.Url))
-                return (hit.Url, hit.Size, hit.Key, hit.Codec, "");
+                return (hit.Url, hit.Size, hit.Key, hit.Codec, "", hit.Backup);
 
         try
         {
@@ -472,15 +472,16 @@ public sealed class HongguoService
                 // ★ 这种**不是风控**，不计入限流熔断。
                 NotePlaybackOk();
                 return ("", 0, "", "", "服务端返回了数据但没有可用的清晰度" +
-                    "（多半是 video_id_type 与内容类型不匹配）");
+                    "（多半是 video_id_type 与内容类型不匹配）", "");
             }
             var chosen = model.Streams.FirstOrDefault(
                 s => string.Equals(s.Definition, quality, StringComparison.OrdinalIgnoreCase))
                 ?? model.Streams[0];
-            var result = (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec);
+            var result = (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec,
+                          chosen.BackupUrl ?? "");
             lock (PlaybackCache) PlaybackCache[ck] = result;
             NotePlaybackOk();
-            return (result.Item1, result.Item2, result.Item3, result.Item4, "");
+            return (result.Item1, result.Item2, result.Item3, result.Item4, "", result.Item5);
         }
         catch (ApiException e)
         {
@@ -489,14 +490,14 @@ public sealed class HongguoService
             else NotePlaybackOk();
             if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
                 Console.WriteLine($"[dbg] 播放地址失败：{e.Message}");
-            return ("", 0, "", "", e.Message);
+            return ("", 0, "", "", e.Message, "");
         }
         catch (Exception e)
         {
             if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
                 Console.WriteLine($"[dbg] 播放地址失败：{e}");
             NotePlaybackOk();
-            return ("", 0, "", "", $"网络/解析异常：{e.Message}");
+            return ("", 0, "", "", $"网络/解析异常：{e.Message}", "");
         }
     }
 
@@ -527,11 +528,12 @@ public sealed class HongguoService
             ? new[] { ep.VideoIdType, 1 - ep.VideoIdType }
             : new[] { 0, 1 };
 
-        string url = "", key = "", codec = "", failure = "";
+        string url = "", key = "", codec = "", failure = "", backupUrl = "";
         long size = 0;
         foreach (int t in types)
         {
-            (url, size, key, codec, failure) = await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
+            (url, size, key, codec, failure, backupUrl) =
+                await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
             if (!string.IsNullOrEmpty(url)) { ep.VideoIdType = t; break; }
             // ★ 已被限流熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
             if (PlaybackBlocked) break;
@@ -554,6 +556,8 @@ public sealed class HongguoService
             ExpectDuration = ep.Duration,
             Cookie = _account.CookieHeader,
             ContentKey = key,
+            // ★ 主 CDN 主机连不上时自动换备用直链
+            BackupUrl = backupUrl,
         };
         return await Downloader.DownloadAsync(req, cb, ct);
     }
