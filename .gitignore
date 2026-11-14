@@ -29,6 +29,11 @@ _ref/
 #   完整历史备份：archive/hgvd-full-history.bundle
 archive/
 
+# ★ WorkBuddy 的项目数据目录（会话记忆 / 任务记录）。
+#   里面是 Agent 的工作日志与本机路径，**不适合进公开仓库**；
+#   有价值的结论已经整理进 docs/ 了。目录本身保留在本地，只是不跟踪。
+.workbuddy/
+
 # 成品
 *.mp4
 !docs/**/*.mp4
@@ -36,6 +41,10 @@ archive/
 # IDE
 .vscode/
 .idea/
+
+# Windows 保留设备名：某些工具会在仓库根留下一个空的 NUL 文件，
+# git 索引它会报 "short read while indexing NUL" ⇒ 直接忽略。
+NUL
 
 # 探针临时产物（抓包/矩阵扫描）
 probe_*.json

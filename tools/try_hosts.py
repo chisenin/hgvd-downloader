@@ -8,7 +8,7 @@ from hgvd.api import playback as pb
 from hgvd.sign.core import DeviceIdentity, sign_request
 
 import tempfile
-T = tempfile.gettempdir()
+T = tempfile.gettempdir()          # ★ 不要写死本机路径
 cs = html.unescape(pathlib.Path(T+"\\cookieStore_1.xml").read_text(encoding="utf-8",errors="replace"))
 def grab(n):
     m = re.search(r'\|'+n+r'">(.*?)</string>', cs, re.S)
