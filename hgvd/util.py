@@ -190,6 +190,44 @@ def safe_name(name: str, max_len: int = 80) -> str:
     return name
 
 
+def dedup_title(series: str, title: str) -> str:
+    """去掉分集标题里**与剧名重复的前缀**。
+
+    ★ 实测（2026-11-14）：很多教学合集的分集标题本身就是「剧名 + 集号」，
+      例如剧名《生物史前》、分集标题「《生物史前》 P1」，
+      直接和文件名前缀的剧名拼起来就成了
+      「《生物史前》.001.《生物史前》 P1.mp4」—— 同一段文字重复两遍。
+      去重后是「《生物史前》.001.P1.mp4」。
+
+    ★ 返回**空串**表示「这个集名不需要」——
+      即标题完全就是剧名本身（如「神竟是外星人！《山海星河，我说长生之谜》」），
+      此时成品名应该是「<剧名>.<序号>.mp4」，不再带重复的集名。
+
+    ★ 剧名可能带书名号（《》），比对时会同时试「带括号」和「不带括号」两种。
+    """
+    s = (series or "").strip()
+    t = (title or "").strip()
+    if not s or not t:
+        return t
+
+    candidates = [s]
+    core = s.strip("《》〈〉<>[]【】()（）").strip()
+    if core and core != s:
+        candidates.append(core)
+
+    for c in candidates:
+        if not c or not t.startswith(c):
+            continue
+        rest = t[len(c):].strip(" \t-—–·、,，.。:：|｜")
+        rest = rest.strip("《》〈〉<>[]【】()（）")
+        if not rest:
+            # 标题就是剧名本身 → 集名部分整个省掉
+            return ""
+        if any(ch.isalnum() or ord(ch) > 0x2E80 for ch in rest):
+            return rest
+    return t
+
+
 def md5_short(text: str, n: int = 16) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:n]
 

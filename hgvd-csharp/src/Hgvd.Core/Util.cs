@@ -1,7 +1,8 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace Hgvd.Core;
@@ -45,6 +46,46 @@ public static class Util
         s = s.TrimEnd('.', ' ');
         if (s.Length > maxLen) s = s[..maxLen].TrimEnd('.', ' ');
         return string.IsNullOrEmpty(s) ? "未命名" : s;
+    }
+
+    /// <summary>
+    /// 去掉分集标题里<strong>与剧名重复的前缀</strong>。
+    /// </summary>
+    /// <remarks>
+    /// ★ 实测（2026-11-14）：很多教学合集的分集标题本身就是「剧名 + 集号」，
+    ///   例如剧名《生物史前》、分集标题「《生物史前》 P1」，
+    ///   直接和文件名前缀的剧名拼起来就成了
+    ///   「《生物史前》.001.《生物史前》 P1.mp4」—— 同一段文字重复两遍。
+    ///   去重后是「《生物史前》.001.P1.mp4」。
+    /// ★ 只在「去掉之后还剩内容」时才动手，避免把标题清空。
+    /// ★ 返回**空串**表示「这个集名不需要」—— 标题完全就是剧名本身时，
+    ///   成品名应该是「&lt;剧名&gt;.&lt;序号&gt;.mp4」，不再带重复的集名。
+    /// </remarks>
+    public static string DedupTitle(string series, string title)
+    {
+        string s = (series ?? "").Trim();
+        string t = (title ?? "").Trim();
+        if (s.Length == 0 || t.Length == 0) return t;
+
+        var candidates = new[] { s };
+        string core = s.Trim("《》〈〉<>[]【】()（）".ToCharArray()).Trim();
+        if (core.Length > 0 && core != s)
+            candidates = new[] { s, core };
+
+        foreach (var c in candidates)
+        {
+            if (c.Length == 0 || !t.StartsWith(c, StringComparison.Ordinal)) continue;
+            string rest = t[c.Length..].Trim(" \t-—–·、,，.。:：|｜".ToCharArray());
+            rest = rest.Trim("《》〈〉<>[]【】()（）".ToCharArray());
+            if (rest.Length == 0)
+            {
+                // 标题就是剧名本身 → 集名部分整个省掉
+                return "";
+            }
+            if (rest.Any(ch => char.IsLetterOrDigit(ch) || ch > 0x2E80))
+                return rest;
+        }
+        return t;
     }
 
     /// <summary>用 ffprobe 读时长（秒）。失败返回 0。</summary>

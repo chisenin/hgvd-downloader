@@ -89,7 +89,7 @@ class Config:
     """用户配置，落盘为 JSON。"""
 
     out_dir: str = ""          # 下载根目录
-    quality: str = "360p"      # 清晰度：360p / 720p / 1080p
+    quality: str = "1080p"     # 清晰度：360p / 720p / 1080p（默认最高）
     workers: int = 3           # 剧目级并发
     seg_workers: int = 8       # 单集内部分片并发
     max_episodes: int = 0      # 每部剧最多下几集（0 = 全部）

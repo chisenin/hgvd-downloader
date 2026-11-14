@@ -12,6 +12,7 @@ public static class Program
         fail += HeaderTests.Run();
         fail += ArgusTests.Run();
         fail += EpisodeRowTests.Run();
+        fail += NamingTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

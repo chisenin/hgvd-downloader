@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System;
 using System.IO;
@@ -32,7 +32,8 @@ public static class Paths
 public sealed class AppConfig
 {
     public string OutDir { get; set; } = "";
-    public string Quality { get; set; } = "720p";
+    /// <summary>清晰度：360p / 720p / 1080p。★ 默认**最高**（用户要求）。</summary>
+    public string Quality { get; set; } = "1080p";
     public int Workers { get; set; } = 3;
     public int MaxEpisodes { get; set; } = 0;
     public bool SkipExisting { get; set; } = true;

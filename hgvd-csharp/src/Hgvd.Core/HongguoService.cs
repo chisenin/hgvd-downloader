@@ -572,10 +572,15 @@ public sealed class HongguoService
     public string BuildOutPath(Episode ep)
     {
         string root = _cfg.ResolveOutDir();
-        string series = Util.SafeName(
-            string.IsNullOrEmpty(ep.SeriesTitle) ? ep.SeriesId : ep.SeriesTitle, 60);
-        string title = Util.SafeName(ep.Title, 80);
-        string name = $"{series}.{ep.Index:000}.{title}.mp4";
+        string rawSeries = string.IsNullOrEmpty(ep.SeriesTitle) ? ep.SeriesId : ep.SeriesTitle;
+        string series = Util.SafeName(rawSeries, 60);
+        // ★ 去掉标题里与剧名重复的前缀 ——
+        //   否则会得到「《生物史前》.001.《生物史前》 P1.mp4」这种重复两遍的名字。
+        //   去重后为空（标题就是剧名本身）→ 成品名不带集名部分。
+        string rawTitle = Util.DedupTitle(rawSeries, ep.Title);
+        string name = string.IsNullOrEmpty(rawTitle)
+            ? $"{series}.{ep.Index:000}.mp4"
+            : $"{series}.{ep.Index:000}.{Util.SafeName(rawTitle, 80)}.mp4";
         return Path.Combine(root, series, name);
     }
 

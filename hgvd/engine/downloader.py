@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import net
-from ..util import fmt_size, safe_name
+from ..util import dedup_title, fmt_size, safe_name
 
 # ---------------------------------------------------------------- 模型
 
@@ -351,9 +351,13 @@ def episode_filename(series_title: str, index: int, ep_title: str, ext: str = ".
     """成品文件名：``<剧名>.<序号>.<集名>.mp4``。
 
     ★ 与参考项目一致：序号从 1 起，与 App 列表顺序一致。
+    ★ 集名里与剧名重复的前缀会被去掉（见 ``util.dedup_title``）——
+      否则会得到「《生物史前》.001.《生物史前》 P1.mp4」这种重复两遍的名字。
     """
     st = safe_name(series_title)
-    et = safe_name(ep_title) if ep_title else ""
+    # ★ 去重后的集名可能为空（标题就是剧名本身）→ 那就不带集名部分
+    deduped = dedup_title(series_title, ep_title) if ep_title else ""
+    et = safe_name(deduped) if deduped else ""
     parts = [st, f"{index:03d}"]
     if et:
         parts.append(et)

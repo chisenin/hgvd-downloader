@@ -84,6 +84,26 @@ def test_a_utils():
     eq("A21 deep_find", util.deep_find({"x": {"y": {"url": "u"}}}, ["url"]), "u")
     eq("A22 deep_find 无", util.deep_find({"x": 1}, ["url"]), None)
     eq("A23 query_without", util.query_without("http://a?x=1&y=2", "x"), "http://a?y=2")
+    # ★ 去重：分集标题里常带剧名，直接拼进文件名会重复两遍
+    eq("A24 dedup_title 去剧名前缀",
+       util.dedup_title("《生物史前》", "《生物史前》 P1"), "P1")
+    eq("A25 dedup_title 无书名号",
+       util.dedup_title("李的AI教学专家", "李的AI教学专家 第1课"), "第1课")
+    eq("A26 dedup_title 不误伤",
+       util.dedup_title("《生物史前》", "植物之间的生存竞争"), "植物之间的生存竞争")
+    eq("A27 dedup_title 标题等于剧名 → 集名省掉",
+       util.dedup_title("《生物史前》", "《生物史前》"), "")
+    eq("A30 dedup_title 不留孤立括号",
+       util.dedup_title("神竟是外星人！《山海星河，我说长生之谜》",
+                        "神竟是外星人！《山海星河，我说长生之谜》"), "")
+    eq("A31 episode_filename 去掉重复",
+       __import__("hgvd.engine.downloader", fromlist=["x"]).episode_filename(
+           "《生物史前》", 1, "《生物史前》 P1"), "《生物史前》.001.P1.mp4")
+    eq("A32 episode_filename 标题=剧名则不带集名",
+       __import__("hgvd.engine.downloader", fromlist=["x"]).episode_filename(
+           "《生物史前》", 1, "《生物史前》"), "《生物史前》.001.mp4")
+    eq("A28 dedup_title 空剧名", util.dedup_title("", "标题"), "标题")
+    eq("A29 dedup_title 空标题", util.dedup_title("剧名", ""), "")
 
 
 # ---------------------------------------------------------------- B 组
@@ -99,7 +119,7 @@ def test_b_config():
     cfg.save(p)
     again = Config.load(p)
     eq("B1 配置往返", again.out_dir, str(tmp))
-    eq("B2 配置默认值", Config().quality, "360p")
+    eq("B2 配置默认值（默认最高画质）", Config().quality, "1080p")
     check("B3 测试隔离生效", str(tool_dir()).startswith(os.environ["HGV_TEST_HOME"]))
     # 凭据不受测试隔离影响
     check("B4 凭据路径不受隔离", ".hgv_tool" in str(creds_path()))
