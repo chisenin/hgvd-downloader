@@ -11,6 +11,66 @@ using Hgvd.Core.Sign;
 namespace Hgvd.Core.Api;
 
 /// <summary>
+/// 请求失败的**种类**。
+///
+/// ★★ 为什么要分这么细：
+///   过去所有失败都被笼统报成「服务端风控」，但它们其实是三件完全不同的事：
+///     <see cref="EmptyBody"/>  —— HTTP 200 + 零字节响应。服务端把请求**丢弃**了
+///                              （真限流 / 请求不被接受）。**只有这一种**才算限流。
+///     <see cref="ErrorCode"/>  —— 服务端回了 JSON，但 code != 0。
+///                              code=101000 通常是 **video_id_type 用错**（参数问题），
+///                              重试无用，换参数才是正解。
+///     <see cref="Network"/>    —— 连接/超时/解析失败，是网络问题。
+///   把它们混为一谈会导致：参数错被当成风控 → 触发熔断 → 整批提前放弃。
+/// </summary>
+public enum ApiFailure
+{
+    /// <summary>空 body（服务端丢弃）—— 这才是限流。</summary>
+    EmptyBody,
+    /// <summary>服务端回了错误码。</summary>
+    ErrorCode,
+    /// <summary>网络 / 解析异常。</summary>
+    Network,
+}
+
+/// <summary>带「失败种类」与「服务端错误码」的异常。</summary>
+public sealed class ApiException : Exception
+{
+    public string Path { get; }
+    public ApiFailure Kind { get; }
+    /// <summary>服务端的业务错误码（0 表示没有）。</summary>
+    public int Code { get; }
+    /// <summary>服务端 message（可能为空）。</summary>
+    public string ApiMessage { get; }
+
+    public ApiException(string path, ApiFailure kind, int code, string message)
+        : base($"{path} 失败（{Describe(kind, code, message)}）")
+    {
+        Path = path;
+        Kind = kind;
+        Code = code;
+        ApiMessage = message ?? "";
+    }
+
+    /// <summary>把失败种类翻译成人话。</summary>
+    public static string Describe(ApiFailure kind, int code, string message)
+    {
+        return kind switch
+        {
+            ApiFailure.EmptyBody =>
+                "空 body（HTTP 200 但零字节）—— 服务端把请求丢弃了，" +
+                "通常是**请求节奏过快被限流**。过几分钟再试即可恢复",
+            ApiFailure.ErrorCode => code == 101000
+                ? $"服务端返回 code=101000 服务异常 —— " +
+                  $"**多半是 video_id_type 用错了**（教学类内容要用 1、短剧用 0），" +
+                  $"不是风控"
+                : $"服务端返回 code={code} {message}",
+            _ => $"网络/解析异常：{message}",
+        };
+    }
+}
+
+/// <summary>
 /// App 网关的带签名客户端。
 ///
 /// ★ 端点：
@@ -23,6 +83,23 @@ namespace Hgvd.Core.Api;
 public sealed class SignedClient
 {
     public const string Host = "api5-normal-sinfonlinea.fqnovel.com";
+
+    /// <summary>
+    /// ★ 实际使用的网关地址。可用环境变量 <c>HGVD_HOST</c> 覆盖
+    /// （诊断用：指向本地抓包代理，拿到 C# 真实发出的请求字节，
+    ///   与 Python 版逐字节对比）。
+    /// ★ 必须**整段**给（含 scheme），否则 URL 拼出来不合法。
+    /// </summary>
+    public static string BaseUrl
+    {
+        get
+        {
+            string v = Environment.GetEnvironmentVariable("HGVD_HOST");
+            return string.IsNullOrWhiteSpace(v)
+                ? "https://" + Host
+                : v.TrimEnd('/');
+        }
+    }
 
     public const string PathAlbum = "/novel/player/album_detail/v1/";
     public const string PathVideoDetail = "/novel/player/video_detail/v1/";
@@ -94,7 +171,7 @@ public sealed class SignedClient
             try
             {
                 using var req = new HttpRequestMessage(
-                    HttpMethod.Post, $"https://{Host}{path}?{query}")
+                    HttpMethod.Post, $"{BaseUrl}{path}?{query}")
                 {
                     Content = new ByteArrayContent(raw),
                 };
@@ -133,6 +210,17 @@ public sealed class SignedClient
                 last = $"code={code} {J.Str(doc.RootElement, "message")}";
                 // 100001 = 参数错，重试没用
                 if (code == 100001) break;
+                // ★★ 播放接口：拿到 **JSON**（哪怕 code != 0）说明签名是通的 ——
+                //   空 body 才是「被服务端丢弃/限流」的信号。
+                //   code=101000 多半是 **video_id_type 用错了**（教学类内容要用 1），
+                //   这时重试 5 次纯属浪费（3.2+6.4+9.6+12+12 ≈ 43 秒），
+                //   而且会把请求密度推高、反而更容易触发限流。
+                //   ⇒ 直接把 doc 交回调用方，由它换另一种 video_id_type 再试。
+                if (playback)
+                {
+                    throw new ApiException(path, ApiFailure.ErrorCode, code,
+                        J.Str(doc.RootElement, "message"));
+                }
                 // ★ 服务端对 video_model 的限流是「全局节奏」——
                 //   实测约每 3 秒才放行一次，同一 id 连续请求时
                 //   前 3 次空 body、第 4 次才成功。
@@ -140,6 +228,7 @@ public sealed class SignedClient
                 await Task.Delay(TimeSpan.FromSeconds(
                     Math.Min(basePause * (attempt + 1), maxPause)), ct);
             }
+            catch (ApiException) { throw; }
             catch (Exception e)
             {
                 last = e.Message;
@@ -147,7 +236,7 @@ public sealed class SignedClient
                     Math.Min(basePause * (attempt + 1), maxPause)), ct);
             }
         }
-        throw new InvalidOperationException($"{path} 无响应：{last}");
+        throw new ApiException(path, ApiFailure.EmptyBody, 0, last);
     }
 
     // ---------------------------------------------------------------- 合集

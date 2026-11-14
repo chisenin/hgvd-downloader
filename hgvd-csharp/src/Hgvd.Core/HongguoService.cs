@@ -441,37 +441,62 @@ public sealed class HongguoService
         lock (PlaybackCache) _playbackEmptyStreak = 0;
     }
 
-    /// <summary>解析完整正片的播放地址（带缓存）。</summary>
-    public async Task<(string Url, long Size, string Key, string Codec)>
+    /// <summary>
+    /// 解析完整正片的播放地址（带缓存）。
+    /// </summary>
+    /// <returns>
+    /// (地址, 大小, 内容密钥, 编码, 失败原因)。<paramref name="failure"/> 非空说明没拿到地址，
+    /// 且里面写的是**真实原因**（限流 / 参数错 / 网络错），不再是笼统的「风控」。
+    /// </returns>
+    public async Task<(string Url, long Size, string Key, string Codec, string Failure)>
         ResolveFullUrlAsync(string videoId, int videoIdType = 0, string quality = "720p",
         CancellationToken ct = default)
     {
-        if (!LoggedIn) return ("", 0, "", "");
-        if (PlaybackBlocked) return ("", 0, "", "");
+        if (!LoggedIn) return ("", 0, "", "", "未登录：请先执行 hgvd login");
+        if (PlaybackBlocked)
+            return ("", 0, "", "", "播放接口已被服务端限流并熔断（连续多次空 body）。" +
+                "等待几分钟后重试，或改用「提取App缓存」");
 
         string ck = $"{videoId}|{videoIdType}|{quality}";
         lock (PlaybackCache)
             if (PlaybackCache.TryGetValue(ck, out var hit) && !string.IsNullOrEmpty(hit.Url))
-                return hit;
+                return (hit.Url, hit.Size, hit.Key, hit.Codec, "");
 
         try
         {
             var model = await Client.PlaybackAsync(videoId, videoIdType, ct);
-            if (model.Streams.Count == 0) { NotePlaybackEmpty(); return ("", 0, "", ""); }
+            if (model.Streams.Count == 0)
+            {
+                // 拿到了 JSON 但没有流 —— 说明签名是通的，是**参数/内容**问题
+                // （例如 video_id_type 不对、或该集没有可播的清晰度）。
+                // ★ 这种**不是风控**，不计入限流熔断。
+                NotePlaybackOk();
+                return ("", 0, "", "", "服务端返回了数据但没有可用的清晰度" +
+                    "（多半是 video_id_type 与内容类型不匹配）");
+            }
             var chosen = model.Streams.FirstOrDefault(
                 s => string.Equals(s.Definition, quality, StringComparison.OrdinalIgnoreCase))
                 ?? model.Streams[0];
             var result = (chosen.Url, chosen.Size, model.ContentKey, chosen.Codec);
             lock (PlaybackCache) PlaybackCache[ck] = result;
             NotePlaybackOk();
-            return result;
+            return (result.Item1, result.Item2, result.Item3, result.Item4, "");
+        }
+        catch (ApiException e)
+        {
+            // ★ 只有**空 body** 才是限流（服务端把请求丢弃了）
+            if (e.Kind == ApiFailure.EmptyBody) NotePlaybackEmpty();
+            else NotePlaybackOk();
+            if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
+                Console.WriteLine($"[dbg] 播放地址失败：{e.Message}");
+            return ("", 0, "", "", e.Message);
         }
         catch (Exception e)
         {
             if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
                 Console.WriteLine($"[dbg] 播放地址失败：{e}");
-            NotePlaybackEmpty();
-            return ("", 0, "", "");
+            NotePlaybackOk();
+            return ("", 0, "", "", $"网络/解析异常：{e.Message}");
         }
     }
 
@@ -502,13 +527,13 @@ public sealed class HongguoService
             ? new[] { ep.VideoIdType, 1 - ep.VideoIdType }
             : new[] { 0, 1 };
 
-        string url = "", key = "", codec = "";
+        string url = "", key = "", codec = "", failure = "";
         long size = 0;
         foreach (int t in types)
         {
-            (url, size, key, codec) = await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
+            (url, size, key, codec, failure) = await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
             if (!string.IsNullOrEmpty(url)) { ep.VideoIdType = t; break; }
-            // ★ 已被风控熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
+            // ★ 已被限流熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
             if (PlaybackBlocked) break;
         }
 
@@ -518,11 +543,8 @@ public sealed class HongguoService
                 Ok = false, OutPath = outPath,
                 Error = $"无法解析播放地址（vid={ep.Vid}）"
                     + (LoggedIn ? "" : "（未登录：请先执行 hgvd login）")
-                    // ★ 服务端对 video_model 的风控是账号级的（文档 X6）——
-                    //   密集请求后持续返回 HTTP 200 + 空 body，退避也不一定恢复。
-                    //   这时唯一的出片路径是 App 缓存。
-                    + "。★ 若日志显示「空 body (HTTP 200)」，是服务端风控，"
-                    + "请改用「提取App缓存」（hgvd cache）——完全绕过风控。",
+                    + (string.IsNullOrEmpty(failure) ? "" : $"：{failure}")
+                    + "。★ 「提取App缓存」（hgvd cache）是完全绕开服务端限流的另一条出片路径。",
             };
 
         var req = new DownloadRequest

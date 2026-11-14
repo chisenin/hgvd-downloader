@@ -212,9 +212,14 @@ public static class Signer
         string realAid = !string.IsNullOrEmpty(aid) ? aid : PlaybackAid(query);
 
         var rng = new Random();
+        // ★ nonce 必须是**完整 32 位**（与 Python 版
+        //   `random.randint(0, 0xFFFFFFFF)` 的取值域一致）。
+        //   早期写成 `rng.Next(0, int.MaxValue)` 只能取到 31 位。
+        uint nonce1 = (uint)Random.Shared.NextInt64(0, 0x100000000L);
+        uint nonce2 = (uint)Random.Shared.NextInt64(0, 0x100000000L);
         headers["x-argus"] = Argus.Header(
-            query, bodyMd5, khronos, rng.Next(0, int.MaxValue), realAid, deviceId, installId);
-        headers["x-ladon"] = Argus.LadonHeader(khronos, rng.Next(0, int.MaxValue), realAid);
+            query, bodyMd5, khronos, nonce1, realAid, deviceId, installId);
+        headers["x-ladon"] = Argus.LadonHeader(khronos, nonce2, realAid);
         headers.Remove("x-medusa");
         return (query, headers);
     }

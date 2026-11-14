@@ -1,0 +1,40 @@
+{
+ "cases": [
+  {
+   "name": "基础用例",
+   "query": "iid=4351246100332768&device_id=4351246100902096&ac=wifi&aid=8662&app_name=novelread&version_code=73932&version_name=7.3.9.32&channel=xiaomi_8662_64&device_platform=android&os=android&ts=1700000000&_rticket=1700000000000",
+   "body_md5_hex": "4032e384cfbb0d3c9335636b11a808cf",
+   "ts": 1700000000,
+   "nonce": 123456789,
+   "aid": "8662",
+   "device_id": "4351246100902096",
+   "install_id": "4351246100332768",
+   "x_argus": "8oGwZRLe2V38m+1gfqIeLa2MoV9ZBWosW5Y0NXKHAB2aESxiejObH9yJusDUtTlwq4nwdJpeAwGVcvNuFxKTmC5lNNYdndpFWKSBQQLkhbKZ3JlxxDXd520lEJ5nXuybrbJ7q8G2ct+57gNzg2thECCID1SmWz1Xzly+Y1BmktLJ2EXOsvM9EehaFYLoW7PA0i0QkvlBdxWO2auPKN0pR4VRv1RRxU0weJtH+kS+UtCFTehQLIvdb0LipF+OuJlBZJ6+pJr/V9vLCrgFI1jVbLujVART3KTK8ctYFM3lnF0oaQ==",
+   "x_ladon": "Fc1bB9ZbB4+xYkHCPv6IoX2O5qSLZ1E7Z+/fMDKJ9tkjdNzR"
+  },
+  {
+   "name": "ts<<1 超过 int32",
+   "query": "iid=744826091370410&device_id=744826091366314&ac=wifi&aid=8662&app_name=novelread&version_code=73932&version_name=7.3.9.32&channel=xiaomi_8662_64&device_platform=android&os=android&ts=1794614047&_rticket=1794614047000",
+   "body_md5_hex": "9885c0dac697d85e2191121e5542fe94",
+   "ts": 1794614047,
+   "nonce": 2701414485,
+   "aid": "8662",
+   "device_id": "744826091366314",
+   "install_id": "744826091370410",
+   "x_argus": "8oHu8LnZm0OtJJIaSr1427D+yeH70h5aZTVjoSW7MfFi/uF/53rgUaHk/3d3xGl8+hXXZibf4WUTTit7ZfJu5fDESCPJZCgw/U/LywMLPGK8ioQwvlhao1E1XOH5NihjLRufIwbsK8q+Wo6RA5WjIRAE+Xfqjr4aNRHtvq7pMHQK88dJUGCUwxVEpaMw6yMcLfzha21eUJQQt9bLCReYseR2RlNgOLFu8JhKn7LhpAbOHBwj3HvKvaFKj11Lvq5bcMEpB8EUdmufHDB9J2MQf8JR1lGPU0tya9Ie9z2DBsFIeA==",
+   "x_ladon": "VVAEoU3dnVutNrK71oXnSo5abrclb5e8qbrD3+VHrvFvcdsM"
+  },
+  {
+   "name": "nonce 取满 32 位",
+   "query": "iid=4351246100332768&device_id=4351246100902096&ac=wifi&aid=8662&app_name=novelread&version_code=73932&version_name=7.3.9.32&channel=xiaomi_8662_64&device_platform=android&os=android&ts=2000000000&_rticket=2000000000000",
+   "body_md5_hex": "4032e384cfbb0d3c9335636b11a808cf",
+   "ts": 2000000000,
+   "nonce": 4294967295,
+   "aid": "8662",
+   "device_id": "4351246100902096",
+   "install_id": "4351246100332768",
+   "x_argus": "8oHAH26Sbp9WBxIQWA8MN9eox+aFcBalk7RNICCaGHil3XeAmzamWADzbdj/DnuFr73VnIoLY8QDy5GIK79oBOm0jfd64v2r9BpSFo5W8FtiXtftKf1IWIxSpJ0lrXVrN47NTosrxem5hJ50I/KYG1Y27OJlvfqJDXhyZrRgr9wNdfd5eY5HiWK7LTrGk02K2mwqbNDcgeebLpS5r2T4J9YWSoX4MZO+RUxhcp637BFIcFIyhl1YQzU3kndpQFucpronlK/yPStfmttIzxPYuZ6Qr7zpk98GK17BSP6C4Qh+aQ==",
+   "x_ladon": "/////8n5r9fUluv0vx/iqd3Ow4cbqTjUegQsSkjGG8SbQg6o"
+  }
+ ]
+}

@@ -432,7 +432,8 @@ class HongguoService:
         """解析**完整正片**的播放地址。
 
         ★ 走 App 网关的 ``video_model``，需要登录 + 播放专用签名。
-        ★ 返回 ``(url, size, content_key)``；拿不到时 ``url`` 为空。
+        ★ 返回 ``(url, size, content_key, reason)``；拿不到时 ``url`` 为空，
+          ``reason`` 里写的是**真实原因**（限流 / 参数错 / 网络错）。
           ``content_key`` 非空表示该集是 CENC 加密的，下载后需要
           ``ffmpeg -decryption_key`` 解密。
 
@@ -441,19 +442,28 @@ class HongguoService:
           教学内容用 ``0`` 会返回 ``code=101000``。
         """
         if not self.logged_in:
-            return "", None, None
+            return "", None, None, "未登录：请先 python -m hgvd login"
         ident = self.device_identity()
         try:
             payload = playback_api.fetch_playback(
                 self.session, ident, vid, cookies=self.cookie_dict(),
                 video_id_type=video_id_type,
             )
-        except Exception:  # noqa: BLE001
-            return "", None, None
+        except Exception as e:  # noqa: BLE001
+            return "", None, None, str(e)
+
+        code = payload.get("code")
+        if code not in (0, None):
+            # ★ code=101000 = 参数/类型不符（多半是 video_id_type 用错），
+            #   **不是风控** —— 别把它当成限流。
+            return "", None, None, (
+                f"服务端返回 code={code} {payload.get('message') or ''}".strip()
+                + "（多半是 video_id_type 与内容类型不匹配：短剧用 0、教学用 1）"
+            )
 
         streams = playback_api.parse_streams(payload)
         if not streams:
-            return "", None, None
+            return "", None, None, "服务端返回了数据但没有可用的清晰度"
 
         # 优先选符合目标清晰度的流
         want = (quality or "360p").lower()
@@ -466,7 +476,7 @@ class HongguoService:
             chosen = streams[0]
 
         key = playback_api.extract_content_key(payload)
-        return chosen["url"], chosen["size"], key
+        return chosen["url"], chosen["size"], key, ""
 
     def download_series(
         self,
@@ -592,7 +602,7 @@ class HongguoService:
                 ep.duration = 0.0
 
         # ★ 优先走**完整正片**（App 网关 video_model，需登录 + 播放专用签名）
-        url, _size, content_key = "", None, None
+        url, _size, content_key, reason = "", None, None, ""
         if self.logged_in:
             # ★ video_id_type：短剧用 0（vid），教学内容用 1（series_id）。
             #   两种都试 —— 失败的那个返回 code=101000，很快。
@@ -602,7 +612,7 @@ class HongguoService:
             else:
                 types = [0, 1]
             for t in types:
-                url, _size, content_key = self.resolve_full_url(
+                url, _size, content_key, reason = self.resolve_full_url(
                     ep.vid, quality, video_id_type=t
                 )
                 if url:
@@ -621,7 +631,8 @@ class HongguoService:
             return DownloadResult(
                 ok=False, out_path=str(out),
                 error=f"无法解析播放地址（vid={ep.vid}）"
-                + ("（未登录：请先 python -m hgvd login）" if not self.logged_in else ""),
+                + (f"：{reason}" if reason else "")
+                + "。★ 「提取App缓存」（python -m hgvd cache）是完全绕开服务端限流的另一条出片路径。",
             )
 
         req = DownloadRequest(

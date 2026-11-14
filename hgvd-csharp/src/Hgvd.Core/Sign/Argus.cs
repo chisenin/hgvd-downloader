@@ -25,8 +25,18 @@ public static class Argus
 
     private static byte[] Pkcs7(byte[] data)
     {
+        // ★★ 填充值必须是「填充长度」本身（标准 PKCS#7），
+        //   不是零字节！Python 版 `hgvd/sign/core.py::_pkcs7` 用的就是
+        //   `bytes([pad]) * pad`，Go 参考实现同理。
+        //   ★ 2026-11-14 实测：用零填充会让 x-argus / x-ladon 与 Python
+        //     逐字节不一致 —— 服务端收到后**不回任何错误、直接返回空 body**，
+        //     表现出来就是「播放接口挂了」，极难定位。
         int pad = 16 - data.Length % 16;
-        return Util.Concat(data, new byte[pad]);
+        var outBuf = new byte[data.Length + pad];
+        Buffer.BlockCopy(data, 0, outBuf, 0, data.Length);
+        for (int i = data.Length; i < outBuf.Length; i++)
+            outBuf[i] = (byte)pad;
+        return outBuf;
     }
 
     private static ulong[] SimonKeySchedule()
@@ -78,8 +88,16 @@ public static class Argus
         return "";
     }
 
-    /// <summary>计算 x-argus 头值（Base64）。</summary>
-    public static string Header(string query, byte[] bodyMd5, int ts, int nonce,
+    /// <summary>
+    /// 计算 x-argus 头值（Base64）。
+    /// </summary>
+    /// <param name="nonce">
+    /// 32 位随机数。★ 必须是 **uint**（完整 32 位）——
+    /// Python 版用 <c>random.randint(0, 0xFFFFFFFF)</c>，
+    /// 早期 C# 版用 <c>int</c> + <c>rng.Next(0, int.MaxValue)</c>，
+    /// 只能取到 31 位，与 Python 的取值域不一致。
+    /// </param>
+    public static string Header(string query, byte[] bodyMd5, int ts, uint nonce,
                                string aid, string deviceId, string installId)
     {
         byte[] bodyHash = Sm3.Sum(bodyMd5);
@@ -100,7 +118,7 @@ public static class Argus
         var bean = new List<byte>();
         bean.AddRange(Proto.VarintField(1, 1077940818));
         bean.AddRange(Proto.VarintField(2, 2));
-        bean.AddRange(Proto.VarintField(3, (ulong)nonce));
+        bean.AddRange(Proto.VarintField(3, nonce));
         bean.AddRange(Proto.Bytes(4, Util.Bytes(aid)));
         bean.AddRange(Proto.Bytes(5, Util.Bytes(deviceId)));
         bean.AddRange(Proto.Bytes(6, Util.Bytes(PlaybackLicenseId)));
@@ -109,7 +127,7 @@ public static class Argus
         bean.AddRange(Proto.VarintField(9, 134744640));
         bean.AddRange(Proto.Bytes(10, new byte[8]));
         bean.AddRange(Proto.VarintField(11, 0));
-        bean.AddRange(Proto.VarintField(12, (ulong)(ts << 1)));
+        bean.AddRange(Proto.VarintField(12, (ulong)((long)ts << 1)));
         bean.AddRange(Proto.Bytes(13, bodyHash[..6]));
         bean.AddRange(Proto.Bytes(14, queryHash[..6]));
         bean.AddRange(Proto.Bytes(15, counters.ToArray()));
@@ -136,10 +154,87 @@ public static class Argus
         return Convert.ToBase64String(Util.Concat(new byte[] { 0xF2, 0x81 }, enc));
     }
 
-    /// <summary>计算 x-ladon 头值（Base64）。</summary>
-    public static string LadonHeader(int ts, int nonce, string aid)
+    /// <summary>
+    /// 诊断用：导出 argus 计算的各个中间阶段（hex）。
+    /// ★ 用来与 Python 版逐阶段比对 —— 实测 C# 曾经因为
+    ///   PKCS#7 填充值用错（零填充 vs 填充长度）导致整条签名对不上。
+    /// </summary>
+    public static string[] Stages(string query, byte[] bodyMd5, int ts, uint nonce,
+                                   string aid, string deviceId, string installId)
     {
-        byte[] seed = Util.Le32(nonce);
+        byte[] bodyHash = Sm3.Sum(bodyMd5);
+        byte[] queryBytes = string.IsNullOrEmpty(query) ? new byte[16] : Util.Bytes(query);
+        byte[] queryHash = Sm3.Sum(queryBytes);
+
+        var counters = new List<byte>();
+        counters.AddRange(Proto.VarintField(1, 1));
+        counters.AddRange(Proto.VarintField(2, 1));
+        counters.AddRange(Proto.VarintField(3, 1));
+        counters.AddRange(Proto.VarintField(7, 0xC792ECCC));
+
+        var device = new List<byte>();
+        device.AddRange(Proto.Bytes(1, Util.Bytes("NX551J")));
+        device.AddRange(Proto.VarintField(2, 8196));
+        device.AddRange(Proto.VarintField(4, 0x80E0D800));
+
+        var bean = new List<byte>();
+        bean.AddRange(Proto.VarintField(1, 1077940818));
+        bean.AddRange(Proto.VarintField(2, 2));
+        bean.AddRange(Proto.VarintField(3, nonce));
+        bean.AddRange(Proto.Bytes(4, Util.Bytes(aid)));
+        bean.AddRange(Proto.Bytes(5, Util.Bytes(deviceId)));
+        bean.AddRange(Proto.Bytes(6, Util.Bytes(PlaybackLicenseId)));
+        bean.AddRange(Proto.Bytes(7, Util.Bytes(QueryValue(query, "version_name"))));
+        bean.AddRange(Proto.Bytes(8, Util.Bytes("v04.04.05-ov-android")));
+        bean.AddRange(Proto.VarintField(9, 134744640));
+        bean.AddRange(Proto.Bytes(10, new byte[8]));
+        bean.AddRange(Proto.VarintField(11, 0));
+        bean.AddRange(Proto.VarintField(12, (ulong)((long)ts << 1)));
+        bean.AddRange(Proto.Bytes(13, bodyHash[..6]));
+        bean.AddRange(Proto.Bytes(14, queryHash[..6]));
+        bean.AddRange(Proto.Bytes(15, counters.ToArray()));
+        bean.AddRange(Proto.Bytes(16, Util.Bytes(installId)));
+        bean.AddRange(Proto.Bytes(20, Util.Bytes("none")));
+        bean.AddRange(Proto.VarintField(21, 738));
+        bean.AddRange(Proto.Bytes(23, device.ToArray()));
+        bean.AddRange(Proto.VarintField(25, 2));
+
+        byte[] beanBytes = bean.ToArray();
+        byte[] plain = Pkcs7(beanBytes);
+        byte[] plainCopy = (byte[])plain.Clone();
+        SimonEncrypt(plain);
+
+        var frame = new List<byte>();
+        frame.AddRange(ArgusMask);
+        frame.AddRange(plain);
+        frame.AddRange(ArgusTail);
+        byte[] frameBytes = frame.ToArray();
+        for (int i = ArgusMask.Length; i < frameBytes.Length; i++)
+            frameBytes[i] ^= ArgusMask[i % ArgusMask.Length];
+        Array.Reverse(frameBytes);
+
+        byte[] padded = Pkcs7(Util.Concat(frameBytes, Util.Bytes("ao")));
+        byte[] enc = AesCbc.Encrypt(padded, ArgusAesKey, ArgusAesIv);
+
+        return new[]
+        {
+            "bodyHash=" + Util.ToHex(bodyHash),
+            "queryHash=" + Util.ToHex(queryHash),
+            "counters=" + Util.ToHex(counters.ToArray()),
+            "device=" + Util.ToHex(device.ToArray()),
+            "bean=" + Util.ToHex(beanBytes),
+            "pkcs7=" + Util.ToHex(plainCopy),
+            "simon=" + Util.ToHex(plain),
+            "frame=" + Util.ToHex(frameBytes),
+            "padded=" + Util.ToHex(padded),
+            "enc=" + Util.ToHex(enc),
+        };
+    }
+
+    /// <summary>计算 x-ladon 头值（Base64）。</summary>
+    public static string LadonHeader(int ts, uint nonce, string aid)
+    {
+        byte[] seed = Util.Le32U(nonce);
         byte[] digest = Util.Md5(Util.Concat(seed, Util.Bytes(aid)));
         string hexKey = Util.ToHex(digest);
 

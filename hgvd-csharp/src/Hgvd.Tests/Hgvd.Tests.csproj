@@ -14,5 +14,7 @@
     <!-- 黄金向量随测试一起复制到输出目录 -->
     <None Include="..\..\tools\golden_headers.json" Link="golden_headers.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\golden_argus.json" Link="golden_argus.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

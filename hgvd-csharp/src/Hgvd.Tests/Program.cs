@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace Hgvd.Tests;
 
@@ -10,6 +10,7 @@ public static class Program
         int fail = 0;
         fail += SignTests.Run();
         fail += HeaderTests.Run();
+        fail += ArgusTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {
