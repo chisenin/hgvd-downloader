@@ -2,3 +2,6 @@ bin/
 obj/
 dist/
 *.user
+# 框架依赖发布（体积对比实验用）
+dist-fd/
+dist-fd1/
