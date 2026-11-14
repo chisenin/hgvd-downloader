@@ -20,6 +20,17 @@ from pathlib import Path
 
 from . import *  # noqa: F401,F403  设置 HGV_TEST_HOME 与 sys.path
 
+# ★★ 控制台编码兜底 —— 本测试要打印大量中文。
+#   GitHub 的 Windows runner 上 stdout 是管道，Python 取 ANSI 代码页（cp1252）
+#   ⇒ 打印中文直接 `UnicodeEncodeError` 崩掉（2026-11-14 首次 CI 就是这么挂的）。
+#   中文 Windows 控制台是 GBK（本身就能编码中文）⇒ 本地不会复现。
+#   ⇒ 统一把 stdout/stderr 切成 UTF-8，且 errors="replace"（顶多是乱码，不会崩）。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from hgvd import util
 from hgvd.api import shelf as shelf_api
 from hgvd.api import web as web_api

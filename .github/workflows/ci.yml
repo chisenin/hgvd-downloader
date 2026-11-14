@@ -16,6 +16,12 @@ jobs:
   offline-regression:
     name: 离线回归
     runs-on: windows-latest
+    env:
+      # ★ Windows runner 的 stdout 是管道，Python 默认取 ANSI 代码页（cp1252）
+      #   ⇒ 打印中文直接 UnicodeEncodeError 崩掉（首次 CI 就这么挂的）。
+      #   开 UTF-8 模式（PEP 540）统一按 UTF-8 读写。
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 

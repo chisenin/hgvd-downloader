@@ -18,6 +18,15 @@ import sys
 import time
 from pathlib import Path
 
+# ★★ 控制台编码兜底 —— 本 CLI 要打印中文（剧名/进度/错误）。
+#   输出被重定向到管道时，Python 取 ANSI 代码页：
+#   非中文代码页（如 CI runner 的 cp1252）会直接 UnicodeEncodeError 崩掉。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from . import __version__
 from .api import shelf as shelf_api
 from .api import web as web_api
