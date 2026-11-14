@@ -1,23 +1,28 @@
 using System;
 using System.Collections.Generic;
-using Hgvd.Gui.ViewModels;
+using Hgvd.Avalonia.ViewModels;
 using Hgvd.Core.Api;
 
 namespace Hgvd.Tests;
 
 /// <summary>
-/// 分集行（EpisodeRow）的显示与**属性通知**回归。
+/// 分集行（EpisodeRow）的显示与**属性通知**回归 —— **Avalonia 发行版**。
+///
+/// ★ 本文件是 WPF 版 <c>EpisodeRowTests.cs</c> 的移植版
+///   （WPF 版已于 2026-11-14 归档到 archive/hgvd-csharp-wpf/）。
+///   Avalonia 成为发行版后，界面回归必须跟着迁移过来 —— 否则
+///   「在售版本没有界面回归保护」。
 ///
 /// ★★ 为什么必须有这个测试：
 ///   2026-11-14 用户反馈「时长/大小/速度都是空的」。根因是
 ///   <c>Down</c> / <c>Total</c> / <c>Speed</c> 的 setter 只通知了**自己**
 ///   （PropertyChanged("Down")），而界面绑的是**计算属性**
-///   <c>SizeText</c> / <c>SpeedText</c> —— WPF 永远不会重新求值，
+///   <c>SizeText</c> / <c>SpeedText</c> —— 界面永远不会重新求值，
 ///   于是这两列永远是初始的空串。
 ///   ⇒ 「改了值但界面不刷新」这类 bug，**必须断言通知事件的名字**，
 ///   只断言最终值是测不出来的（值本身是对的）。
 /// </summary>
-public static class EpisodeRowTests
+public static class AvaloniaEpisodeRowTests
 {
     private static int _pass;
     private static int _fail;

@@ -11,7 +11,10 @@ public static class Program
         fail += SignTests.Run();
         fail += HeaderTests.Run();
         fail += ArgusTests.Run();
-        fail += EpisodeRowTests.Run();
+        fail += AvaloniaEpisodeRowTests.Run();
+        // ★ EpisodeRowTests（WPF 界面层回归）随 WPF 版归档到
+        //   archive/hgvd-csharp-wpf/EpisodeRowTests.cs，不再参与编译；
+        //   发行版（Avalonia）的同名回归见 AvaloniaEpisodeRowTests。
         fail += NamingTests.Run();
         Console.WriteLine();
         if (fail == 0)

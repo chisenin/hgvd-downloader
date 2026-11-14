@@ -39,6 +39,7 @@ public sealed class ProgressCell : Panel
     private readonly Border _track;
     private readonly Border _indicator;
     private readonly TextBlock _label;
+    private static int _diagCount;
 
     public ProgressCell()
     {
@@ -52,7 +53,12 @@ public sealed class ProgressCell : Panel
         {
             CornerRadius = new CornerRadius(8),
             Background = Fill,
-            HorizontalAlignment = HorizontalAlignment.Left,
+            // ★★★ 必须是 Stretch，不能是 Left ——
+            //   Border 没有子内容，DesiredSize 恒为 0；
+            //   Avalonia 排版时 Left 对齐会把宽度收缩到 DesiredSize.Width(=0)
+            //   ⇒ 整块渐变填充被压成 0 宽（轨道正常、填充消失，就是这个坑）。
+            //   Stretch 则直接吃满 Arrange 给的矩形宽度（= 百分比宽度）。
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         _label = new TextBlock
         {
@@ -108,7 +114,10 @@ public sealed class ProgressCell : Panel
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == FillProperty) _indicator.Background = Fill;
+        if (change.Property == FillProperty)
+        {
+            _indicator.Background = Fill;
+        }
         else if (change.Property == TrackBrushProperty) _track.Background = TrackBrush;
         else if (change.Property == TextBrushProperty) _label.Foreground = TextBrush;
         else if (change.Property == TextProperty) _label.Text = Text ?? "";
@@ -117,8 +126,16 @@ public sealed class ProgressCell : Panel
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        double width = double.IsInfinity(availableSize.Width) ? 0 : availableSize.Width;
+        double h = Math.Min(BarHeight, double.IsInfinity(availableSize.Height) ? BarHeight : availableSize.Height);
+        double w = Math.Max(0, Math.Min(width, width * Percent / 100.0));
+
+        // ★ 子控件都要显式 Measure：Panel 不会替我们做，
+        //   没量过的控件 DesiredSize 为 0 → 对齐时宽度会被压成 0。
         _label.Measure(availableSize);
-        return new Size(availableSize.Width, Math.Max(BarHeight, _label.DesiredSize.Height));
+        _track.Measure(new Size(width, h));
+        _indicator.Measure(new Size(w, h));
+        return new Size(width, Math.Max(h, _label.DesiredSize.Height));
     }
 
     protected override Size ArrangeOverride(Size finalSize)

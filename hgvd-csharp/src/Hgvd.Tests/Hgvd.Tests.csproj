@@ -6,12 +6,17 @@
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <UseWPF>true</UseWPF>
+    <!-- ★ WPF 版已归档到 archive/hgvd-csharp-wpf/（2026-11-14），
+         这里不再需要 WPF 目标框架 -->
+    <UseWPF>false</UseWPF>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hgvd.Core\Hgvd.Core.csproj" />
-    <!-- ★ 界面层（EpisodeRow）的回归测试需要引用 GUI 工程 -->
-    <ProjectReference Include="..\Hgvd.Gui\Hgvd.Gui.csproj" />
+    <!-- ★ Avalonia 发行版的界面层（EpisodeRow）——
+         WPF 版归档后，在售版本的界面回归必须跟着迁过来。 -->
+    <ProjectReference Include="..\..\..\hgvd-avalonia\src\Hgvd.Avalonia\Hgvd.Avalonia.csproj" />
+    <!-- ★ 原先引用的 Hgvd.Gui（WPF 界面层）随 WPF 版一起归档，
+         EpisodeRowTests.cs 也已移到 archive/hgvd-csharp-wpf/（不再参与编译）。 -->
   </ItemGroup>
   <ItemGroup>
     <!-- 黄金向量随测试一起复制到输出目录 -->
