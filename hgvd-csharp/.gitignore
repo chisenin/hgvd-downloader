@@ -17,3 +17,7 @@ publish/
 *.log
 gui-diag.log
 gui-crash.log
+# 发布形态对比实验目录
+dist-fd/
+dist-fd1/
+dist-sc/
