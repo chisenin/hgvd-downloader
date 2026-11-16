@@ -25,7 +25,7 @@ export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
 OUT="dist"
-VER="1.1.0"
+VER="1.1.1"
 
 if [ "${1:-}" = "selftest" ]; then
     echo "[自检] 无头跑一遍收藏夹 / 分集 / 播放地址"

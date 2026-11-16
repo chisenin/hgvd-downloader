@@ -2,7 +2,7 @@
 # ★ 发版：打标签并推送 → 触发 GitHub Actions 的 release 工作流
 #
 # 用法：
-#     bash tools/publish_release.sh v1.1.0
+#     bash tools/publish_release.sh v1.1.1
 #     bash tools/publish_release.sh v1.0.1
 #
 # 前提：仓库已建好（https://github.com/chisenin/hgvd-downloader），
@@ -19,12 +19,12 @@ set -euo pipefail
 
 TAG="${1:-}"
 if [ -z "$TAG" ]; then
-    echo "用法: bash tools/publish_release.sh v1.1.0" >&2
+    echo "用法: bash tools/publish_release.sh v1.1.1" >&2
     exit 2
 fi
 case "$TAG" in
     v*) ;;
-    *) echo "标签建议带 v 前缀（如 v1.1.0），当前是：$TAG" >&2; exit 2 ;;
+    *) echo "标签建议带 v 前缀（如 v1.1.1），当前是：$TAG" >&2; exit 2 ;;
 esac
 
 cd "$(dirname "$0")/.."

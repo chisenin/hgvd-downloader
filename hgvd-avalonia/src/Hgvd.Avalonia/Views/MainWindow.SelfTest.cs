@@ -72,13 +72,19 @@ public partial class MainWindow
             Log("用法：--demo <series_id>");
             return;
         }
-        await LoadEpisodesAsync(seriesId, seriesId);
-        if (EpisodeRows.Count == 0) return;
+        var rows = await LoadEpisodesRawAsync(seriesId, seriesId);
+        if (rows.Count == 0) return;
+        // ★ 演示用：把这几集临时挂到清单里，才能按 Vid 找到数据
+        foreach (var r in rows.Take(3))
+        {
+            EpisodeRows.Add(r);
+            EpisodeView.Add(r);
+        }
         _stopRequested = false;
         _downloading = true;
         BtnRun.IsEnabled = false;
         BtnStop.IsEnabled = true;
-        await DownloadRowsAsync(EpisodeRows.Skip(skip).Take(3).ToList());
+        await DownloadRowsAsync(rows.Skip(skip).Take(3).ToList());
         _downloading = false;
         BtnRun.IsEnabled = true;
         BtnStop.IsEnabled = false;
@@ -162,78 +168,92 @@ public partial class MainWindow
         Check("剧名已补齐（批量 + album_detail 回落）", noTitle <= 2,
             $"批量拿到 {titledByBatch}/{ShelfRows.Count}，回落补齐后仍有 {noTitle} 项没标题（已下架）");
 
-        Check("全选框状态与列表一致",
-            ChkAll.IsChecked == (ShelfRows.Count > 0 && ShelfRows.All(r => r.IsChecked)),
-            $"全选框={ChkAll.IsChecked}，勾了 {ShelfRows.Count(r => r.IsChecked)}/{ShelfRows.Count}");
+        // ② 默认**不勾选**：收藏夹一上来不应该自动替用户选好
+        Check("收藏夹默认未勾选", ShelfRows.Count > 0 && ShelfRows.All(r => !r.IsChecked),
+            $"勾了 {ShelfRows.Count(r => r.IsChecked)}/{ShelfRows.Count}");
+        Check("右栏清单初始为空", EpisodeRows.Count == 0, $"{EpisodeRows.Count} 行");
 
-        // ② 点第一行（走 XAML 绑定的 SelectionChanged）
-        var first = FilteredShelf.FirstOrDefault();
+        // ③ 点列表行 → **不应该**再加载分集（点行逻辑已取消）
+        var first = FilteredShelf.FirstOrDefault(r => !r.IsShortDrama) ?? FilteredShelf.FirstOrDefault();
         if (first != null)
         {
-            LstShelf.SelectedItem = first;
-            for (int i = 0; i < 100 && EpisodeRows.Count == 0; i++) await Task.Delay(100);
-            Check("点列表行 → 右边出分集", EpisodeRows.Count > 0,
-                $"「{first.Display}」{EpisodeRows.Count} 集");
+            LstShelf.SelectedItem = first;      // SelectionMode=None，理论上选不中
+            await Task.Delay(400);
+            Check("点列表行不再触发加载", EpisodeRows.Count == 0,
+                $"点「{first.Display}」后右栏 {EpisodeRows.Count} 行");
         }
 
-        // ③ 勾选第二行 → 应切到第二部剧
-        var second = FilteredShelf.Skip(1).FirstOrDefault();
-        if (second != null)
+        // ④ 勾选第一部 → 分集**追加**进右栏清单
+        var a = FilteredShelf.FirstOrDefault(r => !r.IsShortDrama);
+        if (a != null)
         {
-            var cb = FindRowCheckBox(second);
+            var cb = FindRowCheckBox(a);
             Check("能定位到行内复选框", cb != null);
             if (cb != null)
             {
-                cb.IsChecked = false;    // 先取消
-                cb.IsChecked = true;     // 再勾上
+                cb.IsChecked = true;
                 cb.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                // 等「切到该剧」且分集真的加载出来
-                for (int i = 0; i < 150; i++)
-                {
-                    if (_currentSeries == second.SeriesId && EpisodeRows.Count > 0) break;
+                for (int i = 0; i < 150 && !_queueBySeries.ContainsKey(a.SeriesId); i++)
                     await Task.Delay(100);
-                }
-                Check("勾选剧目 → 右边切到该剧",
-                    _currentSeries == second.SeriesId && EpisodeRows.Count > 0,
-                    $"「{second.Display}」{EpisodeRows.Count} 集");
+                Check("勾选剧目 → 分集进清单",
+                    _queueBySeries.ContainsKey(a.SeriesId) && EpisodeRows.Any(r => r.IsGroupHeader),
+                    $"「{a.Display}」{(_queueBySeries.TryGetValue(a.SeriesId, out var rowsA) ? rowsA.Count : 0)} 集");
+                Check("清单里有该剧的分组标题行",
+                    EpisodeRows.Any(r => r.IsGroupHeader && r.SeriesId == a.SeriesId),
+                    $"标题行 {EpisodeRows.Count(r => r.IsGroupHeader)} 个");
             }
         }
 
-        // ④ 点全选（半选 → 全清 → 全选）
-        ChkAll.IsChecked = null;    // 模拟「全勾状态点一下」先变半选
-        ChkAll.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Check("点全选 → 全清", ShelfRows.Count > 0 && ShelfRows.All(r => !r.IsChecked),
-            $"勾了 {ShelfRows.Count(r => r.IsChecked)}/{ShelfRows.Count}");
-        Check("全清后全选框同步", ChkAll.IsChecked == false, $"全选框={ChkAll.IsChecked}");
-
-        ChkAll.IsChecked = true;    // 模拟「全清状态点一下」变全勾
-        ChkAll.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Check("再点全选 → 全选", ShelfRows.All(r => r.IsChecked),
-            $"勾了 {ShelfRows.Count(r => r.IsChecked)}/{ShelfRows.Count}");
-        Check("全选后全选框同步", ChkAll.IsChecked == true, $"全选框={ChkAll.IsChecked}");
-
-        // ⑤ 半选状态：取消一项 → 全选框应变半选
-        if (ShelfRows.Count > 1)
+        // ⑤ 再勾第二部 → **追加**而不是替换；两部剧序号各归各的
+        var b = FilteredShelf.Skip(1).FirstOrDefault(r => !r.IsShortDrama && r.SeriesId != a?.SeriesId);
+        if (a != null && b != null)
         {
-            ShelfRows[1].IsChecked = false;
-            Check("取消一项 → 全选框变半选", ChkAll.IsChecked == null,
-                $"全选框={ChkAll.IsChecked}");
-            ShelfRows[1].IsChecked = true;
+            var cb = FindRowCheckBox(b);
+            if (cb != null)
+            {
+                cb.IsChecked = true;
+                cb.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 150 && !_queueBySeries.ContainsKey(b.SeriesId); i++)
+                    await Task.Delay(100);
+            }
+            int rowsA = _queueBySeries.TryGetValue(a.SeriesId, out var ra) ? ra.Count : 0;
+            int rowsB = _queueBySeries.TryGetValue(b.SeriesId, out var rb) ? rb.Count : 0;
+            Check("勾第二部 → 第一部仍在清单里（追加不替换）", rowsA > 0, $"第一部 {rowsA} 集");
+            Check("两部剧都在清单里", _queueBySeries.Count >= 2, $"共 {_queueBySeries.Count} 部");
+            Check("分组标题行随部数增加",
+                EpisodeRows.Count(r => r.IsGroupHeader) == _queueBySeries.Count,
+                $"标题行 {EpisodeRows.Count(r => r.IsGroupHeader)} 个 / {_queueBySeries.Count} 部");
+            Check("各剧分集序号独立（都从 1 开始）",
+                _queueBySeries.Values.All(list => list.Count == 0 || list[0].Index == 1),
+                string.Join(" | ", _queueBySeries.Values.Select(l => l.Count == 0 ? "-" : l[0].Index.ToString())));
         }
 
-        // ⑥ 批量下载按钮的计数要跟着勾选走
-        int batchable = ShelfRows.Count(r => r.IsChecked && !r.IsShortDrama);
-        Check("批量下载按钮计数正确",
-            BtnBatchRun.Content?.ToString() == $"批量下载 ({batchable})",
-            $"按钮={BtnBatchRun.Content}，应有 {batchable} 部");
-        Check("批量下载按钮可用", BtnBatchRun.IsEnabled == (batchable > 0),
-            $"IsEnabled={BtnBatchRun.IsEnabled}");
+        // ⑥ 取消勾选第一部 → 只移出它自己，另一部不受影响
+        if (a != null && b != null)
+        {
+            var cb = FindRowCheckBox(a);
+            if (cb != null)
+            {
+                cb.IsChecked = false;
+                cb.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await Task.Delay(200);
+            }
+            Check("取消勾选 → 该剧移出清单",
+                !_queueBySeries.ContainsKey(a.SeriesId), $"剩余 {_queueBySeries.Count} 部");
+            Check("另一部仍在清单里", _queueBySeries.ContainsKey(b.SeriesId), $"剩余 {_queueBySeries.Count} 部");
+            Check("移出后分组标题行同步",
+                EpisodeRows.Count(r => r.IsGroupHeader) == _queueBySeries.Count,
+                $"标题行 {EpisodeRows.Count(r => r.IsGroupHeader)} 个 / {_queueBySeries.Count} 部");
+        }
 
-        // ⑦ ★ 批量下载逻辑本身（注入假下载器，绕开服务端风控）
+        // ⑦ ★ 清单整体下载（注入假下载器，绕开服务端风控）
+        //    ★ 关键断言：清单里两部剧的集号各自从 1 起，下载日志/文件名不会串号
         int fakeCalls = 0;
+        var seen = new List<string>();
         DownloadHook = async (ep, q, cb, ct) =>
         {
             fakeCalls++;
+            seen.Add($"{ep.SeriesTitle}#{ep.Index}");
             cb.OnPhase?.Invoke("下载中");
             return new DownloadResult
             {
@@ -242,17 +262,30 @@ public partial class MainWindow
         };
         try
         {
-            var two = FilteredShelf.Take(2).ToList();
-            var br = await BatchDownloadAsync(two);
-            Check("批量下载：处理了 2 部", br.DoneSeries == 2, $"DoneSeries={br.DoneSeries}");
-            Check("批量下载：逐集都跑了", fakeCalls == br.Ok, $"调用 {fakeCalls} 次，成功 {br.Ok} 集");
-            Check("批量下载：状态标为已完成",
-                EpisodeRows.Count > 0 && EpisodeRows.All(r => r.State == "已完成"),
-                $"{EpisodeRows.Count} 行，状态={string.Join("/", EpisodeRows.Select(r => r.State).Distinct())}");
-            Check("批量下载：无失败无中止", br.Fail == 0 && !br.Aborted,
-                $"失败 {br.Fail}，中止={br.Aborted}");
+            var queued = _queueBySeries.Values.SelectMany(v => v).Where(r => r.IsEpisode).ToList();
+            Check("清单里确实有待下载分集", queued.Count > 0, $"{queued.Count} 集");
+            await DownloadRowsAsync(queued);
+            Check("下载跑遍了清单里的每一集", fakeCalls == queued.Count,
+                $"调用 {fakeCalls} 次 / {queued.Count} 集");
+            Check("状态都标为已完成",
+                queued.All(r => r.State == "已完成"),
+                string.Join("/", queued.Select(r => r.State).Distinct()));
+            // 集号串号检查：同一部剧的集号必须递增且不越过该剧集数
+            bool numberingOk = _queueBySeries.Values.All(list =>
+                list.Where(r => r.IsEpisode).Select(r => r.Index).SequenceEqual(
+                    Enumerable.Range(1, list.Count(r => r.IsEpisode))));
+            Check("各剧集号独立、不串号", numberingOk,
+                string.Join(" | ", _queueBySeries.Values.Select(l =>
+                    l.Count == 0 ? "-" : $"{l[0].Index}..{l[^1].Index}")));
         }
         finally { DownloadHook = null; }
+
+        // ⑧ 状态栏的统计要跟清单一致
+        int qTotal = EpisodeRows.Count(r => r.IsEpisode);
+        int qDone = EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成");
+        Check("状态栏统计与清单一致",
+            LblRight.Text == $"已完成 {qDone} / {qTotal}",
+            $"LblRight=\"{LblRight.Text}\"，应为 已完成 {qDone} / {qTotal}");
 
         // ⑧ ★ 状态栏右侧要有版本号
         Check("状态栏右侧显示版本号",

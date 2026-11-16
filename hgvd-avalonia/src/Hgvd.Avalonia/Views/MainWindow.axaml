@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ctl="using:Hgvd.Avalonia.Controls"
         x:Class="Hgvd.Avalonia.Views.MainWindow"
-        Title="红果视频下载器  v1.1.0"
+        Title="红果视频下载器  v1.1.1"
         Width="1180" Height="780" MinWidth="960" MinHeight="620"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Microsoft YaHei, Segoe UI"
@@ -105,10 +105,6 @@
 
             <DockPanel Grid.Row="0" LastChildFill="False">
               <TextBlock Text="收藏夹" Classes="section" />
-              <CheckBox x:Name="ChkAll" DockPanel.Dock="Right" Content="全选"
-                        IsThreeState="True" VerticalAlignment="Center"
-                        ToolTip.Tip="勾选全部 / 取消全部（半选状态表示只勾了一部分）"
-                        Click="ChkAll_Click" />
             </DockPanel>
 
             <TextBox x:Name="EdSearch" Grid.Row="1" Classes="round" Margin="0,8,0,6"
@@ -130,7 +126,7 @@
                       <ColumnDefinition Width="*" />
                       <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <!-- ★ 点勾选框也要能打开右侧分集列表 -->
+                    <!-- ★ 勾选即把该剧的分集「追加」进右栏下载清单（取消勾选则移出） -->
                     <CheckBox Grid.Column="0"
                               IsChecked="{Binding IsChecked, Mode=TwoWay}"
                               VerticalAlignment="Center" Margin="0,0,8,0"
@@ -152,11 +148,6 @@
             <DockPanel Grid.Row="3" Margin="0,8,0,0" LastChildFill="False">
               <Button x:Name="BtnRefresh" DockPanel.Dock="Left" Content="刷新"
                       Classes="modern" Click="BtnRefresh_Click" />
-              <!-- ★ 批量下载：按左栏勾选，依次下多部剧 -->
-              <Button x:Name="BtnBatchRun" DockPanel.Dock="Left" Margin="6,0,0,0"
-                      Content="批量下载 (0)" IsEnabled="False"
-                      Classes="primary" Click="BtnBatchRun_Click"
-                      ToolTip.Tip="下载左栏所有已勾选剧目的全部分集&#10;（短剧会跳过；已下载过的会跳过）" />
               <TextBlock x:Name="LblHint" DockPanel.Dock="Right" Margin="10,0,0,0"
                          Classes="muted"
                          TextTrimming="CharacterEllipsis"
@@ -182,7 +173,7 @@
 
               <DockPanel Grid.Row="0" LastChildFill="False">
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
-                  <TextBlock Text="分集列表 ·" Classes="section" />
+                  <TextBlock Text="下载清单 ·" Classes="section" />
                   <!-- ★ 跑马灯要限宽：它有内容时会把右边的
                        画质/下载/停止/提取缓存按钮挤出窗口 -->
                   <ctl:MarqueeControl x:Name="Marquee" Margin="4,0,0,0"
@@ -204,7 +195,7 @@
                             SelectionChanged="CmbQuality_SelectionChanged" />
                   <Button x:Name="BtnRun" Content="下载" Margin="3,0,0,0"
                           Classes="primary" Click="BtnRun_Click"
-                          ToolTip.Tip="有选中行则只下选中的；没有选中则下当前视图里所有待下载的" />
+                          ToolTip.Tip="有选中行则只下选中的；没选中则下清单里所有待下载的&#10;（左边勾选几部剧，它们的分集会依次追加到清单里）" />
                   <Button x:Name="BtnStop" Content="停止" Margin="3,0,0,0"
                           Classes="modern danger" Click="BtnStop_Click" IsEnabled="False" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
@@ -243,34 +234,48 @@
                            ScrollViewer.VerticalScrollBarVisibility="Visible">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
-                        <Grid Height="26" ColumnDefinitions="58,Auto,54,126,74,136">
-                          <!-- 状态胶囊 -->
-                          <Border Grid.Column="0" IsVisible="{Binding ShowPill}"
-                                  Background="{Binding StatePillBg}"
-                                  BorderBrush="{Binding StatePillBorder}"
-                                  BorderThickness="0.5" CornerRadius="9"
-                                  Padding="8,2" HorizontalAlignment="Left"
-                                  VerticalAlignment="Center">
-                            <TextBlock Text="{Binding StateWord}" FontSize="11" />
+                        <Grid>
+                          <!-- 正常分集行 -->
+                          <Grid Height="26" ColumnDefinitions="58,Auto,54,126,74,136"
+                                IsVisible="{Binding IsEpisode}">
+                            <!-- 状态胶囊 -->
+                            <Border Grid.Column="0" IsVisible="{Binding ShowPill}"
+                                    Background="{Binding StatePillBg}"
+                                    BorderBrush="{Binding StatePillBorder}"
+                                    BorderThickness="0.5" CornerRadius="9"
+                                    Padding="8,2" HorizontalAlignment="Left"
+                                    VerticalAlignment="Center">
+                              <TextBlock Text="{Binding StateWord}" FontSize="11" />
+                            </Border>
+                            <!-- 标题 -->
+                            <TextBlock Grid.Column="1" Text="{Binding Title}"
+                                       Width="{Binding TitleWidth}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip.Tip="{Binding Title}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBlock Grid.Column="2" Text="{Binding DurationText}"
+                                       Foreground="#8494A8" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="3" Text="{Binding SizeText}"
+                                       Foreground="#8494A8" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="4" Text="{Binding SpeedText}"
+                                       Foreground="#8494A8" VerticalAlignment="Center" />
+                            <!-- 进度：渐变条 + 居中百分比 -->
+                            <ctl:ProgressCell Grid.Column="5"
+                                              Percent="{Binding Percent}"
+                                              Text="{Binding ProgressText}"
+                                              Fill="{Binding ProgressFill}"
+                                              VerticalAlignment="Center" />
+                          </Grid>
+
+                          <!-- ★ 分组标题行：多部剧累计时把每部剧分开，序号各归各的 -->
+                          <Border IsVisible="{Binding IsGroupHeader}" Height="26"
+                                  Margin="0,6,0,2" Padding="10,0" CornerRadius="6"
+                                  Background="#F1F4FA">
+                            <TextBlock Text="{Binding HeaderText}" FontSize="12"
+                                       FontWeight="SemiBold" Foreground="#4A5A74"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis" />
                           </Border>
-                          <!-- 标题 -->
-                          <TextBlock Grid.Column="1" Text="{Binding Title}"
-                                     Width="{Binding TitleWidth}"
-                                     TextTrimming="CharacterEllipsis"
-                                     ToolTip.Tip="{Binding Title}"
-                                     VerticalAlignment="Center" Margin="0,0,6,0" />
-                          <TextBlock Grid.Column="2" Text="{Binding DurationText}"
-                                     Foreground="#8494A8" VerticalAlignment="Center" />
-                          <TextBlock Grid.Column="3" Text="{Binding SizeText}"
-                                     Foreground="#8494A8" VerticalAlignment="Center" />
-                          <TextBlock Grid.Column="4" Text="{Binding SpeedText}"
-                                     Foreground="#8494A8" VerticalAlignment="Center" />
-                          <!-- 进度：渐变条 + 居中百分比 -->
-                          <ctl:ProgressCell Grid.Column="5"
-                                            Percent="{Binding Percent}"
-                                            Text="{Binding ProgressText}"
-                                            Fill="{Binding ProgressFill}"
-                                            VerticalAlignment="Center" />
                         </Grid>
                       </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -309,7 +314,7 @@
         <!-- ★ 右侧固定放版本号（用户要求）；
              「已完成 N / M」挪到左边、跟在状态文字后面。 -->
         <TextBlock x:Name="LblVersion" DockPanel.Dock="Right" VerticalAlignment="Center"
-                   Text="v1.1.0" Foreground="#7C8AA0" FontSize="11"
+                   Text="v1.1.1" Foreground="#7C8AA0" FontSize="11"
                    Margin="12,0,0,0" />
         <TextBlock x:Name="LblStatus" DockPanel.Dock="Left" Text="就绪"
                    VerticalAlignment="Center" Classes="muted" />

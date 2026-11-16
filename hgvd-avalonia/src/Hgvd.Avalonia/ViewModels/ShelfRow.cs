@@ -19,7 +19,9 @@ public sealed class ShelfRow : NotifyBase
         TypeLabel = item.TypeLabel;
         IsShortDrama = item.IsShortDrama;
         BookType = item.BookType;
-        IsChecked = true;
+        // ★ 默认**不勾选**：收藏夹动辄几十上百项，一次全下不现实，
+        //   勾哪些由用户决定（勾上才把该剧分集追加进右栏下载清单）。
+        IsChecked = false;
     }
 
     public string SeriesId { get; }

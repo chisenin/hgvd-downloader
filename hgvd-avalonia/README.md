@@ -1,7 +1,7 @@
 # 红果视频下载器 —— C# / Avalonia 界面版（发行版）
 
 用 **C# + Avalonia 11** 写的界面层，产出**自包含单文件** exe：
-`hgvd-downloader-v1.1.0.exe`（约 46 MB，目标机不用装 .NET）。
+`hgvd-downloader-v1.1.1.exe`（约 46 MB，目标机不用装 .NET）。
 
 > 本版与 Python 版（[`../hgvd/`](../hgvd/)）**共用同一套核心**
 > （`../hgvd-csharp/src/Hgvd.Core`：签名链、下载器、配置目录），
@@ -62,10 +62,10 @@ Git Bash / MSYS 里用等价脚本：
 ## 三、命令行自检
 
 ```bash
-hgvd-downloader-v1.1.0.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
-hgvd-downloader-v1.1.0.exe --uitest                 # 界面交互自检
-hgvd-downloader-v1.1.0.exe --batchtest [部数]        # 批量下载冒烟测试
-hgvd-downloader-v1.1.0.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
+hgvd-downloader-v1.1.1.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
+hgvd-downloader-v1.1.1.exe --uitest                 # 界面交互自检
+hgvd-downloader-v1.1.1.exe --batchtest [部数]        # 批量下载冒烟测试
+hgvd-downloader-v1.1.1.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
 ```
 
 > ★ 程序是 `WinExe`（没有控制台），启动时会 `AttachConsole` 挂上父进程的控制台，
@@ -76,14 +76,17 @@ hgvd-downloader-v1.1.0.exe --demo <series_id> [skip] # 加载一部剧并真的�
 ```
 [✓] 收藏夹已加载
 [✓] 剧名已补齐（批量 + album_detail 回落）
-[✓] 全选框状态与列表一致
-[✓] 点列表行 → 右边出分集
+[✓] 收藏夹默认未勾选（0/236）
+[✓] 右栏清单初始为空
+[✓] 点列表行不再触发加载
 [✓] 能定位到行内复选框
-[✓] 勾选剧目 → 右边切到该剧
-[✓] 点全选 → 全清 / 全清后全选框同步 / 再点全选 → 全选 / 全选后全选框同步
-[✓] 取消一项 → 全选框变半选
-[✓] 批量下载按钮计数正确 / 可用
-[✓] 批量下载：处理了 N 部 / 逐集都跑了 / 状态标为已完成 / 无失败无中止
+[✓] 勾选剧目 → 分集进清单 / 有分组标题行
+[✓] 勾第二部 → 第一部仍在清单里（追加不替换）/ 两部剧都在清单里
+[✓] 分组标题行随部数增加 / 各剧分集序号独立（都从 1 开始）
+[✓] 取消勾选 → 该剧移出清单 / 另一部仍在清单里 / 标题行同步
+[✓] 清单里确实有待下载分集 / 下载跑遍了清单里的每一集
+[✓] 状态都标为已完成 / 各剧集号独立、不串号
+[✓] 状态栏统计与清单一致
 [✓] 状态栏右侧显示版本号
 [✓] 下载目录改文本框即生效
 [✓] logo 区单击打开「关于」

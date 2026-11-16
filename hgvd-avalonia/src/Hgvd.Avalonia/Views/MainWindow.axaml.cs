@@ -42,6 +42,11 @@ public partial class MainWindow : Window
     private CancellationTokenSource _cts = new();
 
     public ObservableCollection<ShelfRow> ShelfRows { get; } = new();
+    /// <summary>
+    /// 右栏下载清单（含每部剧的分组标题行）。
+    /// ★ 勾选一部剧 → 它的分集**追加**到尾部；取消勾选 → 整组移出。
+    ///   多部剧同时在里面时，靠分组标题行隔开，序号各归各的，不会串。
+    /// </summary>
     public ObservableCollection<EpisodeRow> EpisodeRows { get; } = new();
 
     /// <summary>分集表**实际显示**的集合（= EpisodeRows 按当前筛选过滤后的结果）。</summary>
@@ -49,12 +54,13 @@ public partial class MainWindow : Window
 
     public ObservableCollection<ShelfRow> FilteredShelf { get; } = new();
 
-    private readonly List<Core.Api.Episode> _eps = new();
-    private string _currentSeries = "";
-    private string _currentTitle = "";
+    /// <summary>vid → 分集原始数据（下载时按 Vid 取，多部剧共用一个缓存）。</summary>
+    private readonly Dictionary<string, Core.Api.Episode> _epCache = new();
+    /// <summary>series_id → 已加入清单的分集行（取消勾选时整组移除）。</summary>
+    private readonly Dictionary<string, List<EpisodeRow>> _queueBySeries = new();
+    /// <summary>series_id → 该剧的分组标题行。</summary>
+    private readonly Dictionary<string, EpisodeRow> _queueHeaders = new();
 
-    /// <summary>正在加载分集的剧目 id（防止点勾选框 + 点列表行重复触发）。</summary>
-    private string _loadingSeries = "";
     /// <summary>分集视图过滤（全部 / 待下载 / 已完成 / 失败）。</summary>
     private string _epViewTag = "all";
     /// <summary>收藏夹是否正在刷新（自检要等它彻底结束）。</summary>
@@ -203,7 +209,7 @@ public partial class MainWindow : Window
         ShelfRows.Clear();
         _rowMap.Clear();
         ApplyFilter();
-        SyncChkAll();
+        ClearQueue();       // 清单跟收藏夹同步重建，避免留下已消失的剧
 
         int titled = 0;
         var sw = Stopwatch.StartNew();
@@ -241,7 +247,7 @@ public partial class MainWindow : Window
                 }
 
             ApplyFilter();
-            SyncChkAll();
+            UpdateQueueSummary();
             int dramas = ShelfRows.Count(r => r.IsShortDrama);
             Log($"收藏夹共 {ShelfRows.Count} 项（短剧 {dramas} 部，教学内容 {ShelfRows.Count - dramas} 部）"
                 + $" · 标题 {titled} 个 · 用时 {sw.Elapsed.TotalSeconds:0.0}s");
@@ -298,27 +304,23 @@ public partial class MainWindow : Window
                 FilteredShelf.Add(r);
     }
 
-    /// <summary>
-    /// 把「全选」框同步成列表的真实状态（全勾 / 半选 / 全不选）。
-    /// </summary>
-    private void SyncChkAll()
+    /// <summary>把右栏下载清单的统计刷到状态栏 / 提示行。</summary>
+    private void UpdateQueueSummary()
     {
-        int total = ShelfRows.Count;
-        int on = ShelfRows.Count(r => r.IsChecked);
-        if (total == 0) ChkAll.IsChecked = false;
-        else if (on == total) ChkAll.IsChecked = true;
-        else if (on == 0) ChkAll.IsChecked = false;
-        else ChkAll.IsChecked = null;   // 半选
+        int series = _queueBySeries.Count;
+        int total = EpisodeRows.Count(r => r.IsEpisode);
+        int done = EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成");
+        int failed = EpisodeRows.Count(r => r.IsEpisode && r.State == "失败");
 
-        // 批量下载按钮跟着勾选数走
-        int batchable = ShelfRows.Count(r => r.IsChecked && !r.IsShortDrama);
-        BtnBatchRun.Content = $"批量下载 ({batchable})";
-        BtnBatchRun.IsEnabled = batchable > 0 && !_downloading;
+        LblEpHint.Text = series == 0
+            ? "在左边勾选剧目，它的分集会自动加入这里（可累计多部）"
+            : $"已选 {series} 部 · 共 {total} 集 · 已完成 {done} · 失败 {failed}";
+        LblRight.Text = series == 0 ? "" : $"已完成 {done} / {total}";
     }
 
     private void ShelfRow_PropertyChanged(object sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ShelfRow.IsChecked)) SyncChkAll();
+        if (e.PropertyName == nameof(ShelfRow.IsChecked)) UpdateQueueSummary();
     }
 
     private void SetAuthLabel()
@@ -326,65 +328,113 @@ public partial class MainWindow : Window
         LblAuth.Text = _svc.LoggedIn ? "授权：已就绪" : "授权：未登录";
     }
 
-    // ---------------------------------------------------------- 分集
+    // ---------------------------------------------------------- 下载清单
 
-    /// <summary>
-    /// 选中某部剧 → 右侧加载分集。
-    /// ★ 点击列表行、点勾选框都走这里。
-    /// </summary>
-    private async Task SelectSeriesAsync(ShelfRow row)
+    /// <summary>清空右栏下载清单（刷新收藏夹时用）。</summary>
+    private void ClearQueue()
     {
-        if (row is null) return;
-        // 同一部剧已经在显示了就不重复请求
-        if (row.SeriesId == _currentSeries
-            && (EpisodeRows.Count > 0 || _loadingSeries == row.SeriesId))
-            return;
-        _currentSeries = row.SeriesId;
-        _currentTitle = row.Display;
-        await LoadEpisodesAsync(row.SeriesId, row.Display, row);
-    }
-
-    private async Task LoadEpisodesAsync(string seriesId, string title, ShelfRow row = null)
-    {
-        _loadingSeries = seriesId;
-        _currentSeries = seriesId;
-        _currentTitle = title;      // ★ 错误信息里要带剧名（批量下载时尤其重要）
-        LblStatus.Text = $"正在读取「{title}」的分集…";
-        LblEpHint.Text = $"正在读取「{title}」的分集…";
-        _eps.Clear();
         EpisodeRows.Clear();
         EpisodeView.Clear();
+        _queueBySeries.Clear();
+        _queueHeaders.Clear();
+        _epCache.Clear();
+        Marquee.Text = "";
+        UpdateQueueSummary();
+    }
+
+    /// <summary>
+    /// 勾选一部剧 → 把它的分集**追加**到右栏清单末尾（不是替换）。
+    /// ★ 多部剧各自成组，分组标题行把序号隔开，下载文件名也按各自的集号走。
+    /// </summary>
+    private async Task AddSeriesToQueueAsync(ShelfRow row)
+    {
+        if (row is null) return;
+        if (_queueBySeries.ContainsKey(row.SeriesId)) return;      // 已在清单里
+
+        LblStatus.Text = $"正在读取「{row.Display}」的分集…";
         try
         {
-            var eps = await _svc.ListEpisodesAsync(seriesId, 3, _cts.Token);
-            _eps.AddRange(eps);
+            var eps = await _svc.ListEpisodesAsync(row.SeriesId, 3, _cts.Token);
+            // ★ 等待期间用户可能已取消勾选 → 二次确认，别把已取消的又加回去
+            if (!row.IsChecked || _queueBySeries.ContainsKey(row.SeriesId)) return;
+
+            foreach (var e in eps) _epCache[e.Vid] = e;
+            var rows = new List<EpisodeRow>();
             foreach (var e in eps)
             {
                 var r = new EpisodeRow(e) { TitleWidth = _titleWidth };
                 r.PropertyChanged += EpisodeRow_PropertyChanged;
+                rows.Add(r);
+            }
+
+            var header = EpisodeRow.Header(row.SeriesId, row.Display, eps.Count);
+            _queueHeaders[row.SeriesId] = header;
+            _queueBySeries[row.SeriesId] = rows;
+
+            EpisodeRows.Add(header);
+            EpisodeView.Add(header);
+            foreach (var r in rows)
+            {
                 EpisodeRows.Add(r);
                 EpisodeView.Add(r);
             }
 
-            string totalDur = eps.Count > 0
-                ? TimeSpan.FromSeconds(eps.Sum(x => x.Duration)).ToString(@"hh\:mm\:ss")
-                : "";
-            LblEpHint.Text = $"{title} · 共 {eps.Count} 集"
-                + (totalDur.Length > 0 ? $" · 总时长约 {totalDur}" : "");
-            Marquee.Text = eps.Count > 0 ? $"{title} — {eps[0].Title}" : title;
-            Log($"「{title}」共 {eps.Count} 集");
+            if (eps.Count > 0) row.EpisodeCnt = eps.Count;
+            Marquee.Text = eps.Count > 0 ? $"{row.Display} — {eps[0].Title}" : row.Display;
+            Log($"「{row.Display}」{eps.Count} 集已加入下载清单（当前 {_queueBySeries.Count} 部）");
+            UpdateQueueSummary();
             LblStatus.Text = "就绪";
-
-            // ★ 顺手把这一行的真实集数补上（列表右侧就能看到「N 集」）
-            if (row != null && eps.Count > 0) row.EpisodeCnt = eps.Count;
         }
         catch (Exception e)
         {
+            // 读取失败 → 把勾去掉，别让用户以为加进来了
+            row.IsChecked = false;
             Log($"取分集失败：{e.Message}");
-            ShowBanner($"取分集失败：{e.Message}", BannerKind.Err);
+            ShowBanner($"取「{row.Display}」分集失败：{e.Message}", BannerKind.Err);
             LblStatus.Text = "就绪";
         }
-        finally { _loadingSeries = ""; }
+    }
+
+    /// <summary>取消勾选 → 把这部剧的整组分集从清单里移出。</summary>
+    private void RemoveSeriesFromQueue(ShelfRow row)
+    {
+        if (row is null) return;
+        string sid = row.SeriesId;
+        if (!_queueBySeries.TryGetValue(sid, out var rows)) return;
+
+        foreach (var r in rows)
+        {
+            EpisodeRows.Remove(r);
+            EpisodeView.Remove(r);
+            _epCache.Remove(r.Vid);
+        }
+        if (_queueHeaders.TryGetValue(sid, out var header))
+        {
+            EpisodeRows.Remove(header);
+            EpisodeView.Remove(header);
+            _queueHeaders.Remove(sid);
+        }
+        _queueBySeries.Remove(sid);
+        Log($"「{row.Display}」已从下载清单移出（当前 {_queueBySeries.Count} 部）");
+        UpdateQueueSummary();
+    }
+
+    /// <summary>
+    /// 单独把某一部剧的分集读出来（只返回数据行，**不往右栏清单里加**）。
+    /// ★ 给 --batchtest / 批量下载这类「一次性过一遍」的流程用，不动用户已勾选的清单。
+    /// </summary>
+    private async Task<List<EpisodeRow>> LoadEpisodesRawAsync(string seriesId, string title)
+    {
+        var eps = await _svc.ListEpisodesAsync(seriesId, 3, _cts.Token);
+        var rows = new List<EpisodeRow>();
+        foreach (var e in eps)
+        {
+            _epCache[e.Vid] = e;    // 下载时按 vid 取数据
+            var r = new EpisodeRow(e) { TitleWidth = _titleWidth };
+            rows.Add(r);
+        }
+        Log($"「{title}」共 {eps.Count} 集");
+        return rows;
     }
 
     /// <summary>
@@ -397,21 +447,39 @@ public partial class MainWindow : Window
         ApplyEpView();
     }
 
-    /// <summary>按当前过滤条件刷新分集视图（保留选中行）。</summary>
+    /// <summary>按当前过滤条件刷新分集视图（保留选中行；分组标题行跟随本组是否有可见行）。</summary>
     private void ApplyEpView()
     {
         // 先记下选中的行（按 Vid 认，刷新后行对象会换）
         var sel = LstEpisodes.SelectedItems?.Cast<EpisodeRow>()
+            .Where(r => r.IsEpisode)
             .Select(r => r.Vid).ToHashSet() ?? new HashSet<string>();
 
         EpisodeView.Clear();
+        EpisodeRow? lastHeader = null;
+        bool headerAdded = false;
         foreach (var r in EpisodeRows)
-            if (MatchEpView(r, _epViewTag)) EpisodeView.Add(r);
+        {
+            if (r.IsGroupHeader)
+            {
+                lastHeader = r;
+                headerAdded = false;
+                continue;
+            }
+            if (!MatchEpView(r, _epViewTag)) continue;
+            // ★ 只有本组真有可见分集时才把标题行带出来，别留个空标题
+            if (lastHeader != null && !headerAdded)
+            {
+                EpisodeView.Add(lastHeader);
+                headerAdded = true;
+            }
+            EpisodeView.Add(r);
+        }
 
         if (sel.Count == 0) return;
         LstEpisodes.Selection.Clear();
         for (int i = 0; i < EpisodeView.Count; i++)
-            if (sel.Contains(EpisodeView[i].Vid))
+            if (EpisodeView[i].IsEpisode && sel.Contains(EpisodeView[i].Vid))
                 LstEpisodes.Selection.Select(i);
     }
 
@@ -469,15 +537,27 @@ public partial class MainWindow : Window
 
     private async void BtnRun_Click(object sender, RoutedEventArgs e)
     {
-        if (_eps.Count == 0)
+        if (_downloading) return;   // 下载中重复点会打乱状态，直接忽略
+        var queued = _queueBySeries.Values
+            .SelectMany(v => v)
+            .Where(r => r.IsEpisode).ToList();
+        if (queued.Count == 0)
         {
-            ShowBanner("先在左边选一部剧。", BannerKind.Info);
+            ShowBanner("先在左边勾选剧目，它的分集会加到右边清单里。", BannerKind.Info);
             return;
         }
 
-        var sel = LstEpisodes.SelectedItems?.Cast<EpisodeRow>().ToList() ?? new List<EpisodeRow>();
-        // ★ 没选中行时，下的是**当前视图**里的（待下载视图 = 只下待下载的）。
-        var targets = sel.Count > 0 ? sel : EpisodeView.ToList();
+        // ★ 有选中行 → 只下选中的；没选中 → 下清单里所有**待下载**的（已完成不重复跑）
+        var sel = LstEpisodes.SelectedItems?.Cast<EpisodeRow>()
+            .Where(r => r.IsEpisode).ToList() ?? new List<EpisodeRow>();
+        var targets = sel.Count > 0
+            ? sel
+            : queued.Where(r => r.State == "待下载").ToList();
+        if (targets.Count == 0)
+        {
+            ShowBanner("清单里没有待下载的分集（都已完成）。", BannerKind.Info);
+            return;
+        }
 
         // ★ 短剧默认跳过（bytevc 加密，解不出画面）
         if (targets.Any(t => t.State == "待下载" && IsDramaRow(t)))
@@ -501,76 +581,25 @@ public partial class MainWindow : Window
         _downloading = true;
         BtnRun.IsEnabled = false;
         BtnStop.IsEnabled = true;
-        SyncChkAll();
         var res = await DownloadRowsAsync(targets);
         _downloading = false;
         BtnRun.IsEnabled = true;
         BtnStop.IsEnabled = false;
         LblStatus.Text = "就绪";
-        SyncChkAll();
+        UpdateQueueSummary();
         if (res.Aborted)
             ShowBanner("播放接口被服务端限流（连续多次返回空 body），已停止。"
                      + "\n等待几分钟后重试即可恢复；急用可改用「提取App缓存」。", BannerKind.Err);
         Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
     }
 
-    /// <summary>
-    /// ★ 按左栏**勾选**批量下载多部剧。
-    /// </summary>
-    private async void BtnBatchRun_Click(object sender, RoutedEventArgs e)
-    {
-        var checkedList = ShelfRows.Where(r => r.IsChecked).ToList();
-        if (checkedList.Count == 0)
-        {
-            ShowBanner("先在左边勾选要下载的剧目。", BannerKind.Info);
-            return;
-        }
-        ApplyOutDir();   // ★ 同上：批量下载前先落实目录
-        int dramas = checkedList.Count(r => r.IsShortDrama);
-        var todo = checkedList.Where(r => !r.IsShortDrama).ToList();
-        if (todo.Count == 0)
-        {
-            ShowBanner("勾选的都是短剧（bytevc 加密），下载出来也没法播。", BannerKind.Info);
-            return;
-        }
-
-        // 勾了几十部就下几十部 —— 这种不可逆的大动作先确认一下
-        if (todo.Count > 1)
-        {
-            bool ok = await MsgBox.ConfirmAsync(this, "批量下载确认",
-                $"下载勾选的 {todo.Count} 部剧？\n\n"
-                + $"· 短剧 {dramas} 部会自动跳过\n"
-                + "· 已经下载过的会自动跳过\n"
-                + "· 过程中可以点「停止」");
-            if (!ok) return;
-        }
-
-        _stopRequested = false;
-        _downloading = true;
-        BtnBatchRun.IsEnabled = false;
-        BtnRun.IsEnabled = false;
-        BtnStop.IsEnabled = true;
-        SyncChkAll();
-
-        var res = await BatchDownloadAsync(todo);
-
-        BtnBatchRun.IsEnabled = true;
-        BtnRun.IsEnabled = true;
-        BtnStop.IsEnabled = false;
-        _downloading = false;
-        LblStatus.Text = "就绪";
-        SyncChkAll();
-        if (res.Aborted)
-            ShowBanner("播放接口被服务端限流（连续多次返回空 body），已停止。"
-                     + "\n等待几分钟后重试即可恢复；急用可改用「提取App缓存」出片。", BannerKind.Err);
-        Log($"—— 批量下载结束：{res.DoneSeries}/{todo.Count} 部 · 成功 {res.Ok} 集 · 失败 {res.Fail} 集");
-    }
-
     /// <summary>批量下载的结果。</summary>
     public readonly record struct BatchResult(int Ok, int Fail, int DoneSeries, bool Aborted);
 
     /// <summary>
-    /// 批量下载的核心：依次处理每部剧 —— 加载分集 → 逐集下载 → 换下一部。
+    /// 批量下载的核心：依次处理每部剧 —— 取分集（**不进右栏清单**）→ 逐集下载。
+    /// ★ 给 --batchtest 用；用户日常路径是「勾选累计到右栏清单，再点下载」，
+    ///   这里是独立流程，不碰用户已经勾好的清单。
     /// </summary>
     private async Task<BatchResult> BatchDownloadAsync(List<ShelfRow> todo)
     {
@@ -579,9 +608,21 @@ public partial class MainWindow : Window
         {
             if (_stopRequested) break;
             LblStatus.Text = $"正在准备「{row.Display}」的分集…";
-            await LoadEpisodesAsync(row.SeriesId, row.Display, row);
 
-            var pending = EpisodeRows.Where(r => r.State == "待下载").ToList();
+            List<EpisodeRow> rows;
+            try
+            {
+                rows = await LoadEpisodesRawAsync(row.SeriesId, row.Display);
+            }
+            catch (Exception e)
+            {
+                Log($"✗ 取「{row.Display}」分集失败：{e.Message}");
+                fail++;
+                doneSeries++;
+                continue;
+            }
+
+            var pending = rows.Where(r => r.State == "待下载").ToList();
             if (pending.Count == 0)
             {
                 Log($"「{row.Display}」没有待下载的分集，跳过");
@@ -622,9 +663,10 @@ public partial class MainWindow : Window
         foreach (var row in targets)
         {
             if (_stopRequested) break;
-            var ep = _eps.FirstOrDefault(x => x.Vid == row.Vid);
-            if (ep is null) continue;
+            if (row.IsGroupHeader) continue;                 // 分组标题不是真实分集
+            if (!_epCache.TryGetValue(row.Vid, out var ep)) continue;
 
+            string series = string.IsNullOrEmpty(row.SeriesTitle) ? row.SeriesId : row.SeriesTitle;
             row.State = "下载中";
             row.Error = "";
 
@@ -668,7 +710,7 @@ public partial class MainWindow : Window
                         row.Total = res.Size;
                     });
                     string tag = res.Skipped ? "已存在" : "完成";
-                    Log($"✓ [{row.Index}] {tag} "
+                    Log($"✓ {series} [{row.Index}] {tag} "
                         + $"{Util.FmtSize(res.Size)} {Util.FmtDuration(res.Duration)}");
                 }
                 else
@@ -679,8 +721,8 @@ public partial class MainWindow : Window
                     bool rateLimited = res.Error?.Contains("空 body") == true;
                     if (res.Error?.Contains("无法解析播放地址") == true && rateLimited) addrFail++;
                     RunOnUi(() => { row.State = "失败"; row.Error = res.Error; });
-                    Log($"✗ [{row.Index}] {res.Error}");
-                    _downloadErrors.Add($"「{_currentTitle}」[{row.Index}] {res.Error}");
+                    Log($"✗ {series} [{row.Index}] {res.Error}");
+                    _downloadErrors.Add($"「{series}」[{row.Index}] {res.Error}");
                     // ★ 连续空 body → 服务端限流（Core 里已熔断），立刻停
                     if (addrFail >= 3 || HongguoService.PlaybackBlocked)
                     {
@@ -694,8 +736,8 @@ public partial class MainWindow : Window
             {
                 fail++;
                 RunOnUi(() => { row.State = "失败"; row.Error = ex.Message; });
-                Log($"✗ [{row.Index}] {ex.Message}");
-                _downloadErrors.Add($"「{_currentTitle}」[{row.Index}] {ex.Message}");
+                Log($"✗ {series} [{row.Index}] {ex.Message}");
+                _downloadErrors.Add($"「{series}」[{row.Index}] {ex.Message}");
             }
             UpdateHint();
         }
@@ -741,13 +783,7 @@ public partial class MainWindow : Window
             }
     }
 
-    private void UpdateHint()
-    {
-        int done = EpisodeRows.Count(r => r.State == "已完成");
-        int failed = EpisodeRows.Count(r => r.State == "失败");
-        LblEpHint.Text = $"{_currentTitle} · 共 {_eps.Count} 集 · 已完成 {done} · 失败 {failed}";
-        LblRight.Text = $"已完成 {done} / {_eps.Count}";
-    }
+    private void UpdateHint() => UpdateQueueSummary();
 
     // ---------------------------------------------------------- 界面事件
 
@@ -757,35 +793,29 @@ public partial class MainWindow : Window
     private void EdSearch_TextChanged(object sender, TextChangedEventArgs e)
         => ApplyFilter();
 
-    private void ChkAll_Click(object sender, RoutedEventArgs e)
-    {
-        // ★ 三态语义：半选 → 点一下变「全选」；全选 → 点一下「全清」；全清 → 「全选」。
-        //   Click 在 IsChecked 变化之后触发，所以直接取新值当目标状态。
-        bool target = ChkAll.IsChecked == true;
-        foreach (var r in ShelfRows) r.IsChecked = target;
-        SyncChkAll();
-        Log(target ? $"已全选 {ShelfRows.Count} 项" : "已取消全部勾选");
-    }
-
     /// <summary>
-    /// 点勾选框（不是点列表行）→ 也要把右边分集切到这部剧。
+    /// 勾选框 → 勾上就**追加**该剧到右栏下载清单，取消就整组移出。
     /// ★ 用 Click 而不是 Checked/Unchecked —— Click 只在**用户操作**时触发，
-    ///   程序化改 IsChecked（比如全选）不会误触发加载。
+    ///   程序化改 IsChecked（比如刷新后重置）不会误触发请求。
     /// </summary>
     private async void ShkChk_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not CheckBox cb) return;
         if (cb.DataContext is not ShelfRow row) return;
-        SyncChkAll();
-        if (cb.IsChecked == true) await SelectSeriesAsync(row);
+        if (cb.IsChecked == true) await AddSeriesToQueueAsync(row);
+        else RemoveSeriesFromQueue(row);
+        UpdateQueueSummary();
     }
 
-    /// <summary>点左侧收藏夹列表 → 右边加载该剧的分集。</summary>
-    private async void LstShelf_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>
+    /// 点左侧收藏夹列表 → **只是选中高亮，不再加载分集**（加不加由勾选框决定）。
+    /// ★ Avalonia 没有 SelectionMode=None，这里选完立刻清空选中，
+    ///   免得高亮让用户误以为「点这一行 = 要下载这部」。
+    /// </summary>
+    private void LstShelf_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!IsLoaded) return;
-        if (LstShelf.SelectedItem is not ShelfRow row) return;
-        await SelectSeriesAsync(row);
+        if (LstShelf.SelectedItems == null || LstShelf.SelectedItems.Count == 0) return;
+        LstShelf.Selection.Clear();
     }
 
     private void RbView_Checked(object sender, RoutedEventArgs e)

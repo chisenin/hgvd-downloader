@@ -14,6 +14,7 @@ public sealed class EpisodeRow : NotifyBase
     private double _speed;
     private string _error = "";
     private double _titleWidth = 240;
+    private readonly int _groupCount;
 
     public EpisodeRow(Core.Api.Episode ep)
     {
@@ -26,6 +27,27 @@ public sealed class EpisodeRow : NotifyBase
         VideoIdType = ep.VideoIdType;
     }
 
+    private EpisodeRow(string seriesId, string title, int count)
+    {
+        IsGroupHeader = true;
+        Vid = "";
+        Index = 0;
+        Title = title;
+        Duration = 0;
+        SeriesId = seriesId;
+        SeriesTitle = title;
+        VideoIdType = 0;
+        _groupCount = count;
+    }
+
+    /// <summary>
+    /// 分组标题行（「某剧 · 共 N 集」）。
+    /// ★ 勾选多部剧时，右栏是**累计清单**，靠这行把每部剧分开，
+    ///   免得几部剧的分集混在一起分不清序号属于谁。
+    /// </summary>
+    public static EpisodeRow Header(string seriesId, string title, int count)
+        => new EpisodeRow(seriesId, title, count);
+
     public string Vid { get; }
     public int Index { get; }
     public string Title { get; }
@@ -33,6 +55,12 @@ public sealed class EpisodeRow : NotifyBase
     public string SeriesId { get; }
     public string SeriesTitle { get; }
     public int VideoIdType { get; }
+
+    /// <summary>true = 分组标题行（不是真实分集，下载时要跳过）。</summary>
+    public bool IsGroupHeader { get; }
+    public bool IsEpisode => !IsGroupHeader;
+
+    public string HeaderText => $"{SeriesTitle} · 共 {_groupCount} 集";
 
     public string State
     {
