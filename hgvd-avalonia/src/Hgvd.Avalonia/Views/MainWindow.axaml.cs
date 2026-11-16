@@ -859,13 +859,64 @@ public partial class MainWindow : Window
     private async void BtnLogin_Click(object sender, RoutedEventArgs e)
     {
         BtnLogin.IsEnabled = false;
-        LblStatus.Text = "正在从 MuMu 读取登录态…";
         try
         {
-            var acc = Core.Auth.MumuAuth.Login();
+            if (await LoginOnceAsync()) return;
+
+            // ★ 第一步：先确认能不能找到 MuMuManager（装在哪里都行）
+            string mumu = "";
+            try { mumu = Core.Auth.MumuAuth.FindMumu(); } catch { }
+
+            if (mumu.Length == 0)
+            {
+                // 自动找不到（用户装在任意目录）→ 直接让用户选一次 MuMuManager.exe，
+                // 而不是丢一句「请设环境变量」给普通用户。
+                string picked = await PickMumuManagerAsync();
+                if (picked.Length == 0) return;
+                if (!Core.Auth.MumuAuth.SetManagerPath(picked))
+                {
+                    Log("这个文件不是 MuMuManager.exe：" + picked);
+                    ShowBanner("请选 MuMu 安装目录 nx_main 里的 MuMuManager.exe。", BannerKind.Err);
+                    return;
+                }
+                Log("已记住 MuMu 位置：" + picked);
+                mumu = picked;
+                if (await LoginOnceAsync()) return;
+            }
+
+            // ★★ 第二步：找到了模拟器但读不到授权 → 引导用户开安卓机 / 登录红果，
+            //    后台每 2 秒扫一次运行中的实例，读到就自动继续（不用再点按钮）。
+            await GuideToLoginAsync(mumu);
+        }
+        finally { BtnLogin.IsEnabled = true; LblStatus.Text = "就绪"; }
+    }
+
+    /// <summary>引导用户打开安卓机 + 登录红果，并在此期间自动取授权。</summary>
+    private async Task GuideToLoginAsync(string mumu)
+    {
+        List<Core.Auth.MumuAuth.Instance> insts;
+        try { insts = Core.Auth.MumuAuth.ListInstances(mumu); }
+        catch { insts = new List<Core.Auth.MumuAuth.Instance>(); }
+
+        LblStatus.Text = "等待安卓机里的红果登录态…";
+        var dlg = new WaitAuthWindow(mumu, insts);
+        await dlg.ShowDialog(this);
+        LblStatus.Text = "就绪";
+
+        if (dlg.FoundIndex < 0)
+        {
+            ShowBanner("没等到授权：请先启动安卓机并在红果里确认已登录，再点「重新授权」。",
+                       BannerKind.Err);
+            return;
+        }
+
+        try
+        {
+            var acc = Core.Auth.MumuAuth.Login(dlg.FoundIndex);
             _svc.SetAccount(acc);
             SetAuthLabel();
-            Log("已从模拟器读取登录态：" + string.Join(", ", acc.Cookies.Keys));
+            Log($"授权成功（实例 {dlg.FoundIndex}）：{acc.Cookies.Count} 个 cookie 字段"
+                + (acc.UserId.Length > 0 ? $"，uid={acc.UserId}" : ""));
             ShowBanner("授权成功。", BannerKind.Ok);
             await RefreshShelfAsync();
         }
@@ -874,7 +925,56 @@ public partial class MainWindow : Window
             Log("读取登录态失败：" + ex.Message);
             ShowBanner("读取登录态失败：" + ex.Message, BannerKind.Err);
         }
-        finally { BtnLogin.IsEnabled = true; LblStatus.Text = "就绪"; }
+    }
+
+    /// <summary>走一次「从模拟器读登录态」，返回是否成功。</summary>
+    private async Task<bool> LoginOnceAsync()
+    {
+        LblStatus.Text = "正在从 MuMu 读取登录态…";
+        try
+        {
+            var acc = Core.Auth.MumuAuth.Login();
+            _svc.SetAccount(acc);
+            SetAuthLabel();
+            Log($"已从模拟器读取登录态（实例 {Core.Auth.MumuAuth.LastPickedIndex}）："
+                + string.Join(", ", acc.Cookies.Keys));
+            ShowBanner("授权成功。", BannerKind.Ok);
+            await RefreshShelfAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("读取登录态失败：" + ex.Message);
+            ShowBanner("读取登录态失败：" + ex.Message, BannerKind.Err);
+            return false;
+        }
+    }
+
+    /// <summary>手动选一次 MuMuManager.exe（只在该机器上选一次，之后走缓存）。</summary>
+    private async Task<string> PickMumuManagerAsync()
+    {
+        try
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 MuMuManager.exe（在 MuMu 安装目录的 nx_main 里）",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("MuMuManager.exe")
+                    {
+                        Patterns = new[] { "MuMuManager.exe" },
+                    },
+                },
+            });
+            if (files == null || files.Count == 0) return "";
+            return files[0].TryGetLocalPath() ?? "";
+        }
+        catch (Exception ex)
+        {
+            Log("选择 MuMuManager 失败：" + ex.Message);
+            return "";
+        }
     }
 
     private void BtnEnv_Click(object sender, RoutedEventArgs e)

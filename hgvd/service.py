@@ -161,6 +161,8 @@ class HongguoService:
 
     def set_account(self, account: Account) -> None:
         self.account = account
+        # ★ 换账号/换实例后设备身份要重新按 install_id 配对，别沿用上一台的
+        self._ident = None
 
     # ---------------------------------------------------------- 收藏夹
 
@@ -420,11 +422,19 @@ class HongguoService:
         return url, size
 
     def device_identity(self):
-        """稳定的设备身份（签名必需）。"""
-        if self._ident is None:
-            from .device import ensure_device
+        """稳定的设备身份（签名必需）。
 
-            self._ident = ensure_device()
+        ★★ 必须与 cookie **同源**：cookie 里带了 ``install_id`` 时，
+          优先取「这台实例」归档下来的 device_id（``devices.json``），
+          只有找不到才回落到上一次的全局身份。
+          多开场景下这一步是「授权看上去互斥」的真正解药。
+        """
+        if self._ident is None:
+            from .device import ensure_device, load_device_for
+
+            iid = self.account.cookies.get("install_id", "")
+            ident = load_device_for(iid) if iid else None
+            self._ident = ident or ensure_device()
         return self._ident
 
     def resolve_full_url(self, vid: str, quality: str = "360p",

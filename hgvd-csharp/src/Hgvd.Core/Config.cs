@@ -22,6 +22,13 @@ public static class Paths
 
     public static string CredsPath => Path.Combine(ToolDir, "cookie.json");
     public static string DevicePath => Path.Combine(ToolDir, "device.json");
+
+    /// <summary>
+    /// 按实例归档的设备身份（key = 该实例的 install_id）。
+    /// ★ 多开时每台的 install_id / device_id 都不同，而签名要求「cookie 与设备同源」；
+    ///   只存一份 device.json 会在换实例时互相覆盖，表现为「只有一台的授权能用」。
+    /// </summary>
+    public static string DevicesPath => Path.Combine(ToolDir, "devices.json");
     public static string ConfigPath => Path.Combine(ToolDir, "config.json");
     public static string HistoryPath => Path.Combine(ToolDir, "history.json");
 

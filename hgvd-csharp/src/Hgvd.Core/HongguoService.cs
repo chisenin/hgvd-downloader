@@ -59,6 +59,8 @@ public sealed class HongguoService
     {
         _account = acc;
         _client = null;
+        // ★ 换了账号/实例后，设备身份要按新 cookie 的 install_id 重新配对
+        _ident = null;
     }
 
     /// <summary>
@@ -78,7 +80,10 @@ public sealed class HongguoService
         {
             if (_ident == null)
             {
-                _ident = MumuAuth.LoadDevice();
+                // ★ 先按 cookie 的 install_id 取**同源**的设备档案（devices.json），
+                //   多开时不会拿到另一台实例的 device_id。
+                string cookieIid = _account.Cookies.TryGetValue("install_id", out var v) ? v : "";
+                _ident = MumuAuth.LoadDevice(cookieIid);
                 if (string.IsNullOrEmpty(_ident.DeviceId))
                 {
                     // 兜底：实例 1 的 App 真机 device_id

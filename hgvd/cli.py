@@ -57,22 +57,57 @@ def cmd_login(args) -> int:
       网页版二维码只有约 58 秒有效期，手机号登录又常触发滑块验证，
       这条路最快也最稳。
     """
+    if getattr(args, "list_mumu", False):
+        from .auth.mumu import main as mumu_main
+
+        return mumu_main(["--list"])
     if args.qr:
         return _login_qr()
     if args.phone:
         return _login_phone()
-    return _login_mumu()
+    return _login_mumu(watch=getattr(args, "watch", False),
+                       timeout=getattr(args, "watch_timeout", 180))
 
 
-def _login_mumu() -> int:
-    """从 MuMu 里的红果 App 读取登录态。"""
-    from .auth.mumu import login_from_mumu
+def _login_mumu(watch: bool = False, timeout: int = 180) -> int:
+    """从 MuMu 里的红果 App 读取登录态。
+
+    ★ ``watch``：先不急着报错 —— 打印「请开安卓机/登录红果」，
+      每 2 秒扫一遍运行中的实例，读到可用登录态就自动继续。
+    """
+    from .auth.mumu import find_usable_instance, login_from_mumu
+
+    if watch:
+        import time
+
+        print("请打开 MuMu 里装了红果的安卓机，打开红果并确认已登录。")
+        print(f"工具会自动检测（最多等 {timeout} 秒），检测到就自动继续，不用再敲命令。")
+        deadline = time.time() + max(5, timeout)
+        idx = -1
+        last_note = ""
+        while time.time() < deadline:
+            try:
+                idx, _state = find_usable_instance(verify=True)
+                break
+            except Exception as e:  # noqa: BLE001
+                note = str(e).splitlines()[0] if str(e) else ""
+                if note and note != last_note:
+                    print(f"  …{note}")
+                    last_note = note
+                time.sleep(2)
+        if idx < 0:
+            print("等待超时：还是没读到红果登录态。")
+            print("  · 确认安卓机已启动、红果已打开并登录（多开时每台要各自登录）")
+            print("  · 或用 python -m hgvd login --list-mumu 看看每台的授权状态")
+            return 1
+        print(f"✓ 检测到实例 {idx} 已登录，正在读取…")
 
     try:
         acc = login_from_mumu()
     except Exception as e:  # noqa: BLE001
         print(f"从模拟器读取登录态失败：{e}")
         print("其它方式：")
+        print("  python -m hgvd login --watch    （边等边取：先开安卓机/登录红果）")
         print("  python -m hgvd login --phone   （手机号验证码，可能要过滑块）")
         print("  python -m hgvd login --qr       （扫码，二维码约 60 秒有效）")
         return 1
@@ -492,6 +527,10 @@ def build_parser() -> argparse.ArgumentParser:
     plogin.add_argument("--qr", action="store_true", help="改用扫码登录（二维码约 60 秒有效）")
     plogin.add_argument("--phone", help="改用手机号验证码登录")
     plogin.add_argument("--list-mumu", action="store_true", help="列出所有 MuMu 实例")
+    plogin.add_argument("--watch", action="store_true",
+                        help="边等边取：没授权时提示你去开安卓机/登录红果，工具自动检测")
+    plogin.add_argument("--watch-timeout", type=int, default=180,
+                        help="--watch 最长等多少秒（默认 180）")
     plogin.set_defaults(func=cmd_login)
     pshelf = sub.add_parser("shelf", help="列出收藏夹")
     pshelf.add_argument("--all", action="store_true", help="展开全部合集（慢）")

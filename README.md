@@ -92,7 +92,8 @@ C# 侧另有**字节级黄金向量**（`hgvd-csharp/tools/golden_argus.json`）
 
 ```bash
 python -m hgvd login              # 读 MuMu 模拟器里红果 App 的登录态（默认，免扫码）
-python -m hgvd login --list-mumu  # 列出所有模拟器实例
+python -m hgvd login --watch      # 边等边取：先开安卓机/登录红果，检测到就自动继续
+python -m hgvd login --list-mumu  # 列出所有模拟器实例（含「✓有效 / ⚠无法验证 / ✗失效」）
 python -m hgvd login --phone      # 手机号验证码（可能触发滑块）
 python -m hgvd login --qr         # 扫码（二维码有效期约 60 秒）
 ```
@@ -100,13 +101,27 @@ python -m hgvd login --qr         # 扫码（二维码有效期约 60 秒）
 默认走模拟器，是因为网页版二维码**有效期只有约 60 秒**，
 而手机号登录又会触发滑块验证 —— 而你本来就在 App 里收藏剧，App 一定是登录的。
 
+**工具会自动找 MuMu 装在哪**（进程 → 开始菜单快捷方式 → 卸载注册表 → 各盘目录 → PATH），
+不需要你设环境变量；GUI 万一找不到，会直接弹文件选择框让你选一次 `MuMuManager.exe`。
+
+**MuMu 多开 / 多台安卓机**：每台都可能装了红果并各自登录过，工具不会按时间瞎猜 ——
+它会逐台用 `passport/account/info` 在线验证，挑**服务端真正认可的那台**，
+并把设备身份按 `install_id` 归档（`~/.hgv_tool/devices.json`），保证 cookie 与签名同源。
+所谓「同一账号在多台里授权互斥」，实测更常见的其实是
+**多开复制镜像导致设备身份串台**（session 相同、`install_id`/`device_id` 不同）或
+**后登录的那台把旧 session 顶掉**，不是账号本身互斥。
+
+**GUI**：点「重新授权」若还没读到登录态，会弹一个置顶小窗，告诉你开哪台安卓机、
+打开红果确认登录，并每 2 秒自动检测，读到就自动继续（最多等 180 秒）。
+
 读的是这些文件（值都是**明文**）：
 
 | 文件 | 内容 |
 |---|---|
 | `shared_prefs/cookieStore.xml` | `sessionid` / `sid_tt` / `install_id` / `odin_tt` |
 | `shared_prefs/token_shared_preference.xml` | `X-Tt-Token` |
-| `shared_prefs/applog_stats.xml` | `device_id` |
+| `shared_prefs/applog_stats.xml` | `device_id` / `install_id` |
+| `shared_prefs/CsrfTokenManager_sp.xml` | `csrf_token`（明文，放在 `passport_csrf_token` cookie 里） |
 
 ---
 
@@ -160,7 +175,7 @@ python -m hgvd cache --out ./videos
 ```bash
 cd hgvd-avalonia
 ./build.sh            # 或 Windows 下 build.cmd
-./dist/hgvd-downloader-v1.0.0.exe
+./dist/hgvd-downloader-v1.1.0.exe
 ```
 
 **交互**：左栏收藏夹（勾选框 + 剧名 + 类型/集数）→ 点某行或勾它的复选框
@@ -178,9 +193,9 @@ cd hgvd-avalonia
 **自检**：
 
 ```bash
-./dist/hgvd-downloader-v1.0.0.exe --selftest    # 收藏夹 → 分集 → 播放地址
-./dist/hgvd-downloader-v1.0.0.exe --uitest      # ★ 界面交互：点行/点勾选框/点全选/批量下载
-./dist/hgvd-downloader-v1.0.0.exe --batchtest 2 # ★ 真下 2 部剧
+./dist/hgvd-downloader-v1.1.0.exe --selftest    # 收藏夹 → 分集 → 播放地址
+./dist/hgvd-downloader-v1.1.0.exe --uitest      # ★ 界面交互：点行/点勾选框/点全选/批量下载
+./dist/hgvd-downloader-v1.1.0.exe --batchtest 2 # ★ 真下 2 部剧
 ```
 
 > `--uitest` 在窗口 `Opacity=0` 下**走真实的事件绑定**跑一遍交互。
@@ -251,8 +266,8 @@ hgvd/                    Python 实现（想法验证）
 hgvd-avalonia/           C# + Avalonia 11（发行版，自包含单文件）
 hgvd-csharp/
   src/Hgvd.Core/         ★ 共享核心（签名链 / 下载器 / 配置目录）
-  src/Hgvd.Tests/        离线回归 62 项
-tests/run.py             Python 离线回归 85 项（不发网络请求）
+  src/Hgvd.Tests/        离线回归 72 项
+tests/run.py             Python 离线回归 87 项（不发网络请求）
 tools/                   探测与自检脚本
 docs/                    技术文档
 ```

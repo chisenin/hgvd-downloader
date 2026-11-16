@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
+using Microsoft.Win32;
 using Hgvd.Core.Sign;
 
 namespace Hgvd.Core.Auth;
@@ -25,7 +28,29 @@ namespace Hgvd.Core.Auth;
 public static class MumuAuth
 {
     public const string Package = "com.phoenix.read";
-    private const string MumuManager = @"D:\Program Files\Netease\MuMu\nx_main\MuMuManager.exe";
+    private const string DataRoot = "/data/data/com.phoenix.read";
+    private const string Prefs = DataRoot + "/shared_prefs";
+    private const string ManagerExe = "MuMuManager.exe";
+
+    /// <summary>
+    /// ★★ MuMu 的安装目录**因机器而异**：MuMu 6 是 Netease\MuMu，
+    ///    MuMu Player 12 是 Netease\MuMuPlayer-12.0，还有装在盘根或
+    ///    Program Files\MuMu Player 12 的。旧代码只认一个写死路径
+    ///    → 本机「找不到 MuMuManager.exe」→ 拿不到授权。
+    /// </summary>
+    private static readonly string[] RelativeCandidates =
+    {
+        Path.Combine("nx_main", ManagerExe),
+        Path.Combine("shell", ManagerExe),
+        Path.Combine("nx_device", "shell", ManagerExe),
+        ManagerExe,
+    };
+
+    /// <summary>显式覆盖用环境变量（装到非常规目录时最省事）。</summary>
+    private static readonly string[] EnvOverrides =
+    {
+        "HGVD_MUMU_MANAGER", "HGV_MUMU_MANAGER", "MUMU_MANAGER",
+    };
 
     /// <summary>模拟器实例信息。</summary>
     public sealed class Instance
@@ -35,16 +60,349 @@ public static class MumuAuth
         public string Name = "";
     }
 
+    /// <summary>
+    /// 定位 MuMuManager.exe。
+    ///
+    /// ★ 面向**公开发布**：使用者多、安装位置千变万化，不能依赖用户设环境变量。
+    ///   官方安装包一定会留下这些痕迹，按可靠性排序：
+    ///   ① 上次找到的缓存 → ② 正在运行的 MuMu 进程（授权时模拟器必然开着，最权威）
+    ///   → ③ 开始菜单/桌面的快捷方式（安装包必建，且直接指向 nx_main）
+    ///   → ④ 卸载注册表 InstallLocation → ⑤ 各盘 Program Files / Netease / 盘根枚举
+    ///   → ⑥ PATH → ⑦ 环境变量（仅给售后/高级用户用）。
+    /// </summary>
     public static string FindMumu()
     {
-        foreach (string p in new[]
+        foreach (string hint in HintCandidates())
         {
-            MumuManager,
-            @"C:\Program Files\Netease\MuMu\nx_main\MuMuManager.exe",
-        })
-            if (File.Exists(p)) return p;
+            string hit = ManagerIn(hint);
+            if (hit.Length > 0) { Remember(hit); return hit; }
+        }
+
         throw new InvalidOperationException(
-            "找不到 MuMuManager.exe —— 请确认装了 MuMu 模拟器");
+            "没找到 MuMu 模拟器（MuMuManager.exe）。\n"
+            + "· 请确认已安装网易 MuMu，并且**至少启动过一次**（安装包会建快捷方式/注册表项）；\n"
+            + "· 若装在非常规目录，可在本程序里点「手动指定」选到 MuMuManager.exe，只需选一次。");
+    }
+
+    /// <summary>把用户手动选中的 MuMuManager.exe 记下来（下次直接用）。</summary>
+    public static bool SetManagerPath(string path)
+    {
+        path = CleanHint(path ?? "");
+        if (!File.Exists(path)) return false;
+        if (!string.Equals(Path.GetFileName(path), ManagerExe, StringComparison.OrdinalIgnoreCase))
+            return false;
+        Remember(path);
+        return true;
+    }
+
+    // ---------------------------------------------------------- 查找实现
+
+    private static string CachePath => Path.Combine(Paths.ToolDir, "mumu_manager.txt");
+
+    private static string ReadCache()
+    {
+        try
+        {
+            string s = File.ReadAllText(CachePath).Trim();
+            return s.Length > 0 && File.Exists(s) ? s : "";
+        }
+        catch { return ""; }
+    }
+
+    private static void Remember(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(Paths.ToolDir);
+            File.WriteAllText(CachePath, path);
+        }
+        catch { }
+    }
+
+    private static IEnumerable<string> HintCandidates()
+    {
+        string cache = ReadCache();
+        if (cache.Length > 0) yield return cache;
+
+        foreach (string h in ProcessHints()) yield return h;
+        foreach (string h in ShortcutHints()) yield return h;
+        foreach (string h in RegistryHints()) yield return h;
+        foreach (string h in FolderHints()) yield return h;
+
+        foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+        {
+            string d = dir.Trim().Trim('"');
+            if (d.Length == 0) continue;
+            string p = Path.Combine(d, ManagerExe);
+            if (File.Exists(p)) yield return p;
+        }
+
+        // ⑦ 环境变量：只作为高级用户/售后的最后一根稻草
+        foreach (string env in EnvOverrides)
+        {
+            string v = (Environment.GetEnvironmentVariable(env) ?? "").Trim();
+            if (v.Length > 0) yield return CleanHint(v);
+        }
+    }
+
+    /// <summary>
+    /// 正在运行的 MuMu 进程 → exe 路径。
+    /// ★ 授权的前提就是模拟器开着，所以这条最可靠；
+    ///   即使 MuMu 装在任意奇怪目录也能拿到。若拿不到（权限不足）就跳过。
+    /// </summary>
+    private static IEnumerable<string> ProcessHints()
+    {
+        string[] names =
+        {
+            "MuMuNxMain", "MuMuNxDevice", "MuMuPlayer", "MuMuMultiPlayer",
+            "MuMuManager", "NemuPlayer",
+        };
+        foreach (string name in names)
+        {
+            Process[] ps;
+            try { ps = Process.GetProcessesByName(name); }
+            catch { continue; }
+            foreach (Process p in ps)
+            {
+                string file = "";
+                try { file = p.MainModule != null ? p.MainModule.FileName : ""; }
+                catch { }
+                finally { p.Dispose(); }
+                if (file.Length > 0) yield return file;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 开始菜单 / 桌面快捷方式 → TargetPath。
+    /// ★ 官方安装包必建快捷方式（本机实测
+    ///   <c>…\Start Menu\Programs\MuMu模拟器\MuMu模拟器.lnk</c> → <c>…\nx_main\MuMuNxMain.exe</c>），
+    ///   即使 MuMu 装在 D:\某个人建的目录里也能命中。
+    /// </summary>
+    private static IEnumerable<string> ShortcutHints()
+    {
+        if (!OperatingSystem.IsWindows()) yield break;
+        string[] dirs =
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "Programs"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs"),
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+        };
+        foreach (string target in ShortcutTargets(dirs)) yield return target;
+    }
+
+    /// <summary>
+    /// 给定若干目录（递归），把名字含 MuMu 的 .lnk 解析成 TargetPath。
+    /// ★ 抽出来是为了能用临时目录 + 真实 .lnk 做回归（ShortcutHints 扫的是系统目录）。
+    /// </summary>
+    internal static List<string> ShortcutTargets(IEnumerable<string> dirs)
+    {
+        var targets = new List<string>();
+        if (!OperatingSystem.IsWindows()) return targets;
+
+        object shell = null;
+        try
+        {
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            if (t != null) shell = Activator.CreateInstance(t);
+        }
+        catch { }
+        if (shell == null) return targets;
+
+        foreach (string dir in dirs)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;
+            string[] files;
+            try { files = Directory.GetFiles(dir, "*.lnk", SearchOption.AllDirectories); }
+            catch { continue; }
+            foreach (string link in files)
+            {
+                string nm = Path.GetFileNameWithoutExtension(link) ?? "";
+                if (!nm.ToLowerInvariant().Contains("mumu")) continue;
+                string target = ResolveShortcut(shell, link);
+                if (target.Length > 0) targets.Add(target);
+            }
+        }
+        return targets;
+    }
+
+    /// <summary>用 WScript.Shell 解析 .lnk 的 TargetPath（失败返回空）。</summary>
+    private static string ResolveShortcut(object shell, string link)
+    {
+        if (shell == null) return "";
+        try
+        {
+            dynamic sh = shell;
+            dynamic sc = sh.CreateShortcut(link);
+            string target = (string)sc.TargetPath;
+            return target ?? "";
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>注册表里的安装位置/图标/卸载命令行清洗成纯路径。</summary>
+    internal static string CleanHint(string raw)
+    {
+        string s = (raw ?? "").Trim();
+        if (s.Length == 0) return "";
+        if (s[0] == '"')
+        {
+            int end = s.IndexOf('"', 1);
+            if (end > 0) s = s.Substring(1, end - 1);
+        }
+        if (s.Contains(',') && !File.Exists(s) && !Directory.Exists(s))
+        {
+            // DisplayIcon 形如 ``D:\...\uninstall.exe,0``
+            s = s.Substring(0, s.LastIndexOf(',')).Trim().Trim('"');
+        }
+        if (s.Contains(" -") && !File.Exists(s) && !Directory.Exists(s))
+            s = s.Substring(0, s.IndexOf(" -", StringComparison.Ordinal)).Trim().Trim('"');
+        return s;
+    }
+
+    /// <summary>在给定目录（或它的上 N 层父目录）里找 MuMuManager.exe。</summary>
+    internal static string ManagerIn(string root, int levels = 3)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return "";
+        DirectoryInfo dir;
+        try
+        {
+            var fi = new FileInfo(root);
+            if (fi.Exists)
+            {
+                if (string.Equals(fi.Name, ManagerExe, StringComparison.OrdinalIgnoreCase))
+                    return fi.FullName;
+                dir = fi.Directory!;
+            }
+            else
+            {
+                if (!Directory.Exists(root)) return "";
+                dir = new DirectoryInfo(root);
+            }
+        }
+        catch { return ""; }
+
+        for (int i = 0; i <= levels && dir != null; i++)
+        {
+            foreach (string rel in RelativeCandidates)
+            {
+                string cand = Path.Combine(dir.FullName, rel);
+                if (File.Exists(cand)) return cand;
+            }
+            dir = dir.Parent;
+        }
+        return "";
+    }
+
+    /// <summary>卸载注册表里 DisplayName 含 MuMu 的条目 → 安装路径候选。</summary>
+    private static IEnumerable<string> RegistryHints()
+    {
+        // ★ 平台守卫：注册表只在 Windows 有（也顺便消掉 CA1416 警告）
+        if (!OperatingSystem.IsWindows()) yield break;
+        RegistryKey[] hives = { Registry.LocalMachine, Registry.CurrentUser };
+        string[] subs =
+        {
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            @"SOFTWARE\Netease",
+            @"SOFTWARE\WOW6432Node\Netease",
+        };
+        foreach (RegistryKey hive in hives)
+        {
+            foreach (string sub in subs)
+            {
+                RegistryKey key = null;
+                try { key = hive.OpenSubKey(sub); } catch { }
+                if (key == null) continue;
+                try
+                {
+                    foreach (string name in key.GetSubKeyNames())
+                    {
+                        RegistryKey sk = null;
+                        try { sk = key.OpenSubKey(name); } catch { }
+                        if (sk == null) continue;
+                        try
+                        {
+                            string display = "";
+                            try { display = (sk.GetValue("DisplayName") as string) ?? ""; } catch { }
+                            // Netease 分支没有 DisplayName，用子键名兜底判断
+                            if (!((display + " " + name).ToLowerInvariant().Contains("mumu")))
+                                continue;
+                            foreach (string vn in new[]
+                            {
+                                "InstallLocation", "DisplayIcon", "UninstallString",
+                                "InstallPath", "Path",
+                            })
+                            {
+                                string val = "";
+                                try { val = (sk.GetValue(vn) as string) ?? ""; } catch { }
+                                val = CleanHint(val);
+                                if (val.Length > 0) yield return val;
+                            }
+                        }
+                        finally { sk.Close(); }
+                    }
+                }
+                finally { key.Close(); }
+            }
+        }
+    }
+
+    /// <summary>各盘 Program Files / Netease / 盘根下名字含 MuMu 的目录。</summary>
+    private static IEnumerable<string> FolderHints()
+    {
+        var parents = new List<string>();
+        string pf = Environment.GetEnvironmentVariable("ProgramFiles") ?? "";
+        string pf86 = Environment.GetEnvironmentVariable("ProgramFiles(x86)") ?? "";
+        string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+        if (pf.Length > 0) parents.Add(pf);
+        if (pf86.Length > 0) parents.Add(pf86);
+        if (local.Length > 0) parents.Add(Path.Combine(local, "Programs"));
+
+        foreach (DriveInfo drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                string r = drive.RootDirectory.FullName;
+                parents.Add(r);
+                parents.Add(Path.Combine(r, "Program Files"));
+                parents.Add(Path.Combine(r, "Program Files (x86)"));
+                parents.Add(Path.Combine(r, "Programs"));
+            }
+            catch { }
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string parent in parents)
+        {
+            if (string.IsNullOrEmpty(parent) || !seen.Add(parent) || !Directory.Exists(parent))
+                continue;
+            string[] dirs;
+            try { dirs = Directory.GetDirectories(parent); }
+            catch { continue; }
+            foreach (string full in dirs)
+            {
+                string name = Path.GetFileName(full) ?? "";
+                string low = name.ToLowerInvariant();
+                if (low.Contains("mumu") || low == "nemu")
+                {
+                    yield return full;
+                }
+                else if (low == "netease")
+                {
+                    string[] subdirs;
+                    try { subdirs = Directory.GetDirectories(full); }
+                    catch { continue; }
+                    foreach (string sub in subdirs)
+                    {
+                        string sname = Path.GetFileName(sub) ?? "";
+                        if (sname.ToLowerInvariant().Contains("mumu")) yield return sub;
+                    }
+                }
+            }
+        }
     }
 
     private static string Sh(string mumu, int index, string cmd, int timeoutMs = 30000)
@@ -72,15 +430,14 @@ public static class MumuAuth
     public static List<Instance> ListInstances(string mumu)
     {
         var list = new List<Instance>();
-        string outp = Sh(mumu, 0, "");   // 用一次无效调用确保进程可用
-        _ = outp;
 
         // MuMuManager 的 info 命令返回 JSON
+        // ★ 0~7 全探一遍，不能「前面没启动就收工」—— 用户可能只开了实例 2。
         for (int i = 0; i < 8; i++)
         {
             string txt;
             try { txt = RunInfo(mumu, i); }
-            catch { break; }
+            catch { continue; }
             if (string.IsNullOrWhiteSpace(txt) || !txt.Contains("\"index\"")) continue;
 
             int index = ExtractInt(txt, "index") ?? i;
@@ -111,7 +468,8 @@ public static class MumuAuth
 
     private static int? ExtractInt(string json, string key)
     {
-        var m = Regex.Match(json, $"\"{key}\"\\s*:\\s*(\\d+)");
+        // ★ MuMu 的 index 是字符串形式的：``"index": "1"``，所以要允许引号
+        var m = Regex.Match(json, $"\"{key}\"\\s*:\\s*\"?(\\d+)");
         return m.Success ? int.Parse(m.Groups[1].Value) : null;
     }
 
@@ -134,14 +492,16 @@ public static class MumuAuth
     public static (Dictionary<string, string> Cookies, DeviceIdentity Device)
         ReadAppState(int index, string mumu)
     {
-        string cs = Sh(mumu, index, $"cat {Package}/shared_prefs/cookieStore.xml 2>/dev/null");
+        // ★★ 必须用**绝对路径**：MuMu 的内部 RPC 不是以 /data/data 为当前目录，
+        //    相对路径 ``com.phoenix.read/...`` 会静默返回空（实测踩过，授权失败的主因之一）。
+        string cs = Sh(mumu, index, $"cat {Prefs}/cookieStore.xml 2>/dev/null");
         if (string.IsNullOrWhiteSpace(cs))
             throw new InvalidOperationException($"实例 {index} 里读不到 cookieStore.xml（App 装了吗？）");
 
         string token = Sh(mumu, index,
-            $"cat {Package}/shared_prefs/token_shared_preference.xml 2>/dev/null");
+            $"cat {Prefs}/token_shared_preference.xml 2>/dev/null");
         string stats = Sh(mumu, index,
-            $"cat {Package}/shared_prefs/applog_stats.xml 2>/dev/null");
+            $"cat {Prefs}/applog_stats.xml 2>/dev/null");
 
         var cookies = new Dictionary<string, string>();
         foreach (string name in new[] { "sessionid", "sid_tt", "install_id", "odin_tt" })
@@ -155,6 +515,14 @@ public static class MumuAuth
         string csrf = ExtractPrefValue(cs, "passport_csrf_token");
         if (string.IsNullOrEmpty(csrf))
             csrf = ExtractPrefValue(token, "passport_csrf_token");
+        if (string.IsNullOrEmpty(csrf))
+        {
+            // ★ CsrfTokenManager_sp.xml 里是**明文** ``<string name="csrf_token">…</string>``，
+            //   不是 Java 序列化的十六进制（不能走 ExtractPrefValue）。
+            csrf = SimplePrefValue(
+                Sh(mumu, index, $"cat {Prefs}/CsrfTokenManager_sp.xml 2>/dev/null"),
+                "csrf_token");
+        }
         if (!string.IsNullOrEmpty(csrf)) cookies["passport_csrf_token"] = csrf;
 
         var device = new DeviceIdentity
@@ -167,6 +535,14 @@ public static class MumuAuth
             VersionCode = "73932",
         };
         return (cookies, device);
+    }
+
+    /// <summary>普通 prefs XML（``<string name="k">v</string>``，值是明文）。</summary>
+    private static string SimplePrefValue(string xml, string key)
+    {
+        if (string.IsNullOrEmpty(xml)) return "";
+        var m = Regex.Match(xml, $"name=\"{Regex.Escape(key)}\">([^<]*)<");
+        return m.Success ? m.Groups[1].Value : "";
     }
 
     /// <summary>
@@ -208,108 +584,366 @@ public static class MumuAuth
         catch { return ""; }
     }
 
+    /// <summary>候选实例（已读到 cookie + 设备身份）。</summary>
+    public sealed class Candidate
+    {
+        public int Index;
+        public Dictionary<string, string> Cookies = new();
+        public DeviceIdentity Device = new DeviceIdentity();
+        public string Stamp = "";
+        public AccountProbe Probe;
+
+        public bool HasSession =>
+            Cookies.TryGetValue("sessionid", out string sid) && !string.IsNullOrEmpty(sid);
+    }
+
+    /// <summary>一次「授权是否还有效」的在线探测结果。</summary>
+    public sealed class AccountProbe
+    {
+        public bool Valid;
+        /// <summary>网络/节点问题 → 不能据此判定授权失效。</summary>
+        public bool Unknown;
+        public string UserId = "";
+        public string UserName = "";
+        public string Error = "";
+
+        public string Describe() =>
+            Valid ? $"✓ 授权有效 uid={UserId}"
+                  : (Unknown ? $"⚠ 无法在线验证（{Error}）" : $"✗ 授权失效（{Error}）");
+    }
+
     /// <summary>
-    /// 找一个能用（有登录态）的实例。
-    /// ★ 优先选**最近活动过**的 —— 判断依据是 App 的**数据库文件 mtime**。
-    ///   ★★ 必须用 <c>ls -lt</c>（按 mtime 排），**不能用 <c>ls -t</c>** ——
-    ///     后者按**文件名**排序，数据库文件名里没有时间信息，会随机挑实例。
+    /// 用 cookie 打一次 <c>passport/account/info</c>，判断这份授权到底还能不能用。
+    /// ★ 多开时每台都可能装着已登录的红果，只按 mtime 猜会挑错；
+    ///   服务端认不认这个 sessionid 才是唯一可靠判据（有效时还能顺带拿到 uid/昵称）。
     /// </summary>
-    public static int FindUsableInstance(string mumu, out Instance picked)
+    public static AccountProbe ProbeAccount(Dictionary<string, string> cookies)
+    {
+        var probe = new AccountProbe();
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
+            http.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://hongguoduanju.com/");
+
+            string url = "https://hongguoduanju.com/passport/account/info/v2/"
+                + "?aid=513755&passport_jssdk_version=3.4.10&passport_jssdk_type=normal"
+                + "&account_sdk_source=web&is_from_ttaccountsdk=1&language=zh&next="
+                + Uri.EscapeDataString("https://hongguoduanju.com/");
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("Cookie",
+                string.Join("; ", cookies.Where(kv => !string.IsNullOrEmpty(kv.Value))
+                    .Select(kv => $"{kv.Key}={kv.Value}")));
+            if (cookies.TryGetValue("passport_csrf_token", out string csrf) && csrf.Length > 0)
+                req.Headers.TryAddWithoutValidation("x-tt-passport-csrf-token", csrf);
+
+            using var resp = http.Send(req);
+            string body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (!resp.IsSuccessStatusCode)
+            {
+                probe.Unknown = true;
+                probe.Error = $"HTTP {(int)resp.StatusCode}";
+                return probe;
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var data = root.TryGetProperty("data", out var d0) ? d0 : default;
+
+            // ★ 字段可能是字符串也可能是数字（uid 就是长整型），两种都要接
+            static string JStr(JsonElement obj, string name)
+            {
+                if (obj.ValueKind != JsonValueKind.Object
+                    || !obj.TryGetProperty(name, out var v)) return "";
+                return v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString() ?? "",
+                    JsonValueKind.Number => v.GetRawText(),
+                    _ => "",
+                };
+            }
+
+            int errorCode = 0;
+            string uid = "", name = "";
+            if (data.ValueKind == JsonValueKind.Object)
+            {
+                if (data.TryGetProperty("error_code", out var ec))
+                {
+                    if (ec.ValueKind == JsonValueKind.Number) errorCode = (int)ec.GetInt64();
+                    else if (ec.ValueKind == JsonValueKind.String)
+                        int.TryParse(ec.GetString(), out errorCode);
+                }
+                uid = JStr(data, "biz_user_id");
+                if (uid.Length == 0) uid = JStr(data, "user_id");
+                name = JStr(data, "name");
+                if (name.Length == 0) name = JStr(data, "user_name");
+            }
+
+            if (errorCode != 0 || uid.Length == 0)
+            {
+                probe.Valid = false;
+                probe.Error = errorCode != 0 ? $"服务端 code={errorCode}" : "账号信息为空";
+                return probe;
+            }
+            probe.Valid = true;
+            probe.UserId = uid;
+            probe.UserName = name;
+            return probe;
+        }
+        catch (Exception e)
+        {
+            // 解析失败/网络异常都归为「无法判定」，避免把好好的授权误杀
+            probe.Unknown = true;
+            probe.Error = e.Message.Length > 120 ? e.Message.Substring(0, 120) : e.Message;
+            return probe;
+        }
+    }
+
+    /// <summary>该实例里红果数据的最近修改时间（``YYYY-MM-DD HH:MM``）。</summary>
+    private static string LatestStamp(string mumu, int idx)
+    {
+        foreach (string path in new[]
+        {
+            $"{DataRoot}/databases/", $"{DataRoot}/files/disk_collect/", $"{Prefs}/",
+        })
+        {
+            try
+            {
+                string o = Sh(mumu, idx,
+                    $"ls -lt {path} 2>/dev/null | awk 'NR==2{{print $6, $7}}'").Trim();
+                if (o.Length > 0) return o;
+            }
+            catch { }
+        }
+        return "";
+    }
+
+    /// <summary>
+    /// 枚举所有正在运行、且 App 里有 sessionid 的实例，按「最近活动」倒序。
+    /// <paramref name="verify"/> 为 true 时逐台在线验证授权是否仍有效。
+    /// </summary>
+    public static List<Candidate> CollectCandidates(string mumu, bool verify = true)
     {
         var instances = ListInstances(mumu).Where(i => i.Started).ToList();
         if (instances.Count == 0)
             throw new InvalidOperationException(
                 "没有正在运行的 MuMu 实例 —— 请先启动模拟器并打开红果 App");
 
-        int best = -1;
-        string bestStamp = "";
+        var list = new List<Candidate>();
         foreach (var inst in instances)
         {
-            string stamp = "";
-            foreach (string path in new[]
-            {
-                $"{Package}/databases/", $"{Package}/files/disk_collect/", $"{Package}/shared_prefs/",
-            })
-            {
-                try
-                {
-                    string o = Sh(mumu, inst.Index,
-                        $"ls -lt {path} 2>/dev/null | awk 'NR==2{{print $6, $7}}'");
-                    stamp = o.Trim();
-                }
-                catch { }
-                if (!string.IsNullOrEmpty(stamp)) break;
-            }
-            if (best < 0 || (stamp.Length > 0 && stamp.CompareTo(bestStamp) > 0))
-            {
-                best = inst.Index;
-                bestStamp = stamp;
-            }
-        }
-
-        var order = new List<int>();
-        if (best >= 0) order.Add(best);
-        order.AddRange(instances.Where(i => i.Index != best).Select(i => i.Index));
-
-        var errors = new List<string>();
-        foreach (int idx in order)
-        {
+            Candidate c = new Candidate { Index = inst.Index };
             try
             {
-                var (cookies, _) = ReadAppState(idx, mumu);
-                if (cookies.ContainsKey("sessionid"))
-                {
-                    picked = instances.First(i => i.Index == idx);
-                    return idx;
-                }
-                errors.Add($"实例 {idx}: 没有 sessionid（App 可能未登录）");
+                var (cookies, device) = ReadAppState(inst.Index, mumu);
+                c.Cookies = cookies;
+                c.Device = device;
             }
-            catch (Exception e) { errors.Add($"实例 {idx}: {e.Message}"); }
+            catch
+            {
+                continue;   // 这台没登录 / 读不到，跳过
+            }
+            c.Stamp = LatestStamp(mumu, inst.Index);
+            if (verify) c.Probe = ProbeAccount(c.Cookies);
+            list.Add(c);
         }
-        throw new InvalidOperationException(
-            "找不到已登录的红果 App。\n" + string.Join("\n", errors));
+        list.Sort((a, b) => string.CompareOrdinal(b.Stamp, a.Stamp));
+        return list;
     }
 
-    /// <summary>完整登录：读登录态 → 保存凭据与设备档案。</summary>
+    /// <summary>
+    /// 找一台**真能拿到授权**的实例。
+    /// ★★ 多开时不能只按 mtime 猜：逐台验证，取第一台服务端认可的；
+    ///   全程网络不通时退回「最近活动的那台」，不把用户挡在门外。
+    /// </summary>
+    public static int FindUsableInstance(string mumu, out Instance picked)
+    {
+        var instances = ListInstances(mumu);
+        var candidates = CollectCandidates(mumu, verify: true);
+        Candidate chosen = candidates.FirstOrDefault(c => c.Probe != null && c.Probe.Valid)
+            ?? candidates.FirstOrDefault(c => c.HasSession);
+        if (chosen == null)
+            throw new InvalidOperationException(
+                "找不到已登录的红果 App —— 请在模拟器里打开红果并登录");
+        picked = instances.FirstOrDefault(i => i.Index == chosen.Index)
+            ?? new Instance { Index = chosen.Index };
+        return chosen.Index;
+    }
+
+    /// <summary>最近一次授权选中了哪台实例（界面日志用）。</summary>
+    public static int LastPickedIndex { get; private set; } = -1;
+
+    /// <summary>
+    /// 边等边取：用户可能还没开安卓机 / 还没在 App 里登录。
+    /// 每 2 秒扫一遍**正在运行**的实例，谁先出现「服务端认可的 sessionid」就返回谁。
+    ///
+    /// 返回实例号；<c>-1</c> = 超时或被取消。
+    /// ★ 这里只负责「等到」，拿到后由调用方 <see cref="Login"/> 落盘。
+    /// </summary>
+    public static int WaitForAuth(string mumu, int timeoutSec, Action<string> onStatus = null,
+        CancellationToken cancel = default)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(Math.Max(5, timeoutSec));
+        int lastRunning = -1;
+        int lastErrorLogged = 0;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (cancel.IsCancellationRequested) return -1;
+            try
+            {
+                var insts = ListInstances(mumu);
+                int running = insts.Count(i => i.Started);
+                if (running == 0)
+                {
+                    if (lastRunning != 0)
+                    {
+                        onStatus?.Invoke("还没有安卓机在运行 —— 请打开 MuMu，启动那台装了红果的安卓机。");
+                        lastRunning = 0;
+                    }
+                }
+                else
+                {
+                    var cands = CollectCandidates(mumu, verify: true);
+                    foreach (Candidate c in cands)
+                    {
+                        if (c.Probe != null && c.Probe.Valid)
+                        {
+                            onStatus?.Invoke($"✓ 实例 {c.Index} 已登录（uid={c.Probe.UserId}），正在读取…");
+                            return c.Index;
+                        }
+                    }
+                    if (lastRunning != running)
+                    {
+                        onStatus?.Invoke($"检测到 {running} 台安卓机在运行，正在等红果登录态…"
+                            + "（请在 App 里确认已登录）");
+                        lastRunning = running;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                // 读失败不代表没登录，继续等；只在第一次（或换了错误）时提示
+                int h = e.Message.GetHashCode();
+                if (h != lastErrorLogged)
+                {
+                    onStatus?.Invoke("等待中：" + e.Message);
+                    lastErrorLogged = h;
+                }
+            }
+            Thread.Sleep(2000);
+        }
+        return -1;
+    }
+
+    /// <summary>完整登录：读登录态（多台时挑真正有效的那台）→ 保存凭据与设备档案。</summary>
     public static Account Login(int index = -1, bool save = true)
     {
         string mumu = FindMumu();
-        int idx;
-        if (index >= 0) idx = index;
-        else idx = FindUsableInstance(mumu, out _);
+        var candidates = CollectCandidates(mumu, verify: index < 0);
 
-        var (cookies, device) = ReadAppState(idx, mumu);
-        var acc = new Account { Cookies = cookies };
+        Candidate pick = null;
+        Candidate fallback = null;
+        var errors = new List<string>();
+        foreach (Candidate c in candidates)
+        {
+            if (!c.HasSession) continue;
+            if (index >= 0 && c.Index != index) continue;
+            if (index >= 0) { pick = c; break; }                      // 用户显式指定，不再挑
+            if (c.Probe != null && c.Probe.Valid) { pick = c; break; }
+            if (c.Probe != null && c.Probe.Unknown) { fallback ??= c; continue; }
+            errors.Add($"实例 {c.Index}: {c.Probe?.Error}");
+        }
+
+        if (pick == null && index < 0 && fallback != null) pick = fallback;
+        if (pick == null)
+            throw new InvalidOperationException(
+                "找不到能用的红果 App 授权。\n"
+                + (errors.Count > 0 ? string.Join("\n", errors) : "没有可读的已登录实例")
+                + "\n· 请在 App 里确认已登录；多开时每台都要单独登录红果。");
+
+        LastPickedIndex = pick.Index;
+        var acc = new Account
+        {
+            Cookies = pick.Cookies,
+            UserId = pick.Probe?.UserId ?? "",
+            UserName = pick.Probe?.UserName ?? "",
+        };
         if (save)
         {
             acc.Save();
-            SaveDevice(device);
+            SaveDevice(pick.Device);
         }
         return acc;
     }
 
+    /// <summary>保存设备身份：全局 latest + 按 install_id 归档（多实例互不覆盖）。</summary>
     public static void SaveDevice(DeviceIdentity device)
     {
         Paths.EnsureDir();
-        var opts = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        };
+        var opts = DeviceJsonOpts();
         File.WriteAllText(Paths.DevicePath, JsonSerializer.Serialize(device, opts));
+
+        if (string.IsNullOrEmpty(device.Iid)) return;
+        Dictionary<string, DeviceIdentity> map;
+        try
+        {
+            map = JsonSerializer.Deserialize<Dictionary<string, DeviceIdentity>>(
+                File.ReadAllText(Paths.DevicesPath), opts) ?? new Dictionary<string, DeviceIdentity>();
+        }
+        catch { map = new Dictionary<string, DeviceIdentity>(); }
+        map[device.Iid] = device;
+        try
+        {
+            File.WriteAllText(Paths.DevicesPath, JsonSerializer.Serialize(map, opts));
+        }
+        catch { }
     }
 
-    public static DeviceIdentity LoadDevice()
+    /// <summary>
+    /// 取设备身份。给了 <paramref name="iid"/>（= cookie 里的 install_id）时，
+    /// 优先用**同源**的那台实例归档的设备；找不到才退回全局 latest。
+    /// </summary>
+    public static DeviceIdentity LoadDevice(string iid = "")
     {
+        // ★ DeviceIdentity 是**公共字段**（不是属性），System.Text.Json 默认不序列化字段
+        //   ⇒ 必须 IncludeFields，否则读出来全是空串（多实例归档会静默失效）。
+        var opts = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            IncludeFields = true,
+        };
+        if (!string.IsNullOrEmpty(iid))
+        {
+            try
+            {
+                var map = JsonSerializer.Deserialize<Dictionary<string, DeviceIdentity>>(
+                    File.ReadAllText(Paths.DevicesPath), opts);
+                if (map != null && map.TryGetValue(iid, out DeviceIdentity one))
+                    return one;
+            }
+            catch { }
+        }
         try
         {
             if (File.Exists(Paths.DevicePath))
                 return JsonSerializer.Deserialize<DeviceIdentity>(
-                    File.ReadAllText(Paths.DevicePath),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                    ?? new DeviceIdentity();
+                    File.ReadAllText(Paths.DevicePath), opts) ?? new DeviceIdentity();
         }
         catch { }
         return new DeviceIdentity();
     }
+
+    private static JsonSerializerOptions DeviceJsonOpts() => new JsonSerializerOptions
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+        // ★ 同上：DeviceIdentity 的字段必须显式纳入序列化
+        IncludeFields = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 }

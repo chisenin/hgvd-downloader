@@ -23,7 +23,7 @@ set "DOTNET_NOLOGO=1"
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
 set "OUT=dist"
-set "VER=1.0.0"
+set "VER=1.1.0"
 
 if /i "%~1"=="selftest" goto selftest
 

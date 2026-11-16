@@ -1,7 +1,7 @@
 # 红果视频下载器 —— C# / Avalonia 界面版（发行版）
 
 用 **C# + Avalonia 11** 写的界面层，产出**自包含单文件** exe：
-`hgvd-downloader-v1.0.0.exe`（约 46 MB，目标机不用装 .NET）。
+`hgvd-downloader-v1.1.0.exe`（约 46 MB，目标机不用装 .NET）。
 
 > 本版与 Python 版（[`../hgvd/`](../hgvd/)）**共用同一套核心**
 > （`../hgvd-csharp/src/Hgvd.Core`：签名链、下载器、配置目录），
@@ -62,10 +62,10 @@ Git Bash / MSYS 里用等价脚本：
 ## 三、命令行自检
 
 ```bash
-hgvd-downloader-v1.0.0.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
-hgvd-downloader-v1.0.0.exe --uitest                 # 界面交互自检
-hgvd-downloader-v1.0.0.exe --batchtest [部数]        # 批量下载冒烟测试
-hgvd-downloader-v1.0.0.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
+hgvd-downloader-v1.1.0.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
+hgvd-downloader-v1.1.0.exe --uitest                 # 界面交互自检
+hgvd-downloader-v1.1.0.exe --batchtest [部数]        # 批量下载冒烟测试
+hgvd-downloader-v1.1.0.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
 ```
 
 > ★ 程序是 `WinExe`（没有控制台），启动时会 `AttachConsole` 挂上父进程的控制台，

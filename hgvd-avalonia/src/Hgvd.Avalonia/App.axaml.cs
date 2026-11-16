@@ -15,6 +15,7 @@ namespace Hgvd.Avalonia;
 ///   --uitest                 界面交互自检（走真实事件绑定）
 ///   --batchtest [部数]       批量下载冒烟测试
 ///   --demo <series_id> [skip] 加载一部剧并真的开始下载（窗口正常显示，便于截图）
+///   --authcheck              只查「能不能从 MuMu 拿到授权」，打印路径/实例/cookie 字段
 /// </summary>
 public partial class App : Application
 {
@@ -67,6 +68,35 @@ public partial class App : Application
                     {
                         w.Show();
                         await w.UiTestAsync();
+                    });
+                    return;
+                }
+            case "--authcheck":
+                {
+                    // ★ 只读不存：诊断用，不覆盖已有凭据
+                    RunThenShutdown(() =>
+                    {
+                        Console.WriteLine("═══ MuMu 授权自检 ═══");
+                        try
+                        {
+                            string mumu = Hgvd.Core.Auth.MumuAuth.FindMumu();
+                            Console.WriteLine("MuMuManager: " + mumu);
+                            foreach (var inst in Hgvd.Core.Auth.MumuAuth.ListInstances(mumu))
+                                Console.WriteLine($"  实例 {inst.Index}: 启动={inst.Started} {inst.Name}");
+
+                            foreach (var c in Hgvd.Core.Auth.MumuAuth.CollectCandidates(mumu, verify: true))
+                                Console.WriteLine($"  实例 {c.Index}: {c.Probe?.Describe() ?? "未验证"}  "
+                                    + $"uid={c.Probe?.UserId}  最近活动={c.Stamp}  iid={c.Device.Iid}");
+
+                            var acc = Hgvd.Core.Auth.MumuAuth.Login(save: false);
+                            Console.WriteLine($"✓ 选中实例 {Hgvd.Core.Auth.MumuAuth.LastPickedIndex}："
+                                + $"{acc.Cookies.Count} 个 cookie 字段，uid={acc.UserId}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("✗ 失败：" + ex.Message);
+                        }
+                        return Task.CompletedTask;
                     });
                     return;
                 }

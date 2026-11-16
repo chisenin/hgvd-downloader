@@ -28,14 +28,29 @@ def device_path() -> Path:
     return tool_dir() / "device.json"
 
 
-def load_device() -> DeviceIdentity | None:
-    p = device_path()
-    if not p.exists():
-        return None
-    try:
-        d = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
+def devices_path() -> Path:
+    """按实例保存的设备身份（key = 该实例的 install_id）。
+
+    ★★ 为什么需要：MuMu 多开时，**每个实例的 install_id / device_id 都不同**，
+      而 signature 要求「cookie 与设备身份同源」。
+      只存一份全局 device.json 的话，换实例读授权就会把上一台的设备身份覆盖掉，
+      表现为「只有某一台实例的授权能用」——用户很容易误以为是账号互斥。
+    """
+    return tool_dir() / "devices.json"
+
+
+def _identity_dict(ident: DeviceIdentity) -> dict:
+    return {
+        "device_id": ident.device_id,
+        "iid": ident.iid,
+        "cdid": ident.cdid,
+        "openudid": ident.openudid,
+        "version_name": ident.version_name,
+        "version_code": ident.version_code,
+    }
+
+
+def _identity_from_dict(d: dict) -> DeviceIdentity | None:
     if not d.get("device_id") or not d.get("iid"):
         return None
     return DeviceIdentity(
@@ -48,24 +63,66 @@ def load_device() -> DeviceIdentity | None:
     )
 
 
+def load_device_for(install_id: str) -> DeviceIdentity | None:
+    """按 ``install_id`` 取这台实例自己的设备身份。"""
+    if not install_id:
+        return None
+    try:
+        raw = json.loads(devices_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    rec = raw.get(install_id) if isinstance(raw, dict) else None
+    return _identity_from_dict(rec) if isinstance(rec, dict) else None
+
+
+def load_device(install_id: str = "") -> DeviceIdentity | None:
+    """取设备身份。
+
+    ★ 给了 ``install_id``（= cookie 里的那个）就优先用**同源**的实例记录，
+      找不到才退回全局 latest。
+    """
+    if install_id:
+        ident = load_device_for(install_id)
+        if ident:
+            return ident
+    p = device_path()
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    return _identity_from_dict(d)
+
+
 def save_device(ident: DeviceIdentity) -> None:
+    """保存设备身份。
+
+    ★ 写两份：全局 ``device.json``（最近一次用的，保持兼容）
+      + ``devices.json`` 里按 ``iid`` 归档（多实例互不覆盖）。
+    """
     p = device_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(
-        json.dumps(
-            {
-                "device_id": ident.device_id,
-                "iid": ident.iid,
-                "cdid": ident.cdid,
-                "openudid": ident.openudid,
-                "version_name": ident.version_name,
-                "version_code": ident.version_code,
-            },
-            ensure_ascii=False,
-            indent=1,
-        ),
+        json.dumps(_identity_dict(ident), ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
+
+    if not ident.iid:
+        return
+    try:
+        raw = json.loads(devices_path().read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception:  # noqa: BLE001
+        raw = {}
+    raw[ident.iid] = _identity_dict(ident)
+    try:
+        devices_path().write_text(
+            json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _seeded_int(seed: str, digits: int = 16) -> str:

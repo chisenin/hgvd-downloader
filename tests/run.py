@@ -151,6 +151,19 @@ def test_b_config():
         eq("B6b 盘在则保留用户目录",
            str(cfg3.ensure_out_dir()).replace("\\", "/"), "Z:/子目录还没建")
 
+    # 多实例设备档案：按 install_id 归档，换实例不互相覆盖
+    from hgvd.device import load_device, load_device_for, save_device
+    from hgvd.sign.core import DeviceIdentity
+
+    save_device(DeviceIdentity(device_id="dev-A", iid="iid-A", cdid="", openudid=""))
+    save_device(DeviceIdentity(device_id="dev-B", iid="iid-B", cdid="", openudid=""))
+    check("B7 按 iid 取回同源设备（A）",
+          (load_device_for("iid-A") or DeviceIdentity()).device_id == "dev-A")
+    check("B8 按 iid 取回同源设备（B）",
+          (load_device_for("iid-B") or DeviceIdentity()).device_id == "dev-B")
+    check("B9 未知 iid 退回全局 latest",
+          load_device("iid-X").device_id == "dev-B")
+
 
 # ---------------------------------------------------------------- C 组
 

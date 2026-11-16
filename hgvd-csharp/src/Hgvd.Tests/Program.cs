@@ -16,6 +16,8 @@ public static class Program
         //   archive/hgvd-csharp-wpf/EpisodeRowTests.cs，不再参与编译；
         //   发行版（Avalonia）的同名回归见 AvaloniaEpisodeRowTests。
         fail += NamingTests.Run();
+        fail += MumuLocateTests.Run();
+        fail += DeviceStoreTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

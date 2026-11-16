@@ -25,7 +25,7 @@ public partial class AboutWindow : Window
         {
             var asm = Assembly.GetExecutingAssembly();
             var v = asm.GetName().Version;
-            return v == null ? "1.0.0" : $"{v.Major}.{v.Minor}.{v.Build}";
+            return v == null ? "1.1.0" : $"{v.Major}.{v.Minor}.{v.Build}";
         }
     }
 
