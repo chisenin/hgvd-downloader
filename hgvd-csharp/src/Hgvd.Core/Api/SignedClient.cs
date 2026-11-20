@@ -613,13 +613,23 @@ public sealed class PlaybackModel
 
     public static PlaybackModel Parse(JsonDocument doc)
     {
-        var model = new PlaybackModel();
         var root = doc.RootElement;
-        if (!root.TryGetProperty("data", out var data)) return model;
+        if (!root.TryGetProperty("data", out var data)) return new PlaybackModel();
 
         // ★ data.video_model 是一个**嵌套的 JSON 字符串**
         string raw = J.Str(data, "video_model");
-        if (string.IsNullOrEmpty(raw)) return model;
+        if (string.IsNullOrEmpty(raw)) return new PlaybackModel();
+        return ParseModel(raw);
+    }
+
+    /// <summary>解析一段 video_model JSON 字符串。</summary>
+    /// <remarks>
+    /// ★ 抓流拿到的 preload 响应是 ``data[vid].video_model``，外层多一层 vid；
+    ///   这里只吃最内层那段，两种入口共用同一份解析，别写第二份。
+    /// </remarks>
+    public static PlaybackModel ParseModel(string raw)
+    {
+        var model = new PlaybackModel();
 
         JsonElement vm;
         try

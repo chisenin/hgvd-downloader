@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Hgvd.Tests;
 
@@ -8,6 +8,7 @@ public static class Program
     {
         // ★ 实机验证入口（不属于离线回归）：起 MITM 代理看安卓能否握手
         if (args.Length > 0 && args[0] == "--mitmtest") return MitmTest.Run(args);
+        if (args.Length > 0 && args[0] == "--playtest") return PlayTest.Run(args);
 
         Console.WriteLine("═══ 红果下载器 C# 版 · 离线回归 ═══");
         int fail = 0;

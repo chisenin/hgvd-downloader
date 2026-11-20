@@ -31,14 +31,28 @@ public static class MitmTest
         Console.WriteLine($"CA 目录   : {MitmCa.CaDir}");
         Console.WriteLine();
 
+        var (whitelist, builtAt) = Whitelist.Load();
+        Console.WriteLine($"白名单    : {whitelist.Count} 集"
+                          + (builtAt > 0
+                             ? $"（{DateTimeOffset.FromUnixTimeSeconds((long)builtAt):MM-dd HH:mm} 建）"
+                             : "（空，先跑 Python 侧或 BuildAsync）"));
+        Console.WriteLine();
+
+        var source = new GrabSource(whitelist, job =>
+        {
+            Console.WriteLine($"  ★ 任务：《{job.Book}》{job.Index}. {job.Title}  "
+                              + $"{job.Definition} {job.Height}p  {job.Duration:0}s");
+            Console.WriteLine($"    {job.Url.Substring(0, Math.Min(110, job.Url.Length))}");
+        }, m => Console.WriteLine("  " + m));
+
         var proxy = new CaptureProxy(port, ex =>
         {
             var t = ex.Target ?? "";
             bool watched = t.Contains("multi_video_model") || t.Contains("multi_video_detail")
                            || t.Contains("video_detail") || t.Contains("video_playback")
                            || t.Contains("album_detail");
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {(watched ? "⇢" : "·")} {ex.Host}{t}  {ex.Response.Length} 字节");
-            if (!watched || ex.Response.Length == 0) return;
+            if (!watched) return;
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] ⇢ {ex.Host}{t.Split('?')[0]}  {ex.Response.Length} 字节");
 
             try
             {
@@ -47,6 +61,8 @@ public static class MitmTest
                 File.WriteAllBytes(Path.Combine("_ref/csharp", tag + ".resp.bin"), ex.Response);
             }
             catch (IOException) { }
+
+            source.Handle(ex);
         }, m => Console.WriteLine("  " + m));
 
         proxy.Start();
