@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -147,7 +148,7 @@ public sealed class CaptureProxy : IDisposable
         var reader = new ConnReader(clientTls);
         var head = await reader.ReadHeadAsync(ct);
         if (head.Length == 0) return;
-        var body = await reader.ReadBodyAsync(head, ct);
+        var body = await reader.ReadBodyAsync(head, ct, isRequest: true);
         var request = Concat(head, body);
 
         var text = Encoding.ASCII.GetString(head);
@@ -170,6 +171,9 @@ public sealed class CaptureProxy : IDisposable
             }, ct);
             _log("[upstream-handshake] ok " + host);
 
+            // ★ 强制上游短连接：否则 keep-alive 响应没有 Content-Length 时
+            //   ReadToEndAsync 会一直等到超时。Connection 不参与签名，改动安全。
+            request = ForceClose(request);
             await ssl.WriteAsync(request, ct);
             var up = new ConnReader(ssl);
             var respHead = await up.ReadHeadAsync(ct);
@@ -190,7 +194,7 @@ public sealed class CaptureProxy : IDisposable
 
     private async Task PumpPlainAsync(Stream net, ConnReader reader, byte[] head, CancellationToken ct)
     {
-        var body = await reader.ReadBodyAsync(head, ct);
+        var body = await reader.ReadBodyAsync(head, ct, isRequest: true);
         var request = Concat(head, body);
         var text = Encoding.ASCII.GetString(head);
         var parts = FirstLine(head).Split(' ');
@@ -238,6 +242,42 @@ public sealed class CaptureProxy : IDisposable
         return null;
     }
 
+    /// <summary>把请求头里的 Connection 统一成 close（body 原样保留）。</summary>
+    private static byte[] ForceClose(byte[] request)
+    {
+        int at = IndexOfBytes(request, new[] { (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' });
+        if (at < 0) return request;
+        string head = Encoding.ASCII.GetString(request, 0, at);
+        var lines = head.Split("\r\n").ToList();
+        for (int i = 1; i < lines.Count; i++)
+        {
+            int c = lines[i].IndexOf(':');
+            if (c > 0 && lines[i].Substring(0, c).Trim()
+                    .Equals("Connection", StringComparison.OrdinalIgnoreCase))
+            {
+                lines[i] = "Connection: close";
+                break;
+            }
+        }
+        if (!lines.Any(l => l.StartsWith("Connection:", StringComparison.OrdinalIgnoreCase)))
+            lines.Add("Connection: close");
+
+        byte[] newHead = Encoding.ASCII.GetBytes(string.Join("\r\n", lines) + "\r\n\r\n");
+        byte[] body = request.AsSpan(at + 4).ToArray();
+        return Concat(newHead, body);
+    }
+
+    private static int IndexOfBytes(byte[] hay, byte[] needle)
+    {
+        for (int i = 0; i <= hay.Length - needle.Length; i++)
+        {
+            bool ok = true;
+            for (int j = 0; j < needle.Length; j++) if (hay[i + j] != needle[j]) { ok = false; break; }
+            if (ok) return i;
+        }
+        return -1;
+    }
+
     private static byte[] Concat(byte[] a, byte[] b)
     {
         if (b == null || b.Length == 0) return a;
@@ -278,7 +318,13 @@ public sealed class CaptureProxy : IDisposable
             }
         }
 
-        public async Task<byte[]> ReadBodyAsync(byte[] head, CancellationToken ct)
+        /// <summary>
+        /// 读 body。
+        /// ★ isRequest 必须区分：请求侧（GET/HEAD）没有 Content-Length 时**body 为空**，
+        ///   必须立刻返回；如果也用 ReadToEnd 会一直等客户端关连接，而客户端在等响应 → 死锁。
+        ///   这曾导致「服务端握手 OK、上游握手 OK，但响应永远读不到」。
+        /// </summary>
+        public async Task<byte[]> ReadBodyAsync(byte[] head, CancellationToken ct, bool isRequest = false)
         {
             var text = Encoding.ASCII.GetString(head);
             if (text.IndexOf("transfer-encoding: chunked", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -286,6 +332,7 @@ public sealed class CaptureProxy : IDisposable
 
             int len = ContentLength(text);
             if (len > 0) return await ReadExactAsync(len, ct);
+            if (isRequest) return Array.Empty<byte>();      // GET/HEAD 无 body，别等 EOF
             return await ReadToEndAsync(ct);
         }
 
