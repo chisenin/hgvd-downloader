@@ -21,6 +21,8 @@ public static class Program
         // ★ DRM 用真实黄金向量守「短剧密钥解包」——多切一字节就解不出 key，
         //   整条加密内容（短剧）链路全废，见 DrmTests 的注释。
         fail += DrmTests.Run();
+        // ★ 兴趣岛内核（2026-11-21 合并）：链接解析 / 清单 / 命名 / 队列
+        fail += XqdTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

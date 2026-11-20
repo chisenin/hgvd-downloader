@@ -383,6 +383,35 @@ public partial class MainWindow
                       : need > MinWidth ? $"MinWidth 至少要比 {need:0} 大"
                                         : "有余量");
 
+        // ⑫ ★ 内容源切换 + 兴趣岛页（2026-11-21 把兴趣岛下载内核合并进来）
+        //    ★ 用临时存储目录，绝不把测试清单写进用户真实的 ~/.hgv_tool/xqd/jobs.json
+        string xqdRoot = Path.Combine(Path.GetTempPath(), "hgvd_xqd_uitest");
+        try { if (Directory.Exists(xqdRoot)) Directory.Delete(xqdRoot, true); } catch { }
+        PaneXqd.UseStoreForTest(xqdRoot);
+
+        TabXqd.IsChecked = true;
+        await Task.Delay(400);
+        Check("切到兴趣岛 → 兴趣岛页显示", PaneXqd.IsVisible && !PaneHongguo.IsVisible,
+            $"xqd={PaneXqd.IsVisible} 红果={PaneHongguo.IsVisible}");
+        Check("切到兴趣岛 → 收起红果专属的授权控件",
+            !BtnLogin.IsVisible && !LblAuth.IsVisible);
+
+        int xqdAdded = PaneXqd.AddFromText(
+            "第一节：试看 | https://example.com/a.m3u8\n" +
+            "https://example.com/b.m3u8\n" +
+            "第一节：试看 | https://example.com/a.m3u8");
+        Check("链接清单能解析并去重", xqdAdded == 2, $"加入 {xqdAdded} 节");
+        Check("兴趣岛清单行数与数据一致", PaneXqd.JobRowCount == 2, $"{PaneXqd.JobRowCount} 行");
+
+        int xqdAgain = PaneXqd.AddFromText("第一节：试看 | https://example.com/a.m3u8");
+        Check("同一条链接不会重复加入", xqdAgain == 0, $"又加了 {xqdAgain} 节");
+
+        TabHongguo.IsChecked = true;
+        await Task.Delay(400);
+        Check("切回红果 → 红果页恢复", PaneHongguo.IsVisible && !PaneXqd.IsVisible,
+            $"红果={PaneHongguo.IsVisible} xqd={PaneXqd.IsVisible}");
+        Check("切回红果 → 授权控件恢复", BtnLogin.IsVisible && LblAuth.IsVisible);
+
         Log(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");
         Console.WriteLine(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");
         Diag($"uitest fail={fail}");
@@ -395,6 +424,124 @@ public partial class MainWindow
                 report.ToString() + $"=== fail={fail} ===\n");
         }
         catch { }
+    }
+
+    /// <summary>
+    /// 兴趣岛下载冒烟测试：给一条真实的 m3u8 / mp4 直链，走完整链路
+    /// （清单解析 → 分片下载 → ffmpeg 合成 → ffprobe 校验）并打印成品信息。
+    ///
+    /// ★ 用法：<c>hgvd-downloader-vX.exe --xqdtest &lt;url&gt; [课名]</c>
+    /// ★ 产物落在系统临时目录，用临时清单存储 —— 不碰用户的下载目录和真实 jobs.json。
+    /// ★ 结果写 <c>~/.hgv_tool/xqdtest.log</c>（末行 <c>=== pass=1 ===</c>），供发版门禁读取。
+    /// </summary>
+    public async Task XqdTestAsync(string url, string title = "")
+    {
+        const string Hdr = "═══ 兴趣岛下载冒烟测试 ═══";
+        Log(Hdr);
+        Console.WriteLine(Hdr);
+
+        var report = new StringBuilder();
+        void Line(string s)
+        {
+            Log(s);
+            Console.WriteLine(s);
+            report.AppendLine(s);
+        }
+
+        if (string.IsNullOrWhiteSpace(url) ||
+            !(url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+              url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+        {
+            Line("✗ 用法：--xqdtest <m3u8 或 mp4 直链> [课名]");
+            WriteXqdReport(report, false);
+            return;
+        }
+
+        string outRoot = Path.Combine(Path.GetTempPath(), "hgvd_xqd_e2e");
+        try { if (Directory.Exists(outRoot)) Directory.Delete(outRoot, true); } catch { }
+        Directory.CreateDirectory(outRoot);
+
+        PaneXqd.ResolveOutDir = () => outRoot;
+        PaneXqd.UseStoreForTest(Path.Combine(outRoot, "state"));
+        TabXqd.IsChecked = true;
+        await Task.Delay(300);
+
+        string name = string.IsNullOrWhiteSpace(title) ? "冒烟测试" : title;
+        int added = PaneXqd.AddFromText($"{name} | {url}");
+        Line($"清单：加入 {added} 节");
+        if (added == 0)
+        {
+            Line("✗ 链接没能加入清单（格式不对？）");
+            WriteXqdReport(report, false);
+            return;
+        }
+
+        var sw = Stopwatch.StartNew();
+        var (ok, fail, skip) = await PaneXqd.RunAllForTestAsync();
+        sw.Stop();
+        Line($"结果：成功 {ok} · 失败 {fail} · 跳过 {skip} · 用时 {sw.Elapsed.TotalSeconds:0.0}s");
+
+        string file = PaneXqd.JobPaths().FirstOrDefault(File.Exists);
+        if (string.IsNullOrEmpty(file))
+        {
+            // 直链音频可能改了扩展名（.mp3/.m4a），按目录里最大的文件兜底
+            string dir = Path.Combine(outRoot, "兴趣岛");
+            if (Directory.Exists(dir))
+                file = Directory.GetFiles(dir)
+                                .OrderByDescending(f => { try { return new FileInfo(f).Length; } catch { return 0; } })
+                                .FirstOrDefault();
+        }
+
+        bool pass = false;
+        if (!string.IsNullOrEmpty(file) && File.Exists(file))
+        {
+            long size = new FileInfo(file).Length;
+            double dur = Util.ProbeDuration(file);
+            Line($"成品：{Path.GetFileName(file)} · {Util.FmtSize(size)} · {dur:0.0}s");
+            pass = ok == 1 && size >= 10 * 1024 && dur > 0;
+            Line(pass ? "✓ 端到端通过（成品可被 ffprobe 解析）" : "✗ 成品不合格（太小或无法解析）");
+        }
+        else
+        {
+            Line("✗ 没有成品文件");
+        }
+
+        WriteXqdReport(report, pass);
+    }
+
+    private static void WriteXqdReport(StringBuilder report, bool pass)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hgv_tool");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "xqdtest.log"),
+                report + $"=== pass={(pass ? 1 : 0)} ===\n");
+        }
+        catch { }
+        Console.WriteLine(pass ? "═══ 通过 ═══" : "═══ 未通过 ═══");
+    }
+
+    /// <summary>
+    /// 开发期演示（--xqdui）：停在兴趣岛页并填几条示例，便于截图核对布局。
+    /// ★ 用系统临时目录里的独立清单，不碰用户真实的 jobs.json / 下载目录。
+    /// </summary>
+    internal void PrepareXqdDemoForShot()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "hgvd_xqd_shot");
+        try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+
+        PaneXqd.ResolveOutDir = () => root;
+        PaneXqd.UseStoreForTest(Path.Combine(root, "state"));
+        TabXqd.IsChecked = true;
+
+        PaneXqd.AddFromText(
+            "先导课：解谜自然之道 | https://example.com/a.m3u8 [48:12]\n" +
+            "五行导引功第一课：龟形导引功教学 | https://example.com/b.m3u8 [36:40]\n" +
+            "聚气凝神巩固课——五行导引功串联+六字呼吸法 | https://example.com/c.m3u8 [1:12:30]\n" +
+            "【静坐姿势】道家七支坐法 | https://example.com/d.m3u8 [21:05]\n" +
+            "【静坐法门】静坐准备、方法和注意事项 | https://example.com/e.m3u8 [15:22]");
     }
 
     /// <summary>在可视树里找到某一行的勾选框。</summary>

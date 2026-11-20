@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hgvd.Core\Hgvd.Core.csproj" />
+    <ProjectReference Include="..\Hgvd.Xqd\Hgvd.Xqd.csproj" />
     <!-- ★ Avalonia 发行版的界面层（EpisodeRow）——
          WPF 版归档后，在售版本的界面回归必须跟着迁过来。 -->
     <ProjectReference Include="..\..\..\hgvd-avalonia\src\Hgvd.Avalonia\Hgvd.Avalonia.csproj" />

@@ -100,6 +100,30 @@ public partial class App : Application
                     });
                     return;
                 }
+            case "--xqdtest":
+                {
+                    // ★ 兴趣岛链路冒烟：真实链接 → 清单解析 → 分片下载 → ffmpeg 合成
+                    var w = new MainWindow { ShowInTaskbar = false, Opacity = 0 };
+                    RunThenShutdown(async () =>
+                    {
+                        w.Show();
+                        await w.XqdTestAsync(p1 ?? "", p2 ?? "");
+                    });
+                    return;
+                }
+            case "--xqdui":
+                {
+                    // ★ 开发期：直接停在「兴趣岛课程」页并塞几条示例（临时清单，不写用户数据）
+                    var w = new MainWindow();
+                    w.Opened += async (_, _) =>
+                    {
+                        await Task.Delay(500);
+                        w.PrepareXqdDemoForShot();
+                    };
+                    SetMainWindow(w);
+                    w.Show();
+                    return;
+                }
             case "--demo":
                 {
                     int skip = 0;

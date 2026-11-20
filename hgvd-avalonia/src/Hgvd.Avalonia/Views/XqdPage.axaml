@@ -1,0 +1,179 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctl="using:Hgvd.Avalonia.Controls"
+             x:Class="Hgvd.Avalonia.Views.XqdPage">
+
+  <!-- ══════════════════════════════════════════════════════════════
+       兴趣岛课程页 —— 只做「链接清单 → HLS 分片下载 → MP4」。
+       不依赖模拟器 / 授权；课表来源是用户粘贴或导入的链接清单。
+       ══════════════════════════════════════════════════════════════ -->
+  <Grid RowDefinitions="*,150">
+
+    <Grid Grid.Row="0" ColumnDefinitions="360,*">
+
+      <!-- ── 左：链接清单输入 ── -->
+      <Border Grid.Column="0" Classes="card" Margin="0,0,10,0">
+        <Grid RowDefinitions="Auto,*,Auto,Auto">
+
+          <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*">
+            <TextBlock Grid.Column="0" Text="课程链接" Classes="section" />
+            <Border Grid.Column="1" Background="#EEF2F8" CornerRadius="9" Padding="8,2"
+                    Margin="8,0,0,0" VerticalAlignment="Center">
+              <TextBlock x:Name="LblLinkCount" Text="0 条" FontSize="11"
+                         Foreground="{DynamicResource MutedBrush}" />
+            </Border>
+            <Button Grid.Column="2" Content="清空" Classes="modern" Padding="8,3"
+                    HorizontalAlignment="Right" Click="BtnClearInput_Click"
+                    ToolTip.Tip="只清空上面的输入框，不动已被加入清单的任务" />
+          </Grid>
+
+          <Border Grid.Row="1" Margin="0,8,0,8" CornerRadius="8" BorderThickness="1"
+                  BorderBrush="{DynamicResource CardBorderBrush}" Background="White">
+            <TextBox x:Name="EdLinks" BorderThickness="0" Background="Transparent"
+                     AcceptsReturn="True" TextWrapping="Wrap"
+                     FontFamily="Consolas, Courier New, monospace" FontSize="12"
+                     VerticalContentAlignment="Top" Padding="8,6"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     Watermark="一行一条：&#10;课名 | https://…/xxx.m3u8&#10;或直接粘 https://…&#10;也可以把 links.json / names.json 拖进来"
+                     ToolTip.Tip="支持「课名 | 链接」「课名&#9;链接」「只有链接」；# 开头是注释；结尾可写 [12:34] 或 时长=754" />
+          </Border>
+
+          <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,*">
+            <Button Grid.Column="0" x:Name="BtnAdd" Content="加入清单"
+                    Classes="primary" Click="BtnAdd_Click"
+                    ToolTip.Tip="把输入框里的链接解析后加入右侧下载清单（重复的自动忽略）" />
+            <Button Grid.Column="1" Content="导入清单…" Margin="6,0,0,0"
+                    Classes="modern" Click="BtnImport_Click"
+                    ToolTip.Tip="支持 .txt / .json / .m3u8；同时选 links.json 与 names.json 会自动按 fileId 合并课名" />
+            <Button Grid.Column="2" Content="重新扫描" Margin="6,0,0,0"
+                    Classes="modern" Click="BtnRescan_Click"
+                    ToolTip.Tip="按磁盘上已有的成品重判状态（够 10KB 就算已存在）" />
+          </Grid>
+
+          <TextBlock Grid.Row="3" x:Name="LblLinkHint" Margin="2,8,2,0" FontSize="11"
+                     Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"
+                     Text="成品落在「下载目录\兴趣岛\」下。同一节课重复加入会被忽略。" />
+        </Grid>
+      </Border>
+
+      <!-- ── 右：下载清单 ── -->
+      <Border Grid.Column="1" Classes="card">
+        <Grid RowDefinitions="Auto,*,Auto">
+
+          <!-- ★ 左右两组用 Grid（Auto,*,Auto）：DockPanel 会把右侧按钮挤出窗口 -->
+          <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+              <TextBlock Text="下载清单 ·" Classes="section" />
+              <ctl:MarqueeControl x:Name="Marquee" Margin="4,0,0,0" Width="150"
+                                  ToolTip.Tip="当前正在下载的课程" />
+              <Border Background="#EEF2F8" CornerRadius="9" Padding="8,2" Margin="8,0,0,0"
+                      VerticalAlignment="Center">
+                <TextBlock x:Name="LblJobCount" Text="0 节" FontSize="11"
+                           Foreground="{DynamicResource MutedBrush}" />
+              </Border>
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+              <ComboBox x:Name="CmbQuality" Width="130" Margin="3,0,0,0"
+                        VerticalAlignment="Center"
+                        SelectionChanged="CmbQuality_SelectionChanged"
+                        ToolTip.Tip="按画面短边挑流（竖屏课按宽度算）" />
+              <Button x:Name="BtnPause" Content="暂停" Margin="6,0,0,0"
+                      Classes="modern" Click="BtnPause_Click" IsEnabled="False" />
+              <Button x:Name="BtnStop" Content="停止" Margin="3,0,0,0"
+                      Classes="modern danger" Click="BtnStop_Click" IsEnabled="False" />
+              <Button x:Name="BtnRun" Content="下载" Margin="6,0,0,0"
+                      Classes="primary" Click="BtnRun_Click"
+                      ToolTip.Tip="有选中行则只下选中的；没选中则下所有待下载的&#10;双击某一行 = 只下这一节" />
+            </StackPanel>
+          </Grid>
+
+          <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="8"
+                  Background="White" BorderBrush="{DynamicResource CardBorderBrush}"
+                  BorderThickness="1">
+            <Grid RowDefinitions="Auto,*">
+
+              <Border Grid.Row="0" Classes="thead" Padding="6,0">
+                <Grid Height="28" ColumnDefinitions="58,*,60,120,74,136">
+                  <TextBlock Grid.Column="0" Text="状态" Classes="thead" />
+                  <TextBlock Grid.Column="1" Text="课程" Classes="thead" Margin="0,0,6,0" />
+                  <TextBlock Grid.Column="2" Text="时长" Classes="thead" />
+                  <TextBlock Grid.Column="3" Text="大小" Classes="thead" />
+                  <TextBlock Grid.Column="4" Text="速度" Classes="thead" />
+                  <TextBlock Grid.Column="5" Text="进度" Classes="thead" />
+                </Grid>
+              </Border>
+
+              <ListBox x:Name="LstRows" Grid.Row="1"
+                       Classes="ep"
+                       BorderThickness="0" Background="Transparent"
+                       SelectionMode="Multiple"
+                       DoubleTapped="LstRows_DoubleTapped"
+                       ToolTip.Tip="双击某一节 = 只下这一节；右键有更多操作"
+                       ScrollViewer.VerticalScrollBarVisibility="Visible">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Height="26" ColumnDefinitions="58,*,60,120,74,136"
+                          ToolTip.Tip="{Binding ToolTip}">
+
+                      <Grid.ContextFlyout>
+                        <MenuFlyout>
+                          <MenuItem Header="下载这一节" Click="MenuDownload_Click" />
+                          <MenuItem Header="重新下载（清缓存）" Click="MenuRetry_Click" />
+                          <Separator />
+                          <MenuItem Header="复制链接" Click="MenuCopyUrl_Click" />
+                          <MenuItem Header="复制课名" Click="MenuCopyTitle_Click" />
+                          <MenuItem Header="打开所在文件夹" Click="MenuOpenFolder_Click" />
+                          <Separator />
+                          <MenuItem Header="移出清单" Click="MenuRemove_Click" />
+                        </MenuFlyout>
+                      </Grid.ContextFlyout>
+                      <Border Grid.Column="0" IsVisible="{Binding ShowPill}"
+                              Background="{Binding StatePillBg}"
+                              BorderBrush="{Binding StatePillBorder}"
+                              BorderThickness="0.5" CornerRadius="9"
+                              Padding="8,2" HorizontalAlignment="Left"
+                              VerticalAlignment="Center">
+                        <TextBlock Text="{Binding StateWord}" FontSize="11"
+                                   Foreground="{Binding StatePillFg}" />
+                      </Border>
+                      <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                 TextTrimming="CharacterEllipsis"
+                                 VerticalAlignment="Center" Margin="0,0,6,0" />
+                      <TextBlock Grid.Column="2" Text="{Binding DurationText}"
+                                 Foreground="#8494A8" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="{Binding SizeText}"
+                                 Foreground="#8494A8" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="{Binding SpeedText}"
+                                 Foreground="#8494A8" VerticalAlignment="Center" />
+                      <ctl:ProgressCell Grid.Column="5"
+                                        Percent="{Binding Percent}"
+                                        Text="{Binding ProgressText}"
+                                        Fill="{Binding ProgressFill}"
+                                        VerticalAlignment="Center" />
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </Border>
+
+          <TextBlock Grid.Row="2" x:Name="LblSummary" Margin="2,6,0,0" Classes="muted"
+                     Text="暂无任务：把课程链接粘到左边，点「加入清单」" />
+        </Grid>
+      </Border>
+    </Grid>
+
+    <!-- ── 运行日志 ── -->
+    <Border Grid.Row="1" Classes="card" Margin="0,10,0,0">
+      <Grid RowDefinitions="Auto,*">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto">
+          <TextBlock Grid.Column="0" Text="运行日志" Classes="section" />
+          <TextBlock Grid.Column="1" x:Name="LblCacheHint" Margin="10,0,0,0" Classes="hint" />
+          <Button Grid.Column="2" Content="清空" Classes="modern" Padding="8,3"
+                  Click="BtnClearLog_Click" />
+        </Grid>
+        <TextBox x:Name="TxtLog" Grid.Row="1" Margin="0,6,0,0" Classes="log" />
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

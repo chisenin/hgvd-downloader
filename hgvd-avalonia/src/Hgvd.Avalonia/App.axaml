@@ -269,5 +269,32 @@
     <Style Selector="RadioButton.pill:checked">
       <Setter Property="Foreground" Value="White" />
     </Style>
+
+    <!-- ══════════════ 内容源页签（红果视频 / 兴趣岛课程） ══════════════ -->
+    <Style Selector="RadioButton.src">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="#5A6B82" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <ControlTemplate TargetType="RadioButton">
+          <Border Name="PART_Root" Background="Transparent" CornerRadius="7" Padding="16,5">
+            <presenters:ContentPresenter Content="{TemplateBinding Content}"
+                                         ContentTemplate="{TemplateBinding ContentTemplate}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="RadioButton.src:pointerover /template/ Border#PART_Root">
+      <Setter Property="Background" Value="#DFE6F0" />
+    </Style>
+    <Style Selector="RadioButton.src:checked /template/ Border#PART_Root">
+      <Setter Property="Background" Value="White" />
+    </Style>
+    <Style Selector="RadioButton.src:checked">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
   </Application.Styles>
 </Application>

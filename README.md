@@ -5,6 +5,10 @@
 > 面向收藏里是**冷门、教学类**内容的人——这些内容在聚合站基本找不到，
 > 只能从自己账号的收藏夹里一条条捞。工具只处理**你自己账号下有权访问与保存**的内容。
 
+2026-11-21 起把**兴趣岛课程下载器**的下载内核合并了进来：同一个窗口左上角切到
+「兴趣岛课程」，粘课程链接（HLS / 直链）就能批量导出 MP4，不需要授权、不用开模拟器。
+见[兴趣岛课程](#兴趣岛课程第二个内容源)。
+
 C# + Avalonia 的桌面发行版（单文件 exe），外加一套共用同一核心的 Python 实现（改逻辑、做验证用）。
 
 ## 下载即用
@@ -33,6 +37,36 @@ C# + Avalonia 的桌面发行版（单文件 exe），外加一套共用同一�
 
 教学合集是本项目的主战场。下载的是**完整正片**（不是试看片段），加密分集用服务端下发的内容密钥解密；
 支持断点续传、已下载跳过、成品时长校验、下载历史。
+
+## 兴趣岛课程（第二个内容源）
+
+顶栏左上角切到「兴趣岛课程」。这一侧**不需要授权，也不用开模拟器** —— 只要课程播放链接：
+
+| 链接类型 | 处理方式 |
+|---|---|
+| 多码率主清单（`EXT-X-STREAM-INF`） | 按**画面短边**选流（这批课多为竖屏，看高度会误选最差一路） |
+| 普通 HLS 清单 | 分片并发下载（默认 12 路）→ 按字节拼接 → `ffmpeg -c copy` 转封装 |
+| 加密清单（`EXT-X-KEY`） | 找同目录**明文孪生** `v.f<编号>.m3u8`，**必须时长校验**（同目录常有别的视频） |
+| 直链 `mp3` / `m4a` / `mp4` | 单请求流式下载，扩展名按 ffprobe 探到的真实容器定 |
+
+左侧输入框一行一条，三种写法都认（`#` 开头是注释，`- ` / `1. ` 前缀会被忽略）：
+
+```
+先导课：解谜自然之道 | https://…/xxx.m3u8
+五行导引功第一课	https://…/xxx.m3u8          ← 从 Excel 复制过来就是 Tab 分隔
+https://…/xxx.m3u8                            ← 只有链接时用文件名当标题
+```
+
+- 行尾可以标时长：`[48:12]` 或 `时长=2892`（**有时长才会做成品校验**）
+- 「导入清单…」支持 `.txt` / `.m3u8` / `.json`。同时选兴趣岛工具留下的
+  `links.json` 与 `names.json`，会按 `fileId` 自动补全「营名 / 课名」
+- 双击某一行 = 只下这一节；右键可「重新下载（清缓存）/ 复制链接 / 打开文件夹」
+- 失败或中止的**分片会保留**，再点「下载」自动续传；「停止」不会删缓存
+
+产物：`<下载目录>\兴趣岛\<课名>.mp4`（直链音频保持 `.mp3` / `.m4a`）。
+清单存 `%USERPROFILE%\.hgv_tool\xqd\jobs.json`，分片缓存在同目录 `parts\`。
+
+> 这一侧只合并了**下载内核**：不做模拟器自动化取课表，课表由你自己粘贴或导入。
 
 ## Python 版（改逻辑/做验证用）
 
@@ -82,8 +116,11 @@ python -m hgvd web                   # 本地网页版 http://127.0.0.1:8765/
 ## 输出
 
 ```
-<下载目录>\<剧名>\<序号>.<集名>.mp4
+红果：  <下载目录>\<剧名>\<序号>.<集名>.mp4
 例：全球死考一季\001.第 1 集.mp4
+
+兴趣岛：<下载目录>\兴趣岛\<课名>.mp4
+例：兴趣岛\先导课：解谜自然之道.mp4
 ```
 
 序号从 1 起、与 App 列表顺序一致；Windows 保留名自动加前缀；下载中的临时文件是
@@ -116,16 +153,18 @@ Python 版要 Python 3.10+、`requests`、`cryptography`（或 `pycryptodome`）
 
 ```bash
 cd hgvd-avalonia && ./build.cmd          # 或 build.sh，产物在 dist/
-dotnet build hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug && hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe   # 72 项
-python -m tests.run                      # 87 项（离线）
+dotnet build hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug && hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe   # 118 项
+python -m tests.run                      # 离线
 ```
 
 ```bash
 ./dist/hgvd-downloader-v*.exe --uitest      # 界面交互自检（需真实登录态）
 ./dist/hgvd-downloader-v*.exe --selftest    # 收藏夹 → 分集 → 播放地址
 ./dist/hgvd-downloader-v*.exe --batchtest 2 # 真下 2 部剧
+./dist/hgvd-downloader-v*.exe --xqdtest <m3u8 或 mp4 直链> [课名]   # 兴趣岛链路真下一节
 ```
 
 目录：`hgvd/` Python 实现，`hgvd-csharp/src/Hgvd.Core` 共享核心（签名/下载器/配置），
-`hgvd-avalonia/` 发行版界面，`docs/` 技术文档，`tools/` 探测脚本。
+`hgvd-csharp/src/Hgvd.Xqd` 兴趣岛下载内核（HLS 清单 / 分片 / 合成），
+`hgvd-avalonia/` 发行版界面（两个内容源），`docs/` 技术文档，`tools/` 探测脚本。
 版本与维护范围见 [`docs/02-版本与维护范围.md`](docs/02-版本与维护范围.md)。

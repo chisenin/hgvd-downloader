@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Hgvd.Xqd</RootNamespace>
+    <AssemblyName>Hgvd.Xqd</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- 与 Hgvd.Core 一致：只发 Windows 版，但目标框架写 net8.0 方便被 Avalonia 引用 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ffmpeg / ffprobe 的位置统一走 Hgvd.Core.ToolPaths（发行版解压到本机缓存） -->
+    <ProjectReference Include="..\Hgvd.Core\Hgvd.Core.csproj" />
+  </ItemGroup>
+
+</Project>

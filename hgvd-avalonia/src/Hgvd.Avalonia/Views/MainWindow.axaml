@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ctl="using:Hgvd.Avalonia.Controls"
+        xmlns:views="using:Hgvd.Avalonia.Views"
         x:Class="Hgvd.Avalonia.Views.MainWindow"
         Title="红果视频下载器  v1.1.1"
         Width="1180" Height="780" MinWidth="1020" MinHeight="620"
@@ -36,7 +37,7 @@
           <StackPanel>
             <TextBlock Text="红果视频下载器" FontSize="16" FontWeight="SemiBold"
                        Foreground="White" />
-            <TextBlock Text="从收藏夹批量下载教学视频为通用 MP4" FontSize="11"
+            <TextBlock Text="红果收藏夹 · 兴趣岛课程 · 批量导出通用 MP4" FontSize="11"
                        Foreground="{DynamicResource BrandSubBrush}" />
           </StackPanel>
         </Border>
@@ -72,11 +73,27 @@
     <Grid Grid.Row="1" Margin="14,12,14,10">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
         <RowDefinition Height="*" />
       </Grid.RowDefinitions>
 
+      <!-- ══ 内容源切换：红果视频 / 兴趣岛课程（同一窗口，共用下载目录与底栏） ══ -->
+      <Grid Grid.Row="0" ColumnDefinitions="Auto,*" Margin="0,0,0,10">
+        <Border Grid.Column="0" Background="#E9EEF6" CornerRadius="8" Padding="3">
+          <StackPanel Orientation="Horizontal">
+            <RadioButton x:Name="TabHongguo" GroupName="src" Classes="src"
+                         Content="红果视频" IsChecked="True" Checked="Src_Checked" />
+            <RadioButton x:Name="TabXqd" GroupName="src" Classes="src"
+                         Content="兴趣岛课程" Checked="Src_Checked" />
+          </StackPanel>
+        </Border>
+        <TextBlock x:Name="LblSrcHint" Grid.Column="1" Margin="12,0,0,0" Classes="muted"
+                   VerticalAlignment="Center"
+                   Text="红果：从收藏夹批量下载 · 需要 MuMu 里的 App 登录态" />
+      </Grid>
+
       <!-- 提示条 -->
-      <Border x:Name="Banner" Grid.Row="0" IsVisible="False" CornerRadius="8"
+      <Border x:Name="Banner" Grid.Row="1" IsVisible="False" CornerRadius="8"
               Padding="12,9" Margin="0,0,0,10" BorderThickness="1"
               Background="{DynamicResource BannerInfoBg}"
               BorderBrush="{DynamicResource BannerInfoBd}">
@@ -84,7 +101,8 @@
                    Foreground="{DynamicResource BannerInfoFg}" />
       </Border>
 
-      <Grid Grid.Row="1">
+      <Grid Grid.Row="2">
+        <Grid x:Name="PaneHongguo">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="320" />
           <ColumnDefinition Width="*" />
@@ -309,6 +327,10 @@
             </Grid>
           </Border>
         </Grid>
+        </Grid>
+
+        <!-- ── 兴趣岛课程页（切到该源时显示；红果侧布局一行未动） ── -->
+        <views:XqdPage x:Name="PaneXqd" IsVisible="False" />
       </Grid>
     </Grid>
 

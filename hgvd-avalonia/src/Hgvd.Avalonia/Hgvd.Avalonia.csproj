@@ -37,6 +37,8 @@
   <ItemGroup>
     <!-- ★ 与 C++ 版 / WPF 版共用同一套核心（签名链、下载器、配置目录） -->
     <ProjectReference Include="..\..\..\hgvd-csharp\src\Hgvd.Core\Hgvd.Core.csproj" />
+    <!-- ★ 兴趣岛下载内核（HLS 清单 / 分片 / ffmpeg 合成）—— 2026-11-21 合并进来 -->
+    <ProjectReference Include="..\..\..\hgvd-csharp\src\Hgvd.Xqd\Hgvd.Xqd.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -112,6 +114,7 @@
   <ItemGroup Condition="'$(Configuration)' == 'Release' And '$(HgvdNoTrim)' != 'true'">
     <TrimmerRootAssembly Include="$(AssemblyName)" />
     <TrimmerRootAssembly Include="Hgvd.Core" />
+    <TrimmerRootAssembly Include="Hgvd.Xqd" />
     <TrimmerRootAssembly Include="Microsoft.CSharp" />
     <TrimmerRootAssembly Include="SkiaSharp" />
     <TrimmerRootAssembly Include="HarfBuzzSharp" />

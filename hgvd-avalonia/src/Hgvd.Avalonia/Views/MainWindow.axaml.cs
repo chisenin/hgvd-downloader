@@ -114,6 +114,14 @@ public partial class MainWindow : Window
         LstShelf.ItemsSource = FilteredShelf;
         LstEpisodes.ItemsSource = EpisodeView;
 
+        // ★ 兴趣岛页：下载目录跟着顶栏输入框走；状态回写到同一条底栏
+        PaneXqd.ResolveOutDir = () => (EdOut.Text ?? "").Trim();
+        PaneXqd.StatusChanged += (left, right) =>
+        {
+            if (!string.IsNullOrEmpty(left)) LblStatus.Text = left;
+            if (!string.IsNullOrEmpty(right)) LblRight.Text = right;
+        };
+
         // ★ 标题列吃掉剩余宽度（列定义不支持 "*"，只能自己算）
         SizeChanged += (_, _) => UpdateEpisodeColumns();
         Opened += async (_, _) =>
@@ -121,6 +129,43 @@ public partial class MainWindow : Window
             UpdateEpisodeColumns();
             await StartupAsync();
         };
+    }
+
+    /// <summary>
+    /// 内容源切换：红果视频 ↔ 兴趣岛课程。
+    /// ★ 只切显示与「红果专属」控件（授权状态 / 重新授权），不打断任何正在跑的下载。
+    /// </summary>
+    private void Src_Checked(object sender, RoutedEventArgs e)
+    {
+        // InitializeComponent 期间 Checked 会先于其它控件赋值触发
+        if (PaneHongguo == null || PaneXqd == null || LblSrcHint == null) return;
+
+        // ★ 用 sender 判断，不要读 TabXqd.IsChecked ——
+        //   单选组的「取消另一项」发生在本事件之后，此刻两项可能都还是 true，
+        //   读 IsChecked 会把「切回红果」误判成「切到兴趣岛」。
+        bool xqd = ReferenceEquals(sender, TabXqd);
+        PaneHongguo.IsVisible = !xqd;
+        PaneXqd.IsVisible = xqd;
+
+        if (BtnLogin != null) BtnLogin.IsVisible = !xqd;
+        if (LblAuth != null) LblAuth.IsVisible = !xqd;
+
+        LblSrcHint.Text = xqd
+            ? "兴趣岛：粘贴课程链接即可下载 · 不需要授权，也不用开模拟器"
+            : "红果：从收藏夹批量下载 · 需要 MuMu 里的 App 登录态";
+
+        LblStatus.Text = "就绪";
+        if (xqd)
+        {
+            PaneXqd.EnsureLoaded();
+            LblRight.Text = $"兴趣岛：清单 {PaneXqd.JobRowCount} 节";
+            // ★ 目录可能在上次切走之后被改过，这里同步一次
+            PaneXqd.SyncOutDir();
+        }
+        else
+        {
+            LblRight.Text = "";
+        }
     }
 
     /// <summary>
