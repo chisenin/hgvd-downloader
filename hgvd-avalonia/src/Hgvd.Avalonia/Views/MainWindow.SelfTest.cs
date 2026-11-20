@@ -103,12 +103,19 @@ public partial class MainWindow
             await Task.Delay(100);
         if (ShelfRows.Count == 0) { Line("✗ 收藏夹没加载出来"); }
 
-        // 挑集数最少的几部（测起来快），且要有标题
-        var picked = ShelfRows
-            .Where(r => !r.IsShortDrama && !string.IsNullOrEmpty(r.Title))
-            .Where(r => r.EpisodeCnt > 0)
-            .OrderBy(r => r.EpisodeCnt)
+        // 挑几部做冒烟。
+        // ★ 优先 **BookType=3 教学合集**，并且**不要求 EpisodeCnt>0**：
+        //   收藏夹里只有个别条目带集数，按集数筛会把候选池缩到只剩
+        //   一两部「标成教学、实际没有播放流」的素材，门禁就长期红着。
+        //   运行时 BatchDownloadAsync 会自己拉分集，无需预知集数。
+        var teach = ShelfRows
+            .Where(r => !r.IsShortDrama && r.BookType == 3 && !string.IsNullOrEmpty(r.Title))
+            .OrderBy(r => r.EpisodeCnt)          // 集数未知的排前面（通常是真正的课程）
             .Take(seriesCount).ToList();
+        var picked = teach.Count > 0
+            ? teach
+            : ShelfRows.Where(r => !r.IsShortDrama && !string.IsNullOrEmpty(r.Title))
+                       .OrderBy(r => r.EpisodeCnt).Take(seriesCount).ToList();
         if (picked.Count == 0)
             picked = ShelfRows.Where(r => !r.IsShortDrama).Take(seriesCount).ToList();
 
