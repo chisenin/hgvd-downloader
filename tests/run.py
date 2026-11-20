@@ -466,8 +466,8 @@ def test_i_preload_protocol() -> None:
 
     # 文档里必须留下这次结论（否则下个会话又会去猜签名）
     root = Path(__file__).resolve().parent.parent
-    doc = (root / "docs" / "05-libmetasec逆向.md").read_text(encoding="utf-8")
-    check("I16 文档记录「不校验签名头」", "不校验任何签名头" in doc)
+    doc = (root / "docs" / "05-抓包与协议排查.md").read_text(encoding="utf-8")
+    check("I16 文档记录「不校验签名头」", "不校验签名头" in doc)
     check("I17 文档记录新接口路径", "multi_video_model/preload" in doc)
 
 

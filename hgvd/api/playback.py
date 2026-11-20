@@ -21,7 +21,7 @@
 ``code=100001`` 参数错误）。
 
 ⇒ 之前「v04.10 改了 native 签名算法」的判断是**错的** —— 真实原因是
-  接口换了、body 形状换了。详见 ``docs/05-libmetasec逆向.md`` §6。
+  接口换了、body 形状换了。详见 ``docs/05-抓包与协议排查.md``。
 
 响应仍是双层 JSON::
 
@@ -292,7 +292,7 @@ def build_preload_body(
 ) -> bytes:
     """构造 preload 的 body（**gzip 压缩的 JSON**）。
 
-    ★ 字段与取值逐字对齐真机抓包（docs/05 §6）：
+    ★ 字段与取值逐字对齐真机抓包（docs/05 §1.1）：
       缺 ``biz_param`` → ``code=100001`` 参数错误；
       ``mixed_video_id_map`` 的键实测 1004 / 1024 都接受。
     """

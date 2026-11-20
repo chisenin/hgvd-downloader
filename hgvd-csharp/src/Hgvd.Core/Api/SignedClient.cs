@@ -434,7 +434,7 @@ public sealed class SignedClient
     /// 旧接口 <see cref="PathPlayback"/> 已被服务端停用（任何请求恒 HTTP 200 + 0 字节）。
     /// 新接口**不校验任何签名头**（真机自己发的 X-Argus/X-Ladon 只有 3 字节），
     /// 只要求 gzip 的 JSON body + 正确 query。
-    /// 详见 docs/05-libmetasec逆向.md §5。
+    /// 详见 docs/05-抓包与协议排查.md。
     /// </summary>
     public const string PathPreload = "/novel/player/multi_video_model/preload/v1";
 

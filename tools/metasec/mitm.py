@@ -10,7 +10,7 @@
 用法::
 
     python tools/metasec/mitm.py --port 8899
-    # CA 要装进 **Conscrypt APEX** 的 cacerts（见 docs/05 §6），不是 /system/etc
+    # CA 要装进 **Conscrypt APEX** 的 cacerts（见 docs/05 §2.1），不是 /system/etc
 """
 from __future__ import annotations
 

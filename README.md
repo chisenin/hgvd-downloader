@@ -27,7 +27,7 @@ C# + Avalonia 的桌面发行版（单文件 exe），外加一套共用同一�
 
 | 类型 | 分集来源 | 状态 |
 |---|---|---|
-| **教学合集**（`book_type=3`） | `album_detail` → `video_model(video_id_type=1)`，标准 HEVC + AAC | ✅ 完全可用 |
+| **教学合集**（`book_type=3`） | `album_detail` → `multi_video_model/preload`（key=1001/1000），标准 HEVC + AAC | ✅ 完全可用 |
 | **短剧**（`book_type=2`） | `multi_video_detail/preload` → bytevc2，加密且 SPS/PPS 被抹 | ⚠️ 能下载能解密，ffmpeg 解不出画面 |
 | 图书 / 听书 | — | ❌ 服务端没有视频 |
 
@@ -50,30 +50,34 @@ python -m hgvd web                   # 本地网页版 http://127.0.0.1:8765/
 
 **MuMu 多开**：多台安卓机各自可能登录过红果，工具不按时间瞎猜，而是逐台用
 `passport/account/info` 在线验证、取服务端真正认可的那台，设备身份按 `install_id` 归档
-（`~/.hgv_tool/devices.json`），保证 cookie 与签名同源（`--list-mumu` 可看各台状态）。
+（`~/.hgv_tool/devices.json`），保证 cookie 与设备参数同源（`--list-mumu` 可看各台状态）。
 
 ## 技术要点
-
-红果接口分两类，**签名要求完全不同**：
 
 | 环节 | 接口 | 签名 | 登录 |
 |---|---|---|---|
 | 收藏夹 | `GET /reading/bookapi/bookshelf/video/list/v` | 否 | 是 |
 | 剧目 + 全集 / 单集时长 | 网页版 `/detail`、`/player` 的 SSR | 否 | 否 |
-| **完整正片播放地址** | `POST /novel/player/video_model/v1/` | **是**（6 个签名头） | 是 |
+| **完整正片播放地址** | `POST /novel/player/multi_video_model/preload/v1` | **否** | 可选 |
 
 网页版 `/player` 里的免签名直链**只有 10 秒**，且只有前 5 集有 SEO 元信息，
-所以完整正片必须走 App 网关的 `video_model`，这条路要完整签名链
-（`hgvd/sign/` 与 `hgvd-csharp/src/Hgvd.Core/Sign/`，SM3 / AES-V3 / gorgon / helios / medusa / argus / ladon）。
-验证方式是拿开源参考实现的产出与本项目**逐字节比对**；C# 侧另有黄金向量
-（`hgvd-csharp/tools/golden_argus.json`）做回归护栏，改签名链任何一行都会失败。
+所以完整正片必须走 App 网关的 `preload` 接口。
 
-**「HTTP 200 + 空 body」是症状不是根因**：返回 JSON（哪怕 `code≠0`）说明签名是通的；
-`code=101000` 是 `video_id_type` 用错；零字节是服务端/网关**丢弃了这个请求**
-（**不是限流** — 见 `docs/03-开发要点.md` §1.0 的三次误判记录与可复现探针）。
-客户端遇到空 body 立刻换网关（秒级，不退避），连续 2 次才熔断并提示改用备用路径。
+这条路的门槛不是签名，是 **body 形状**：`gzip({"biz_param":{…,"video_platform":1024},
+"dr_scene":"preload","mixed_video_id_map":{"<内容类型>":["<vid>"]}})`。
+`1004` = 视频流/短剧，`1000/1001` = 教学合集分集；客户端按 `1004 → 1001 → 1000`
+依次试，取第一个能解析出 `video_list` 的。
 
-细节：[`docs/01-接口与签名.md`](docs/01-接口与签名.md)、[`docs/03-开发要点.md`](docs/03-开发要点.md)。
+签名链（`hgvd/sign/`、`Hgvd.Core/Sign/`）仍留在仓库里，但**播放请求不再发送任何签名头** ——
+实测真机自己的 `X-Argus`/`X-Ladon` 只有 3 字节，宿主机上去掉全部签名头重放仍正常返回。
+
+**「HTTP 200 + 空 body」是症状不是根因**：`code=101000` 是内容类型 key 用错；
+`code=100001` 是 body 缺字段；零字节通常是**端点已停用/路径变了**，不是限流
+（见 `docs/03-开发要点.md` §1.0 的四次误判记录与可复现探针）。
+
+细节：[`docs/01-接口与请求.md`](docs/01-接口与请求.md)、
+[`docs/05-抓包与协议排查.md`](docs/05-抓包与协议排查.md)、
+[`docs/03-开发要点.md`](docs/03-开发要点.md)。
 
 ## 输出
 
@@ -87,12 +91,12 @@ python -m hgvd web                   # 本地网页版 http://127.0.0.1:8765/
 
 ## 已知限制
 
-- **必须登录**：匿名调 `video_model` 返回 200 + 空 body。
-- 网页版只对前 5 集提供元信息，第 6 集起的时长要靠 `video_model`。
+- **建议登录**：播放接口匿名也能通，但带登录态更接近真实客户端，也更稳。
+- 网页版只对前 5 集提供元信息，第 6 集起的时长要靠播放接口的 `video_duration`。
 - 默认 `360p`，更高清晰度取决于内容本身授权。
 - 短剧能下能解密，但 bytevc2 抹掉 SPS/PPS，ffmpeg 解不出画面。
 - **下载链路目前仅 Windows**（读模拟器登录态那条路径是平台专用），界面层跨平台。
-- 签名链会随服务端改版失效，按 `docs/01` 的方法重新比对即可。
+- 接口形状会随服务端改版失效：照 `docs/05` 抓一次真机请求，十分钟能定位差异。
 
 ## 合规
 
