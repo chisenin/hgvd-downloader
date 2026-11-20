@@ -432,15 +432,16 @@ public partial class MainWindow : Window
     /// <summary>把右栏下载清单的统计刷到状态栏 / 提示行。</summary>
     private void UpdateQueueSummary()
     {
-        int series = _queueBySeries.Count;
+        // ★ 两源共用一张表：组数 = 红果的剧 + 兴趣岛的营（+「手动链接」组）
+        int groups = _queueBySeries.Count + _queueByCamp.Count;
         int total = EpisodeRows.Count(r => r.IsEpisode);
-        int done = EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成");
+        int done = EpisodeRows.Count(r => r.IsEpisode && r.State is "已完成" or "已存在");
         int failed = EpisodeRows.Count(r => r.IsEpisode && r.State == "失败");
 
-        LblEpHint.Text = series == 0
-            ? "在左边勾选剧目，它的分集会自动加入这里（可累计多部）"
-            : $"已选 {series} 部 · 共 {total} 集 · 已完成 {done} · 失败 {failed}";
-        LblRight.Text = series == 0 ? "" : $"已完成 {done} / {total}";
+        LblEpHint.Text = groups == 0
+            ? "在左边勾选剧目 / 营，条目会自动加入这里（可累计）"
+            : $"已选 {groups} 组 · 共 {total} 条 · 已完成 {done} · 失败 {failed}";
+        LblRight.Text = groups == 0 ? "" : $"已完成 {done} / {total}";
     }
 
     private void ShelfRow_PropertyChanged(object sender, PropertyChangedEventArgs e)
