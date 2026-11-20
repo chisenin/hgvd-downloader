@@ -30,6 +30,24 @@ Apache-2.0 允许在保留声明的前提下使用与修改。本实现为独立
 
 如需在仓库中保留这些材料，必须单独提交、逐文件标注出处与原始许可。
 
+## 内置的第三方二进制（ffmpeg）
+
+发行版单文件 exe 里**内置了 ffmpeg / ffprobe**（用于成品时长校验与加密分集解密），
+不是本项目源码的一部分，各自保留原作者的版权与许可：
+
+| 组件 | 来源 | 许可 |
+|---|---|---|
+| `ffmpeg.exe` | 经 npm 包 `@ffmpeg-installer/win32-x64@4.1.0` 分发（构建时为 `N-92722-gf22fcd4483`） | ffmpeg 项目按其编译选项提供；本包为 GPL 变体，随附 COPYING（GPL-2.0-or-later） |
+| `ffprobe.exe` | 经 npm 包 `@ffprobe-installer/win32-x64@4.1.0` 分发（构建时为 `N-89672-g41e51fbcd9`） | 同上 |
+
+- 上游项目：https://ffmpeg.org/
+- 许可证全文：https://ffmpeg.org/legal.html （GPL/LGPL 全文见 http://www.gnu.org/licenses/ ）
+- 内置形态：构建时压缩为 `ffmpeg.exe.gz` / `ffprobe.exe.gz` 嵌入 exe，
+  首次启动解压到用户本机 `%LOCALAPPDATA%\hgvd-downloader\runtime\ffmpeg-<版本>\`，
+  以**独立可执行文件**形式被调用（未修改、未静态链接、未与本项目代码混编）。
+- 本分发包按 GPL 要求提供对应源码获取方式：ffmpeg 源码可从上面的上游地址取得；
+  构建配置参数见 `hgvd-avalonia/prepare-ffmpeg.ps1`（固定 `4.1.0` 版预编译包，未改动编译选项）。
+
 ## 内容权利
 
 下载内容的权利不因本软件改变。请**只处理自己已购买、有权访问与保存的内容**，

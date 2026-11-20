@@ -182,7 +182,7 @@ public static class CacheExtract
         var info = new Dictionary<string, object>();
         try
         {
-            var psi = new ProcessStartInfo("ffprobe")
+            var psi = new ProcessStartInfo(ToolPaths.Ffprobe)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

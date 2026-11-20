@@ -59,9 +59,6 @@
           <ctl:WindowButton x:Name="BtnWinClose" Kind="Close" Click="BtnWinClose_Click" />
         </StackPanel>
 
-        <Button x:Name="BtnEnv" DockPanel.Dock="Right" Content="环境检查"
-                Classes="modern" Click="BtnEnv_Click"
-                ToolTip.Tip="检查 ffmpeg / ffprobe 等运行环境依赖。" />
         <Button x:Name="BtnLogin" DockPanel.Dock="Right" Content="重新授权"
                 Classes="modern" Click="BtnLogin_Click"
                 ToolTip.Tip="从 MuMu 模拟器重新读取红果 App 登录态。" />

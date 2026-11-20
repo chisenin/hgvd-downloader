@@ -93,7 +93,7 @@ public static class Util
     {
         try
         {
-            var psi = new ProcessStartInfo("ffprobe")
+            var psi = new ProcessStartInfo(ToolPaths.Ffprobe)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -121,7 +121,7 @@ public static class Util
     {
         try
         {
-            var psi = new ProcessStartInfo("ffprobe")
+            var psi = new ProcessStartInfo(ToolPaths.Ffprobe)
             {
                 RedirectStandardOutput = true,
                 UseShellExecute = false,

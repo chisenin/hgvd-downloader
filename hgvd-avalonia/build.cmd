@@ -27,13 +27,16 @@ set "VER=1.1.1"
 
 if /i "%~1"=="selftest" goto selftest
 
-echo [1/3] 还原依赖（走 nuget.azure.cn 镜像）
+echo [1/4] 准备内置 ffmpeg / ffprobe（已备好则秒过）
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare-ffmpeg.ps1" || goto :err
+
+echo [2/4] 还原依赖（走 nuget.azure.cn 镜像）
 "%DOTNET%" restore "%PROJ%" --configfile "%~dp0NuGet.config" -r win-x64 || goto :err
 
-echo [2/3] 发布 Release
+echo [3/4] 发布 Release
 "%DOTNET%" publish "%PROJ%" -c Release --no-restore -o "%OUT%" -p:PkgVersion=%VER% || goto :err
 
-echo [3/3] 产物
+echo [4/4] 产物
 dir /b "%OUT%"
 echo.
 echo 完成：%~dp0%OUT%\hgvd-downloader-v%VER%.exe

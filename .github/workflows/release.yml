@@ -54,6 +54,11 @@ jobs:
           python -m tests.run
 
       # ── 2. 按标签版本号发布单文件 exe ──
+      - name: 准备内置 ffmpeg / ffprobe
+        shell: pwsh
+        run: |
+          ./hgvd-avalonia/prepare-ffmpeg.ps1
+
       - name: 发布自包含单文件 exe
         shell: pwsh
         env:

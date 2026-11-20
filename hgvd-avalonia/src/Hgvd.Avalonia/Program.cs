@@ -21,6 +21,8 @@ internal static class Program
         if (OperatingSystem.IsWindows()) AttachConsole(-1);   // ATTACH_PARENT_PROCESS
         // ★ 控制台默认是 GBK，中文输出会变乱码 —— 改成 UTF-8
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
+        // ★ 先把内置的 ffmpeg / ffprobe 解压好（任何界面动作之前完成）
+        FfmpegRuntime.Ensure();
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

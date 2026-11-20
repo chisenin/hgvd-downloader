@@ -33,13 +33,16 @@ if [ "${1:-}" = "selftest" ]; then
     exit 0
 fi
 
-echo "[1/3] 还原依赖（走 nuget.azure.cn 镜像）"
+echo "[1/4] 准备内置 ffmpeg / ffprobe（已备好则秒过）"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "./prepare-ffmpeg.ps1"
+
+echo "[2/4] 还原依赖（走 nuget.azure.cn 镜像）"
 "$DOTNET" restore "$PROJ" --configfile "./NuGet.config" -r win-x64
 
-echo "[2/3] 发布 Release"
+echo "[3/4] 发布 Release"
 "$DOTNET" publish "$PROJ" -c Release --no-restore -o "$OUT" -p:PkgVersion="$VER"
 
-echo "[3/3] 产物"
+echo "[4/4] 产物"
 ls -la "$OUT"
 echo
 echo "完成：$PWD/$OUT/hgvd-downloader-v$VER.exe"

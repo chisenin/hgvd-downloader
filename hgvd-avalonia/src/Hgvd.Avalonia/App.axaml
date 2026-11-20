@@ -214,12 +214,34 @@
       <Setter Property="FontFamily" Value="Consolas, Courier New, monospace" />
       <Setter Property="FontSize" Value="11.5" />
       <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="8" />
       <Setter Property="IsReadOnly" Value="True" />
       <Setter Property="AcceptsReturn" Value="True" />
       <Setter Property="TextWrapping" Value="Wrap" />
       <Setter Property="Padding" Value="8,6" />
       <!-- ★ 日志框不需要焦点框（Fluent 默认画一圈绿环） -->
       <Setter Property="FocusAdorner" Value="{x:Null}" />
+    </Style>
+
+    <!-- ★★ 日志框悬停/聚焦时**不许变底色**：
+         Fluent 的 TextBox 模板在 :pointerover / :focus 状态下会把
+         PART_BorderElement 的 Background 换成浅色（TextControlBackgroundPointerOver），
+         而正文还是浅灰字 —— 结果就是「鼠标一放上去，深色框变白，字看不清」。
+         这里把这两种状态的底色/边框钉死。 -->
+    <Style Selector="TextBox.log:pointerover /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="{DynamicResource LogBgBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="TextBox.log:focus /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="{DynamicResource LogBgBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="TextBox.log:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource LogFgBrush}" />
+    </Style>
+    <Style Selector="TextBox.log:focus">
+      <Setter Property="Foreground" Value="{DynamicResource LogFgBrush}" />
     </Style>
 
     <!-- ══════════════ 视图切换（单选按钮组） ══════════════ -->

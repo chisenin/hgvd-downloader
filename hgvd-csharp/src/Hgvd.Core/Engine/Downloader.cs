@@ -209,7 +209,7 @@ public static class Downloader
     {
         try
         {
-            var psi = new ProcessStartInfo("ffmpeg")
+            var psi = new ProcessStartInfo(ToolPaths.Ffmpeg)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

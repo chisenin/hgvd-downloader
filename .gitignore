@@ -51,3 +51,7 @@ probe_*.json
 *-selftest.log
 *-crash.log
 *-uef.log
+
+# ★ 构建期下载的第三方二进制（ffmpeg / ffprobe 静态构建及其 .gz）。
+#   体积大且可重新下载，**不入库**；prepare-ffmpeg.ps1 会在构建前补齐。
+.cache/

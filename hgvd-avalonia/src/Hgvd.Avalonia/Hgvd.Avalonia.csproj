@@ -34,4 +34,17 @@
     <ProjectReference Include="..\..\..\hgvd-csharp\src\Hgvd.Core\Hgvd.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- ★★ 内置 ffmpeg / ffprobe（官方静态构建，gzip 压缩后嵌入）。
+         build.cmd / build.sh / CI 会先跑 prepare-ffmpeg.ps1 把两个 exe 压成 .gz
+         放到仓库根的 .cache/ffmpeg/；没有的话这两条直接跳过（Debug 构建照常，
+         运行时退回 PATH 里的 ffmpeg）。 -->
+    <EmbeddedResource Include="..\..\..\.cache\ffmpeg\ffmpeg.exe.gz"
+                      LogicalName="ffmpeg.exe.gz"
+                      Condition="'$(Configuration)' == 'Release' And Exists('..\..\..\.cache\ffmpeg\ffmpeg.exe.gz')" />
+    <EmbeddedResource Include="..\..\..\.cache\ffmpeg\ffprobe.exe.gz"
+                      LogicalName="ffprobe.exe.gz"
+                      Condition="'$(Configuration)' == 'Release' And Exists('..\..\..\.cache\ffmpeg\ffprobe.exe.gz')" />
+  </ItemGroup>
+
 </Project>

@@ -1,7 +1,8 @@
 # 红果视频下载器 —— C# / Avalonia 界面版（发行版）
 
 用 **C# + Avalonia 11** 写的界面层，产出**自包含单文件** exe：
-`hgvd-downloader-v1.1.1.exe`（约 46 MB，目标机不用装 .NET）。
+`hgvd-downloader-v1.1.1.exe`（约 81 MB，.NET 运行时与 ffmpeg/ffprobe 全部内置，目标机什么都不用装；
+首次启动把 ffmpeg 自解压到 `%LOCALAPPDATA%\hgvd-downloader\runtime\`）。
 
 > 本版与 Python 版（[`../hgvd/`](../hgvd/)）**共用同一套核心**
 > （`../hgvd-csharp/src/Hgvd.Core`：签名链、下载器、配置目录），
@@ -40,7 +41,12 @@ Git Bash / MSYS 里用等价脚本：
 ./build.sh selftest
 ```
 
-**依赖**：.NET 8 SDK + NuGet 源（`NuGet.config` 已配好镜像）。
+**依赖**：.NET 8 SDK + NuGet 源（`NuGet.config` 已配好镜像）+ 联网。
+
+> ★ 构建第一步跑 `prepare-ffmpeg.ps1`，把 ffmpeg / ffprobe 从 npmmirror 拉下来、
+> 解出 exe、压成 `..\.cache\ffmpeg\*.exe.gz`，再作为 `EmbeddedResource` 打进 exe；
+> 资源已在（`.cache` 里有）就秒过，不用重复下载。`-Force` 强制重来。
+> `.cache/` 不进版本库（见 `.gitignore`），CI 上由同一步骤现拉。
 
 > ★ `NuGet.config` 放在本目录，但被引用的 `Hgvd.Core` 在 `../hgvd-csharp/` 下 ——
 >   NuGet 配置是**按项目目录向上查找**的，所以发布前必须显式

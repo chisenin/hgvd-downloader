@@ -10,7 +10,8 @@ C# + Avalonia 的桌面发行版（单文件 exe），外加一套共用同一�
 ## 下载即用
 
 从 [Releases](https://github.com/chisenin/hgvd-downloader/releases) 取 `hgvd-downloader-v*.exe`
-（自包含单文件，约 46 MB，目标机不用装 .NET）。
+（自包含单文件，约 81 MB —— .NET 运行时和 ffmpeg/ffprobe 都打在 exe 里，目标机什么都不用装；
+首次启动会把 ffmpeg 自解压到 `%LOCALAPPDATA%\hgvd-downloader\runtime\`，之后再开秒起）。
 
 1. 打开程序 → 点「重新授权」。工具会自己找到 MuMu 并读 App 登录态；
    万一定位不到安装位置，会弹框让你选一次 `MuMuManager.exe`。
@@ -101,8 +102,10 @@ python -m hgvd web                   # 本地网页版 http://127.0.0.1:8765/
 ## 依赖与数据
 
 Python 版要 Python 3.10+、`requests`、`cryptography`（或 `pycryptodome`）、`ffmpeg`/`ffprobe`（成品时长校验）；
-构建 Avalonia 版要 .NET 8 SDK，运行时不需要。配置、历史、凭据都在 `%USERPROFILE%\.hgv_tool\`
+构建 Avalonia 版要 .NET 8 SDK，运行时不需要，**ffmpeg/ffprobe 也已内置**（不再检测、不再提示安装）。
+配置、历史、凭据都在 `%USERPROFILE%\.hgv_tool\`
 （`config.json` / `history.json` / `cookie.json`，权限 0600），`python -m hgvd logout` 清除登录态。
+内置的 ffmpeg 落在 `%LOCALAPPDATA%\hgvd-downloader\runtime\ffmpeg-<版本>\`，删掉无害，下次启动自动重建。
 
 ## 开发
 

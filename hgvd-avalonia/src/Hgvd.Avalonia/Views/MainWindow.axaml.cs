@@ -168,13 +168,10 @@ public partial class MainWindow : Window
     private async Task StartupAsync()
     {
         Diag("StartupAsync 开始");
+        Diag("ffmpeg 目录：" + (ToolPaths.FfmpegDir.Length > 0 ? ToolPaths.FfmpegDir : "未内置（用 PATH）"));
         Log($"红果视频下载器 v{AboutWindow.AppVersion} 启动");
-        if (!Util.HasFfprobe())
-        {
-            ShowBanner("未检测到 ffprobe —— 下载后的时长校验与解密会失败。"
-                       + "请安装 ffmpeg 并加入 PATH。", BannerKind.Err);
-            Log("！缺少 ffprobe（ffmpeg）");
-        }
+        // ★ ffmpeg / ffprobe 已随 exe 一起打包（首次运行自解压到本机缓存），
+        //   这里不再做「环境检查」，缺少依赖时由调用处给出具体报错。
 
         if (!_svc.LoggedIn)
         {
@@ -1007,37 +1004,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnEnv_Click(object sender, RoutedEventArgs e)
-    {
-        bool ff = Util.HasFfprobe();
-        Log(ff ? "✓ ffprobe 可用" : "✗ 找不到 ffprobe");
-
-        // 模拟器与登录态
-        string mumuNote = "✗ 找不到 MuMuManager";
-        try
-        {
-            string mumu = Core.Auth.MumuAuth.FindMumu();
-            mumuNote = $"✓ MuMu：{mumu}";
-        }
-        catch (Exception ex) { mumuNote = $"✗ {ex.Message}"; }
-        Log(mumuNote);
-        Log(_svc.LoggedIn
-            ? $"✓ 已登录（sessionid {(_svc.Account.Cookies.TryGetValue("sessionid", out var s) ? s.Length : 0)} 位）"
-            : "✗ 未授权 —— 点「重新授权」从 MuMu 读 App 登录态");
-
-        // 设备身份是否与 cookie 同源（文档 S2）
-        var dev = _svc.Device;
-        bool sameOrigin = !string.IsNullOrEmpty(dev.Iid)
-            && _svc.Account.Cookies.TryGetValue("install_id", out var iid)
-            && dev.Iid == iid;
-        Log(sameOrigin
-            ? $"✓ 设备同源（iid={dev.Iid} device_id={dev.DeviceId}）"
-            : $"⚠ 设备与 cookie 不同源（iid={dev.Iid}）");
-
-        ShowBanner(ff ? "环境检查完成，详见下方日志。" : "缺少 ffmpeg / ffprobe。",
-                   ff ? BannerKind.Ok : BannerKind.Err);
-    }
-
     private void BtnWinMin_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
     private void BtnWinMax_Click(object sender, RoutedEventArgs e) => ToggleMax();
@@ -1061,6 +1027,21 @@ public partial class MainWindow : Window
     private PixelPoint _dragOriginPos;
     private IPointer _captured;
 
+    /// <summary>
+    /// ★ 缩放状态（自己算坐标，不走 BeginResizeDrag）。
+    ///
+    /// 自绘窗口（SystemDecorations=None + WS_POPUP）没有系统的可缩放边框，
+    /// Windows 的 SC_SIZE 在无边框窗口上直接不生效 —— 这就是「窗体拖边
+    /// 改不了大小」的根因。所以这里跟拖动一样：捕获指针、按屏幕坐标
+    /// 自己算出 Width/Height/Position。
+    /// </summary>
+    private bool _resizing;
+    private WindowEdge _resizeEdge;
+    private PixelPoint _resizeStartScreen;
+    private PixelPoint _resizeStartPos;
+    private double _resizeStartW;
+    private double _resizeStartH;
+
     /// <summary>点顶栏空白处 → 拖动窗口（按钮/输入框上不触发）。</summary>
     private void TopBar_PointerPressed(object sender, PointerPressedEventArgs e)
     {
@@ -1073,13 +1054,18 @@ public partial class MainWindow : Window
         BeginDrag(e);
     }
 
-    private void Window_PointerMoved(object sender, PointerEventArgs e) => UpdateDrag(e);
+    private void Window_PointerMoved(object sender, PointerEventArgs e)
+    {
+        UpdateDrag(e);
+        UpdateResize(e);
+    }
 
     private void Window_PointerReleased(object sender, PointerReleasedEventArgs e)
     {
         bool moved = _dragMoved;
         bool onBrand = _pressOnBrand;
         EndDrag();
+        EndResize();
         _pressOnBrand = false;
         // ★ 单击（没拖动）→ 弹「关于」；拖动过就不弹。
         if (!moved && onBrand) OnBrandClicked();
@@ -1155,7 +1141,11 @@ public partial class MainWindow : Window
     /// <summary>窗口边缘的缩放热区。</summary>
     private void Grip_PointerPressed(object sender, PointerPressedEventArgs e)
     {
-        var name = (e.Source as Control)?.Name ?? (sender as Control)?.Name;
+        if (!CanResize) return;
+        if (WindowState != WindowState.Normal) return;
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+
+        var name = (sender as Control)?.Name ?? (e.Source as Control)?.Name;
         WindowEdge? edge = name switch
         {
             "GripLeft" => WindowEdge.West,
@@ -1169,8 +1159,74 @@ public partial class MainWindow : Window
             _ => null,
         };
         if (edge == null) return;
-        try { BeginResizeDrag(edge.Value, e); } catch { }
+
+        _resizing = true;
+        _resizeEdge = edge.Value;
+        _resizeStartScreen = this.PointToScreen(e.GetPosition(this));
+        _resizeStartPos = Position;
+        _resizeStartW = Bounds.Width;
+        _resizeStartH = Bounds.Height;
+        _captured = e.Pointer;
+        try { e.Pointer.Capture(this); } catch { }
         e.Handled = true;
+    }
+
+    /// <summary>拖边缩放：按屏幕坐标算新宽度/高度，贴左/上边时同步挪窗口位置。</summary>
+    private void UpdateResize(PointerEventArgs e)
+    {
+        if (!_resizing) return;
+
+        var now = this.PointToScreen(e.GetPosition(this));
+        double scale = RenderScaling <= 0 ? 1 : RenderScaling;
+        // 屏幕位移换算成 DIP（Width/Height 是 DIP，Position 是物理像素）
+        double dx = (now.X - _resizeStartScreen.X) / scale;
+        double dy = (now.Y - _resizeStartScreen.Y) / scale;
+
+        double minW = MinWidth > 0 ? MinWidth : 400;
+        double minH = MinHeight > 0 ? MinHeight : 300;
+
+        double w = _resizeStartW;
+        double h = _resizeStartH;
+        int left = _resizeStartPos.X;
+        int top = _resizeStartPos.Y;
+
+        bool west = _resizeEdge is WindowEdge.West or WindowEdge.NorthWest or WindowEdge.SouthWest;
+        bool east = _resizeEdge is WindowEdge.East or WindowEdge.NorthEast or WindowEdge.SouthEast;
+        bool north = _resizeEdge is WindowEdge.North or WindowEdge.NorthWest or WindowEdge.NorthEast;
+        bool south = _resizeEdge is WindowEdge.South or WindowEdge.SouthWest or WindowEdge.SouthEast;
+
+        if (west)
+        {
+            w = Math.Max(minW, _resizeStartW - dx);
+            left = _resizeStartPos.X + (int)Math.Round((_resizeStartW - w) * scale);
+        }
+        else if (east)
+        {
+            w = Math.Max(minW, _resizeStartW + dx);
+        }
+
+        if (north)
+        {
+            h = Math.Max(minH, _resizeStartH - dy);
+            top = _resizeStartPos.Y + (int)Math.Round((_resizeStartH - h) * scale);
+        }
+        else if (south)
+        {
+            h = Math.Max(minH, _resizeStartH + dy);
+        }
+
+        if (Math.Abs(Width - w) > 0.5) Width = w;
+        if (Math.Abs(Height - h) > 0.5) Height = h;
+        if (left != Position.X || top != Position.Y)
+            Position = new PixelPoint(left, top);
+    }
+
+    private void EndResize()
+    {
+        if (!_resizing) return;
+        _resizing = false;
+        try { _captured?.Capture(null); } catch { }
+        _captured = null;
     }
 
     /// <summary>当前打开的「关于」窗口（没有则 null）。</summary>
