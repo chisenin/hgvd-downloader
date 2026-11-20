@@ -672,10 +672,13 @@ def main():
     ap.add_argument('--only', choices=['init', 'onload'], default=None)
     ap.add_argument('--call', default=None, help='JNI_OnLoad 之后调用 MSManager.a，格式 cmd[,arg2[,long]]')
     ap.add_argument('--fn', default='0x297890')
+    ap.add_argument('--null-findclass', action='store_true', help='模拟真实环境：FindClass 返回 0')
     ap.add_argument('--scan', default='x-argus,argus,ladon,x-ladon,khronos,MSManager,metasec')
     args = ap.parse_args()
     t0 = time.time()
     emu = Emu(SO, trace=args.trace, verbose=args.verbose)
+    if args.null_findclass:
+        emu.jni_return_override[6] = 0
     emu.emit(f'加载完成，段/重定位就绪，用时 {time.time() - t0:.2f}s')
     if args.only != 'onload':
         emu.run_init_array()
