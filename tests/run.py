@@ -509,6 +509,57 @@ def test_j_grab() -> None:
           "X-Helios" in doc and "X-Medusa" in doc and "2026-11-21" in doc)
     check("J9 文档记录了抓流链路", "抓流" in doc and "hgvd/grab.py" in doc)
 
+    # ---- 2026-11-21 判据重排：一次 preload 可能带多个键，必须按 vid 映射
+    payload = {"mixed_video_id_map": {"1001": ["a", "b"], "1004": ["c"]}}
+    req = (b"POST /x HTTP/1.1\r\nContent-Type: application/json\r\n\r\n"
+           + _json.dumps(payload).encode())
+    check("J10 mixed_video_id_map 按 vid 映射（一次可能多键）",
+          grab._map_keys(req) == {"a": "1001", "b": "1001", "c": "1004"})
+    check("J11 空请求体不给假键", grab._map_keys(b"POST /x HTTP/1.1\r\n\r\n") == {})
+
+    import tempfile
+    import time as _time
+    from pathlib import Path
+    from unittest import mock
+
+    tmp = Path(tempfile.mkdtemp())
+    with mock.patch.object(grab, "WHITELIST_CACHE", tmp / "wl.json"):
+        g = grab.Grabber(str(tmp), log=lambda m: None)
+
+        # 形态一：data[series_id] = {video_data, video_relate_book}
+        g.feed_detail({"code": 0, "data": {"9001": {
+            "video_data": {"content_type": 1004,
+                           "video_list": [{"vid": "111", "vid_index": 0, "title": "第一集"}]}}}})
+        check("J12 缺 video_relate_book 时不能把 book_type 写成 0",
+              "111" not in g._book_type)
+        check("J13 但集名仍要记下",
+              g._titles.get("111", ("", 0, ""))[2] == "第一集")
+
+        # 形态二：data 本身就是一条（video_detail/v1），教学类的 video_list 是空的
+        g.feed_detail({"code": 0, "data": {
+            "video_data": {"content_type": 1003, "series_id": "7709",
+                           "series_title": "奇趣百科", "video_list": []}}})
+        check("J14 单条详情能认出教学合集并入队",
+              g._content_type.get("7709") == 1003 and "7709" in g._album_seen)
+
+        g._album["222"] = ("课", 3, "第三节", 100.0)
+        check("J15 白名单命中直接返回", g._wait_album("222", timeout=0.1)[1] == 3)
+        # J14 往队列里塞了系列，这里先清空 —— 测的是「没有在途请求」的场景
+        while not g._album_q.empty():
+            g._album_q.get()
+        _t0 = _time.time()
+        g._wait_album("333", timeout=8.0)
+        check("J16 没有在途请求时未知 vid 尽快放弃（不拖队列）",
+              _time.time() - _t0 < 3.0)
+
+        grab.save_whitelist({"444": ("课", 5, "第五节", 120.0)})
+        _back, _ts = grab.load_whitelist()
+        check("J17 白名单缓存往返",
+              _back.get("444", ("", 0, "", 0))[2] == "第五节" and _ts > 0)
+
+    check("J18 文档记录了 content_type=1003 判据与白名单",
+          "content_type" in doc and "1003" in doc and "白名单" in doc)
+
 
 def main() -> int:
     for fn in (test_a_utils, test_b_config, test_c_history, test_d_sign,

@@ -35,6 +35,7 @@ from pathlib import Path
 
 from .api import playback as playback_api
 from .auth import mumu as mumu_auth
+from .config import Config
 from .engine.downloader import (
     CancelToken,
     DownloadCallbacks,
@@ -43,14 +44,63 @@ from .engine.downloader import (
     episode_filename,
     series_folder,
 )
+from .service import HongguoService
 
 APP_PACKAGE = "com.phoenix.read"
 SPLASH = f"{APP_PACKAGE}/com.dragon.read.pages.splash.SplashActivity"
 PRELOAD_HINTS = ("/multi_video_model/preload", "/multi_video_model/player/")
 DEBUG = os.environ.get("HGVD_GRAB_DEBUG") == "1"
 DETAIL_HINT = "/multi_video_detail/preload"
+# ★ 单条详情：请求体带 video_id_type（教学用 1、短剧用 0），
+#   响应是 {video_data, video_relate_book}，外面没有 series_id 那一层。
+#   教学合集的详情多半走这里 —— 之前它被 WATCH_EXTRA 吞掉，只是落盘不解析。
+VIDEO_DETAIL_HINT = "/player/video_detail/"
 # ★ 2026-11-21 实盘发现：剧集页改用这批接口取流（老的 multi_video_model 仍在用）
-WATCH_EXTRA = ("/video_playback/", "/player/video_detail/", "/series_detail_page/")
+WATCH_EXTRA = ("/video_playback/", "/series_detail_page/")
+
+# ★★ 内容类型（video_data.content_type）：1003 = 教学/知识合集
+#   （老胡说热点、老胡说时局、奇趣百科、深空观测局…），1004 = 短剧/小说视频。
+#   注意这跟 mixed_video_id_map 的键不是一回事：那里的 1001 只表示「这是合集 ID」，
+#   推荐流里一堆宣发短片也是 1001 —— 早期就是把它当内容类型，才误收一片。
+TEACHING_CONTENT_TYPES = (1003,)
+
+# 白名单缓存：vid -> (剧名, 序号, 集名, 时长)
+# 收藏夹 242 部教学合集约 1.2 万集，拉一次要几分钟，所以落盘复用。
+WHITELIST_CACHE = Path.home() / ".hgv_tool" / "grab_whitelist.json"
+WHITELIST_TTL = 12 * 3600
+
+
+def load_whitelist() -> tuple[dict, float]:
+    """读白名单缓存 -> (vid 映射, 抓取时间戳)。坏了就当没有。"""
+    try:
+        raw = json.loads(WHITELIST_CACHE.read_text("utf-8"))
+    except Exception:                       # noqa: BLE001
+        return {}, 0.0
+    if not isinstance(raw, dict):
+        return {}, 0.0
+    ts = float(raw.get("_ts") or 0.0)
+    out = {}
+    for vid, v in (raw.get("vids") or {}).items():
+        if not isinstance(v, (list, tuple)) or len(v) < 3:
+            continue
+        try:
+            out[str(vid)] = (str(v[0]), int(v[1] or 0), str(v[2]),
+                             float(v[3]) if len(v) > 3 and v[3] else 0.0)
+        except (TypeError, ValueError):
+            continue
+    return out, ts
+
+
+def save_whitelist(album: dict):
+    try:
+        WHITELIST_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        WHITELIST_CACHE.write_text(
+            json.dumps({"_ts": time.time(),
+                        "vids": {k: list(v) for k, v in album.items()}},
+                       ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:                       # noqa: BLE001
+        pass
 
 # 抓包工具的 CA / 叶证书逻辑（不重复实现一遍证书生成）
 _MITM = None
@@ -114,6 +164,10 @@ class Clip:
     index: int = 0
     title: str = ""
     book: str = ""
+    # ★ preload 请求里 mixed_video_id_map 的键 = 内容类型
+    #   （1004 短视频/短剧，1000/1001 教学合集分集）。详情响应常常缺这一集，
+    #   所以它才是「默认只收教学」最可靠、最早拿到的判据。
+    key: str = ""
 
 
 # ---------------------------------------------------------------- 代理
@@ -229,7 +283,8 @@ class CaptureProxy(threading.Thread):
             target = line.split(" ")[1] if " " in line else ""
         except Exception:                   # noqa: BLE001
             return
-        watched = any(h in target for h in PRELOAD_HINTS + (DETAIL_HINT,) + WATCH_EXTRA)
+        watched = any(h in target for h in
+                      PRELOAD_HINTS + (DETAIL_HINT, VIDEO_DETAIL_HINT) + WATCH_EXTRA)
         if not watched:
             return
         body = _response_json(resp)
@@ -250,29 +305,40 @@ class CaptureProxy(threading.Thread):
         if body.get("code") not in (0, None):
             self.log(f"· 取流接口返回 code={body.get('code')}")
             return
-        if DETAIL_HINT in target:
+        if DETAIL_HINT in target or VIDEO_DETAIL_HINT in target:
             self.on_detail(body)
         else:
             self.on_clip(body, _map_keys(req))
 
 
-def _map_keys(req: bytes) -> tuple:
-    """从请求体里取 mixed_video_id_map 的键（决定内容类型）。"""
+def _map_keys(req: bytes) -> dict:
+    """从请求体 mixed_video_id_map 里取「vid -> 内容类型键」。
+
+    ★ 一次 preload 可能同时带多个键（App 会把首页推荐与合集分集凑成一发），
+      所以必须映射到每个 vid，不能只记「这次请求用了哪些键」。
+    """
     import gzip as _gzip
 
     head, _, body = req.partition(b"\r\n\r\n")
     if not body:
-        return ("",)
+        return {}
     if b"content-encoding: gzip" in head.lower():
         try:
             body = _gzip.decompress(body)
         except Exception:                   # noqa: BLE001
-            return ("",)
+            return {}
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
-        return tuple((payload.get("mixed_video_id_map") or {}).keys()) or ("",)
     except Exception:                       # noqa: BLE001
-        return ("",)
+        return {}
+    out: dict[str, str] = {}
+    for k, vids in (payload.get("mixed_video_id_map") or {}).items():
+        if isinstance(vids, (list, tuple)):
+            for v in vids:
+                out[str(v)] = str(k)
+        else:
+            out[str(vids)] = str(k)
+    return out
 
 
 def _read_head(sock: socket.socket) -> bytes:
@@ -389,27 +455,131 @@ class Grabber:
     """把抓到的 video_model 变成磁盘上的成品。"""
 
     def __init__(self, out_dir: str, quality: str = "", include_all: bool = False,
-                 log=print):
+                 take_unknown: bool = False, log=print):
         self.out_dir = Path(out_dir)
         self.quality = quality
         self.include_all = include_all
+        self.take_unknown = take_unknown
         self.log = log
         self._lock = threading.Lock()
         self._seen: set[str] = set()
         self._titles: dict[str, tuple[str, int, str]] = {}   # vid -> (剧名, 序号, 集名)
         self._book_type: dict[str, int] = {}                 # vid -> book_type（3=教学合集）
         self._series_name: dict[str, str] = {}
+        self._content_type: dict[str, int] = {}               # series_id -> content_type
+        # ★ 教学合集白名单：详情响应认出 content_type=1003 的系列后，
+        #   后台用 album_detail（免签名）把它的全部分集 vid 拉下来，抓流只认白名单。
+        #   preload 响应里既没有 series_id 也没有类型，这是唯一能把 vid 归类的路。
+        self._album: dict[str, tuple[str, int, str, float]] = {}
+        self._album_lock = threading.Lock()
+        self._album_seen: set[str] = set()
+        self._album_busy = 0
+        self._album_q: queue.Queue = queue.Queue()
+        self._svc = None
+        cached, self._whitelist_ts = load_whitelist()
+        if cached:
+            self._album.update(cached)
+            self.log(f"· 白名单缓存 {len(cached)} 集")
         self._q: queue.Queue[Clip] = queue.Queue()
         self._done = 0
         self._fail = 0
         self._skipped_feed = 0
         self._worker = threading.Thread(target=self._loop, daemon=True)
+        self._album_worker = threading.Thread(target=self._album_loop, daemon=True)
+        self._shelf_worker = threading.Thread(target=self._shelf_loop, daemon=True)
 
     def start(self):
         self._worker.start()
+        self._album_worker.start()
+        self._shelf_worker.start()
+
+    # -- 教学合集白名单
+    def _service(self):
+        if self._svc is None:
+            self._svc = HongguoService(Config.load())
+        return self._svc
+
+    def _album_loop(self):
+        """把 content_type=1003 的系列展开成 vid 白名单（album_detail 免签名）。"""
+        while True:
+            sid = self._album_q.get()
+            if sid is None:
+                return
+            self._album_busy += 1
+            try:
+                eps = self._service().list_album_episodes(sid)
+            except Exception as exc:        # noqa: BLE001
+                self.log(f"· 拉分集失败 {sid}：{exc}")
+                continue
+            finally:
+                self._album_busy -= 1
+            if not eps:
+                self.log(f"· 教学合集 {sid} 没有分集（album_detail 返回空）")
+                continue
+            add = {}
+            for e in eps:
+                add[str(e.vid)] = (e.series_title or "", int(e.index or 0),
+                                   e.title or "", float(e.duration or 0))
+            with self._album_lock:
+                self._album.update(add)
+            self.log(f"＋ 教学合集《{eps[0].series_title or sid}》白名单 +{len(add)} 集")
+
+    def _shelf_loop(self):
+        """把收藏夹里所有教学合集展开成 vid 白名单。
+
+        ★ 抓流从 preload 只能拿到 vid，而 preload 响应没有 series_id；
+          没有白名单就只能靠「用户先打开课程页」碰运气。
+          收藏夹接口与 album_detail 都免签名，一次拉全最省事，
+          结果落盘缓存，重启秒开（12 小时内不重拉）。
+        """
+        if self._album and time.time() - self._whitelist_ts < WHITELIST_TTL:
+            return
+        try:
+            svc = self._service()
+            items = svc.list_shelf(with_albums=False, album_limit=0)
+        except Exception as exc:            # noqa: BLE001
+            self.log(f"· 读收藏夹失败（不影响抓流）：{exc}")
+            return
+        albums = [it for it in items if getattr(it, "book_type", 0) == 3]
+        if not albums:
+            return
+        self.log(f"· 收藏夹 {len(items)} 部，其中教学合集 {len(albums)} 部，开始建白名单…")
+        for n, it in enumerate(albums, 1):
+            try:
+                eps = svc.list_album_episodes(it.series_id)
+            except Exception:               # noqa: BLE001
+                continue
+            if not eps:
+                continue
+            add = {str(e.vid): (e.series_title or it.title, int(e.index or 0),
+                                e.title or "", float(e.duration or 0)) for e in eps}
+            with self._album_lock:
+                self._album.update(add)
+            if n % 20 == 0 or n == len(albums):
+                self.log(f"· 白名单 {n}/{len(albums)} 部，累计 {len(self._album)} 集")
+        save_whitelist(self._album)
+        self.log(f"＋ 收藏夹白名单就绪：{len(self._album)} 集（已缓存，下次秒开）")
+
+    def _wait_album(self, vid: str, timeout: float = 8.0):
+        """等白名单认出这一集（album_detail 是 1~2 秒的网络请求）。
+
+        ★ 白名单是逐系列拉取的：推荐流那一大堆 vid 永远等不到，
+          所以「没有在途请求」时只给 1.5 秒，避免队列被 8 秒×十几条拖死。
+        """
+        start = time.time()
+        while True:
+            with self._album_lock:
+                hit = self._album.get(vid)
+            if hit is not None:
+                return hit
+            busy = self._album_busy > 0 or not self._album_q.empty()
+            if time.time() - start >= (timeout if busy else 1.5):
+                return None
+            time.sleep(0.2)
 
     # -- 抓到的两个来源
-    def feed_model(self, payload: dict, map_keys=("1004",)):
+    def feed_model(self, payload: dict, keymap: dict | None = None):
+        keymap = keymap or {}
         data = payload.get("data")
         if not isinstance(data, dict):
             return
@@ -451,39 +621,77 @@ class Grabber:
                 definition=pick.get("definition") or "",
                 height=int(pick.get("height") or 0),
                 content_key=key,
+                key=str(keymap.get(str(vid)) or ""),
             )
             with self._lock:
                 if clip.vid in self._seen:
-                    return
+                    # ★ 必须是 continue 不是 return：同一批 preload 里
+                    #   重复出现一个已抓过的 vid，用 return 会把后面全部吞掉。
+                    continue
                 self._seen.add(clip.vid)
             self._q.put(clip)
             self.log(f"＋ 抓到 {clip.vid} {clip.definition or ''} "
-                     f"{clip.duration:.0f}s{'（加密）' if key else ''}")
+                     f"{clip.duration:.0f}s{'（加密）' if key else ''}"
+                     f" key={clip.key or '?'}")
 
     def feed_detail(self, payload: dict):
         data = payload.get("data")
         if not isinstance(data, dict):
             return
-        for series_id, book in data.items():
+        # 形态一：data[series_id] = {video_data, video_relate_book}  （multi_video_detail）
+        # 形态二：data 本身就是一条 {video_data, video_relate_book} （video_detail/v1）
+        if "video_data" in data or "video_relate_book" in data:
+            items = [("", data)]
+        else:
+            items = list(data.items())
+        for series_id, book in items:
             if not isinstance(book, dict):
                 continue
+            vd = book.get("video_data") or {}
+            vl = [it for it in (vd.get("video_list") or []) if isinstance(it, dict)]
+            sid = str(series_id or "")
+            if not sid:
+                for it in vl:
+                    if it.get("series_id"):
+                        sid = str(it["series_id"])
+                        break
+            if not sid:
+                # ★ 教学合集的 video_list 是空的，series_id 只在这里有
+                sid = str(vd.get("series_id") or vd.get("series_id_str") or "")
             rel = book.get("video_relate_book") or {}
             info = rel.get("book_info") or {}
-            name = info.get("book_name") or ""
-            if name:
-                self._series_name[str(series_id)] = name
-            try:
-                bt = int(info.get("book_type") or 0)
-            except Exception:               # noqa: BLE001
-                bt = 0
-            vd = book.get("video_data") or {}
-            for item in (vd.get("video_list") or []):
-                if not isinstance(item, dict):
-                    continue
+            name = info.get("book_name") or vd.get("series_title") or ""
+            if name and sid:
+                self._series_name[sid] = name
+            # ★ 内容类型只在 video_data 上（1003=教学/知识合集）。
+            #   教学类的 video_relate_book 整个缺失，book_type 永远拿不到，
+            #   所以必须靠它 —— 这也是之前「拿不到内容类型」的根因。
+            ct = None
+            if vd.get("content_type") is not None:
+                try:
+                    ct = int(vd["content_type"])
+                except (TypeError, ValueError):
+                    ct = None
+            if ct is not None and sid:
+                self._content_type[sid] = ct
+                if ct in TEACHING_CONTENT_TYPES and sid not in self._album_seen:
+                    self._album_seen.add(sid)
+                    self._album_q.put(sid)
+                    self.log(f"· 认出教学合集《{name or sid}》，拉白名单…")
+            # ★★ 关键：拿不到就不要写。原来「缺字段 → 0」把未知一律当短剧，
+            #     教学合集整批被误判跳过（2026-11-21 抓流实测）。
+            bt = None
+            if info.get("book_type") is not None:
+                try:
+                    bt = int(info["book_type"])
+                except (TypeError, ValueError):
+                    bt = None
+            for item in vl:
                 vid = str(item.get("vid") or "")
                 if not vid:
                     continue
-                self._book_type[vid] = bt
+                if bt is not None:
+                    self._book_type[vid] = bt
                 self._titles[vid] = (
                     name,
                     int(item.get("vid_index") or 0) + 1,
@@ -526,27 +734,39 @@ class Grabber:
         return None
 
     def _save(self, clip: Clip):
-        # ★★ 判据是「内容类型」，不是「加不加密」——
-        #   很多短剧本来就不加密，按加密筛会全放进来。
-        #   book_type：3 = 教学合集（收藏夹里的课程），0/2 = 短剧/推荐流。
-        #   类型要靠详情响应带回来，所以这里给 5 秒。
-        bt = self._wait_book_type(clip.vid)
-        if not self.include_all:
-            if bt is None:
-                self.log(f"· 跳过 {clip.vid}（拿不到内容类型，当作非教学）")
-                return
-            if bt != 3:
-                self.log(f"· 跳过 {clip.vid}（book_type={bt}，非教学合集）")
+        # ★★ 判据（2026-11-21 抓流实测定案）：
+        #   ① 白名单：详情响应认出 content_type=1003 的教学系列，再用 album_detail
+        #      把该系列的分集 vid 拉下来。命中才是教学课 —— preload 响应里
+        #      既没有 series_id 也没有类型，这是唯一能把 vid 归类的路；
+        #   ② book_type=3 也算（部分合集走 multi_video_detail）；
+        #   ③ 都没有 = 未知，**不当短剧**（原来写死 0，整批误杀）。
+        #   ⚠ mixed_video_id_map 的 1001 不能当判据：它只表示「这是合集 ID」，
+        #     推荐流里的宣发短片同样是 1001。
+        album_ep = self._wait_album(clip.vid, timeout=8.0)
+        teaching = album_ep is not None
+        if not teaching and not self.include_all:
+            if self._wait_book_type(clip.vid, timeout=0.5) == 3:
+                teaching = True
+        if not teaching and not self.include_all:
+            if self.take_unknown and not clip.content_key and clip.duration >= 100:
+                self.log(f"· 白名单未命中，按教学特征收下（key={clip.key or '?'} "
+                         f"{clip.duration:.0f}s 未加密）")
+            else:
+                self.log(f"· 跳过 {clip.vid}（不在教学白名单 key={clip.key or '?'} "
+                         f"{clip.duration:.0f}s{' 加密' if clip.content_key else ''}）")
                 return
 
-        # 标题可能晚到（detail 响应比 model 慢一点），给它 5 秒
-        book, idx, title = self._titles.get(clip.vid, ("", 0, ""))
-        if not title:
-            for _ in range(10):
-                time.sleep(0.5)
-                book, idx, title = self._titles.get(clip.vid, ("", 0, ""))
-                if title:
-                    break
+        # 标题：白名单最准（真正的剧名 + 集序号 + 集名），其次详情响应
+        if album_ep is not None:
+            book, idx, title = album_ep[0], album_ep[1], album_ep[2]
+        else:
+            book, idx, title = self._titles.get(clip.vid, ("", 0, ""))
+            if not title:
+                for _ in range(10):
+                    time.sleep(0.5)
+                    book, idx, title = self._titles.get(clip.vid, ("", 0, ""))
+                    if title:
+                        break
         if not book:
             book = self._series_name.get(clip.series_id, "")
         # ★ 收藏流里很多「集名」其实是整段剧情简介（几十上百字），

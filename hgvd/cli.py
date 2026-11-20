@@ -270,7 +270,7 @@ def cmd_grab(args) -> int:
     say(f"实例 {idx}，输出到 {out}")
 
     grabber = Grabber(out, quality=args.quality,
-                      include_all=args.all, log=say)
+                      include_all=args.all, take_unknown=args.take_unknown, log=say)
     grabber.start()
     proxy = CaptureProxy(args.port, grabber.feed_model, grabber.feed_detail, say)
     proxy.start()
@@ -699,6 +699,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="退出时保留模拟器的 http_proxy 设置")
     pg.add_argument("--all", action="store_true",
                     help="连推荐流/短剧也下；默认只收教学合集（key 1001/1000）")
+    pg.add_argument("--take-unknown", action="store_true",
+                    help="类型拿不到时，按「长且未加密」的教学特征先收下（验证期用）")
     pg.set_defaults(func=cmd_grab)
 
     pl = sub.add_parser("list", help="列出某部剧的分集")
