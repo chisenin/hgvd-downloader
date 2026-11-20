@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace Hgvd.Core.Grab;
 
@@ -37,6 +38,7 @@ public static class MitmCa
     private static readonly object Gate = new();
     private static readonly Dictionary<string, SslStreamCertificateContext> Contexts = new();
     private static X509Certificate2 _ca;
+    private static X509Certificate2 _caPublic;   // ★ 无私钥副本，只用于构建证书链
 
     /// <summary>已加载的 CA（没有就生成一份）。</summary>
     public static X509Certificate2 Ca
@@ -45,7 +47,14 @@ public static class MitmCa
         {
             lock (Gate)
             {
-                if (_ca == null) _ca = LoadOrCreate();
+                if (_ca == null)
+                {
+                    _ca = LoadOrCreate();
+                    // ★ Schannel 不接受 additionalCertificates 里带私钥的证书，
+                    //   会报「处理证书时出现未知错误」（SEC_E_UNKNOWN_CREDENTIALS）。
+                    //   Python 侧传的是纯公钥链，这里也要传无私钥副本。
+                    _caPublic = new X509Certificate2(File.ReadAllBytes(CaCertPath));
+                }
                 return _ca;
             }
         }
@@ -101,21 +110,48 @@ public static class MitmCa
     }
 
     /// <summary>取某域名的 TLS 服务端上下文（叶证书 + CA 链，带缓存）。</summary>
+    /// <remarks>
+    /// ★★ 关键：必须把 CA **拼进同一个 PEM 文件**再 load，跟 Python 侧
+    ///   `chain = cert_pem + ca_pem; ctx.load_cert_chain(chain, key)` 完全一致。
+    ///   `SslStreamCertificateContext.Create(leaf, additional: [CA])` 在 Schannel 上
+    ///   不会把 additional 发给客户端 —— openssl 实测 depth=0，只有叶证书，
+    ///   客户端因此无法构建到已安装的 CA 信任锚而拒绝。
+    /// </remarks>
     public static SslStreamCertificateContext ContextFor(string host)
     {
         lock (Gate)
         {
             if (Contexts.TryGetValue(host, out var hit)) return hit;
-            var leaf = IssueLeaf(host);
-            // ★ 关键：additional 里塞 CA，握手里才会把整链发下去
-            var ctx = SslStreamCertificateContext.Create(
-                leaf, new X509Certificate2Collection { Ca }, offline: true);
-            Contexts[host] = ctx;
-            return ctx;
+
+            var (leafPem, keyPem) = IssueLeafPem(host);
+            _ = Ca;   // 确保 CA 已加载
+            string chainPem = leafPem.TrimEnd('\r', '\n') + "\n"
+                              + File.ReadAllText(CaCertPath).TrimStart('\r', '\n');
+
+            string chainFile = Path.Combine(Path.GetTempPath(),
+                $"hgvd_chain_{Guid.NewGuid():N}.crt");
+            string keyFile = Path.Combine(Path.GetTempPath(),
+                $"hgvd_key_{Guid.NewGuid():N}.key");
+            try
+            {
+                File.WriteAllText(chainFile, chainPem, new UTF8Encoding(false));
+                File.WriteAllText(keyFile, keyPem, new UTF8Encoding(false));
+                // ★ 整链 + 私钥一起加载，Schannel 才会把 CA 发给客户端
+                var leaf = X509Certificate2.CreateFromPemFile(chainFile, keyFile);
+                var ctx = SslStreamCertificateContext.Create(
+                    Persist(leaf), null, offline: true);
+                Contexts[host] = ctx;
+                return ctx;
+            }
+            finally
+            {
+                try { File.Delete(chainFile); } catch { }
+                try { File.Delete(keyFile); } catch { }
+            }
         }
     }
 
-    private static X509Certificate2 IssueLeaf(string host)
+    private static (string CertPem, string KeyPem) IssueLeafPem(string host)
     {
         using var key = RSA.Create(2048);
         var req = new CertificateRequest(
@@ -159,7 +195,6 @@ public static class MitmCa
         if (notAfter > caEnd) notAfter = caEnd;
 
         using var bare = req.Create(Ca, notBefore, notAfter, serial);
-        using var withKey = bare.CopyWithPrivateKey(key);
-        return Persist(withKey);
+        return (bare.ExportCertificatePem(), key.ExportRSAPrivateKeyPem());
     }
 }

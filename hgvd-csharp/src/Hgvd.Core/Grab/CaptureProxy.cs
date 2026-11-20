@@ -101,6 +101,7 @@ public sealed class CaptureProxy : IDisposable
                         Encoding.ASCII.GetBytes("HTTP/1.1 200 Connection Established\r\n\r\n"), ct);
 
                     using var tls = new SslStream(net, false);
+                    _log("[server-handshake] begin " + host);
                     await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
                     {
                         // ★ 这两行是上次被拒的关键：带 CA 链的上下文 + 持久化过 PFX 的私钥
@@ -113,6 +114,7 @@ public sealed class CaptureProxy : IDisposable
                             SslApplicationProtocol.Http11,
                         },
                     }, ct);
+                    _log("[server-handshake] ok " + host);
 
                     await PumpAsync(tls, host, ct);
                 }
@@ -124,7 +126,18 @@ public sealed class CaptureProxy : IDisposable
             }
             catch (Exception ex)
             {
-                _log($"！连接异常 {ex.GetType().Name}: {ex.Message}");
+                // ★ 必须打 InnerException：TLS 握手失败的外层永远是
+                //   「Authentication failed, see inner exception」，
+                //   真正原因（证书链 / 私钥 / 协议 / 吊销）全在内层。
+                var chain = ex;
+                int depth = 0;
+                var parts = new List<string>();
+                while (chain != null && depth++ < 4)
+                {
+                    parts.Add($"{chain.GetType().Name}: {chain.Message}");
+                    chain = chain.InnerException;
+                }
+                _log($"！连接异常 {string.Join(" | ", parts)}");
             }
         }
     }
@@ -148,12 +161,14 @@ public sealed class CaptureProxy : IDisposable
         {
             await upstream.ConnectAsync(host, 443, ct);
             using var ssl = new SslStream(upstream.GetStream(), false, (_, _, _, _) => true);
+            _log("[upstream-handshake] begin " + host);
             await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = host,
                 EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
             }, ct);
+            _log("[upstream-handshake] ok " + host);
 
             await ssl.WriteAsync(request, ct);
             var up = new ConnReader(ssl);
