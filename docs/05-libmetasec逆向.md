@@ -159,20 +159,122 @@ invoke-static/range {v1..v6}, Lms/bd/c/k3;.a(...)   ; obj = null
 0x18ed84 / 0x2080e0 / 0x229d68 附近还有 `.text` 常量（0x18eca0 / 0x207bd0 / 0x229d50…）
 可能是真正的注册点，尚未逐个验证。
 
-## 5. 下一步（2026-11-20 22:xx 更新：第 1 项已完成）
+## 5. ★★★ 转折：MITM 抓包证明「签名根本没被校验」（2026-11-20 22:2x）
 
-1. ~~拿 Java 层 cmd 表~~ ✅ 见 §4。结论是它只给了「能力清单」，
-   因为 App 的 Java 层根本不调 `frameSign`。
-2. **动态观测（现在最该做的）**：在模拟器里 hook `ms.bd.c.k3.a`（ART 层）。
-   ★ 关键：ART 的方法 hook 对**从 native 发起的 JNI 调用同样有效**，
-   所以即使签名是 `libsscronet` 发的，也能看到「cmd / scene / 返回值」。
-   需要 frida-server（x86_64 版，进程是 x86_64；arm64 的 so 由翻译层执行）。
-3. **抓真实请求头**（可与 2 并行）：模拟器有 root，可把自制 CA 装进
-   `/system/etc/security/cacerts` 再挂代理；拿到真 `x-argus` 值后
-   与本地生成的做**结构对照**（长度/前缀/尾 9 字节），比猜常量有效得多。
-4. 让那 3 个 `pthread_create` 线程真跑（context 轮转），看后台线程是否承担 init/上报。
-5. 只有 2~4 都拿不到算法时，才硬啃 `.text`（2.4 MB 平坦化代码，成本极高）。
+### 6.1 让模拟器信任自制 CA（这一步最容易卡住）
 
-> 结论先行：**"密钥变了"这个假设目前既没被证实也没被证伪** ——
-> 能确定的是旧常量在 v04.10 里一个都不剩、对外只留一个 `a()` 入口、
-> 且签名头是 TTNet 网络层加的。继续照旧常量猜没有意义。
+MuMu 的 Android 15 上，`/system/etc/security/cacerts` 有 145 个证书但**不生效** ——
+运行时读的是 **Conscrypt APEX**：
+
+```
+/apex/com.android.conscrypt/cacerts        # 145 个，ro（loop 挂载）
+/system/etc/security/cacerts               # 我们加的证书在这里，被忽略
+```
+
+正确做法（root + SELinux Permissive 即可）：
+
+```bash
+# 1) 准备合并目录（145 + 自己的）
+cp /proc/<zygote64_pid>/root/apex/com.android.conscrypt/cacerts/* /data/local/tmp/cacerts_new/
+cp /system/etc/security/cacerts/96fd57fc.0 /data/local/tmp/cacerts_new/
+# 2) 在 zygote 的 mount namespace 里用 tmpfs 盖掉 APEX 目录（新起的 App 进程都继承）
+nsenter -t <zygote64_pid> -m -- sh -c \
+  'mount -t tmpfs tmpfs /apex/com.android.conscrypt/cacerts && \
+   cp /data/local/tmp/cacerts_new/* /apex/com.android.conscrypt/cacerts/'
+# 3) 杀 App 重启
+```
+
+`<hash>.0` = `openssl x509 -subject_hash_old -noout`（本例 `96fd57fc.0`）。
+验证：`ls /proc/<app_pid>/root/apex/com.android.conscrypt/cacerts | wc -l` 应为 146。
+
+代理用 `tools/metasec/mitm.py`（python + cryptography，自己签叶证书，
+对客户端只宣告 http/1.1，按请求落盘到 `_ref/metasec/bodies/`）。
+
+### 6.2 抓到的真实头：argus/ladon 是 **3 字节桩**
+
+真机（7.4.1.32）对 `/novel/player/video_model/v1/`、`multi_video_model/preload/v1`：
+
+```
+X-Argus: hVgAaw==        ← 3 字节
+X-Ladon: AT3DcA==        ← 3 字节
+X-Gorgon: 8404d0804480dd271e5fe8d09ed19dbdd0710c2105858b8ef031   (46 hex，真的)
+X-Helios / X-Medusa / X-Khronos / X-SS-STUB 也都在
+```
+
+而服务端照样 `code=0` + 返回播放地址 ⇒ **这个接口不校验任何签名头**
+（argus/ladon/gorgon/khronos/medusa/helios/ss-stub 全都不校验，至少在 7.4.1.32 上如此）。
+
+### 6.3 重放实验（在宿主机上，不经模拟器）
+
+```
+原样重放（连旧的 x-gorgon/x-khronos 一起带上）→ HTTP 200 code=0 每个视频 5 条直链
+去掉全部签名头（gorgon/argus/ladon/khronos/medusa/helios/ss-stub）→ 仍然 200 code=0
+不带 Cookie（匿名）→ 仍然 200 code=0
+query 只留 9 个参数 → 仍然 200 code=0
+body 只留 dr_scene + mixed_video_id_map（去掉 biz_param）→ code=100001 参数错误
+```
+
+⇒ **签名不是根因**。之前「v04.10 改了 native 算法」的判断被推翻；
+真正的变化是**接口换了**，且 body 从 protobuf 变成了 **gzip JSON**。
+
+### 6.4 新接口（唯一可用的播放模型）
+
+```
+POST https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1?<query>
+Content-Type: application/json; charset=utf-8
+Content-Encoding: gzip
+body(gzip) = {"biz_param":{"detail_page_version":0,"device_level":3,
+                           "disable_digg_stat":false,"disable_video_relate_book":false,
+                           "need_all_video_definition":true,"need_mp4_align":false,
+                           "use_os_player":false,"use_server_dns":false,
+                           "video_platform":1024},
+              "dr_scene":"preload",
+              "mixed_video_id_map":{"1004":["<vid>", …]}}
+```
+
+响应：`{"code":0,"data":{"<vid>":{"video_model":"<JSON 字符串>", "video_height":…}}}`，
+`video_model.video_list[].main_url / backup_url` 就是直链（实测 206 + `ftyp` 正常）。
+
+★★ `mixed_video_id_map` 的**键 = 内容类型**（实测）：
+
+| key | 适用 | 备注 |
+|---|---|---|
+| `1004` | 视频流 / 短剧 | 教学集用它会 `code=101000` |
+| `1001` / `1000` | 教学合集分集 | 用 1004 会 101000 |
+
+所以实现里按 `("1004","1001","1000")` 依次试，取第一个能解析出 `video_list` 的。
+
+### 5.5 落地结果（Python + C# 双双跑通）
+
+**Python**（`hgvd/api/playback.py`）
+- 新增 `build_preload_body` / `fetch_preload` / `preload_query` / `_adapt_preload`
+- `fetch_playback` 改走新接口并按 `("1004","1001","1000")` 依次试 map key，
+  适配回老的 `data.video_model` 形状 ⇒ 调用方零改动
+- `python -m hgvd download 7709054295315844121 --episodes 1`
+  → **11.3 MB / 174.8s / h264 640x360 + aac**，ffprobe 校验通过
+- 回归新增 I 组（17 项）：谁把签名头加回来、或改掉 body 形状，测试会红
+
+**C# 发行版**（`Hgvd.Core/Api/SignedClient.cs`）
+- 新增 `PathPreload` / `BuildPreloadBody` / `PlaybackPreloadAsync`；
+  `PlaybackAsync` 先走 preload，拿不到流再回落旧接口（旧接口已死，仅保底）
+- `dotnet build` 0 error；C# 离线回归全过
+- GUI `--demo 7709054295315844121` 实跑：**3 集全部下载成功**
+  （11.8 / 10.7 / 10.6 MB，ffprobe 正常）
+
+## 6. 复盘：这条线为什么走偏了
+
+1. **把「症状」当成了「根因」**：`video_model` 回 0 字节，最省事的解释是
+   「签名被服务端拒了」，于是去猜 native 算法/密钥。实际上服务端根本
+   **不校验** argus/ladon —— 真正的变化是**接口换成了 preload**。
+2. **只看自己的请求，没看 App 的**：整条链上只要抓一次真机请求就能看到
+   `X-Argus: hVgAaw==`（3 字节），立刻能推翻「要真签名」的假设。
+   ⇒ **判据纪律再补一条：先拿到「对方的真实样本」，再谈算法。**
+3. 反过来说，前面的逆向工作并不是白做：它证明了
+   「旧常量一个都不剩、入口只有一个 `a()`」，从而**排除了**改常量的幻想，
+   逼着去找真正的差异 —— 只是最后发现差异不在那一层。
+
+### 还没做但值得做
+
+- **C# 发行版同步**：`Hgvd.Core` 的播放请求要照 §5.4 改（否则 GUI 仍下载失败）。
+- 把 `tools/metasec/mitm.py` 保留成常备工具：以后再遇到「接口悄悄变了」，
+  十分钟就能抓到真机样本，比猜快得多。

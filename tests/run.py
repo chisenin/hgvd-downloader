@@ -418,9 +418,63 @@ def test_h_attribution_guard():
           and (root / "tools" / "emptybody_probe.py").is_file())
 
 
+def test_i_preload_protocol() -> None:
+    """I 组：2026-11-20 新播放协议（multi_video_model/preload）+ 反向护栏。
+
+    ★ 这一组守的是**结论本身**：旧接口 video_model/v1 已停用，
+      新接口不校验签名头。以后谁把签名加回来、或把 body 形状改掉，这里会失败。
+    """
+    import gzip as _gzip
+
+    from hgvd.api import playback as pb
+
+    check("I1 走 preload 接口", pb.PATH_PRELOAD == "/novel/player/multi_video_model/preload/v1")
+    check("I2 旧接口常量仍在（只作对照，不再使用）",
+          pb.PATH_VIDEO_MODEL == "/novel/player/video_model/v1/")
+
+    body = pb.build_preload_body(["123", "456"])
+    check("I3 body 是 gzip", body[:2] == b"\x1f\x8b")
+    payload = json.loads(_gzip.decompress(body).decode("utf-8"))
+    check("I4 body 含 biz_param", isinstance(payload.get("biz_param"), dict))
+    biz = payload["biz_param"]
+    check("I5 video_platform=1024", biz.get("video_platform") == 1024)
+    check("I6 need_all_video_definition=true", biz.get("need_all_video_definition") is True)
+    check("I7 dr_scene=preload", payload.get("dr_scene") == "preload")
+    check("I8 mixed_video_id_map 带两个 vid",
+          payload.get("mixed_video_id_map") == {"1004": ["123", "456"]})
+    body2 = json.loads(_gzip.decompress(pb.build_preload_body(["9"], map_key="1001")).decode())
+    check("I9 map_key 可切换内容类型", "1001" in body2["mixed_video_id_map"])
+    check("I10 三种 key 都在候选里",
+          set(pb.PRELOAD_MAP_KEYS) == {"1004", "1001", "1000"})
+
+    hdr = pb._preload_headers({"a": "b"})
+    banned = ("x-gorgon", "x-argus", "x-ladon", "x-khronos", "x-medusa", "x-helios", "x-ss-stub")
+    check("I11 preload 头里不带任何签名头",
+          not any(k in {h.lower() for h in hdr} for k in banned),
+          f"keys={sorted(hdr)}")
+    check("I12 preload 带 gzip 头", hdr.get("Content-Encoding") == "gzip")
+
+    # 适配：preload 的 data[vid] → 老的 data.video_model
+    vm = {"video_list": [{"main_url": "http://x", "video_meta": {"definition": "360p"}}]}
+    adapted = pb._adapt_preload(
+        {"code": 0, "message": "ok", "_host": "h"},
+        {"video_model": json.dumps(vm), "video_height": 360})
+    check("I13 适配后 code=0", adapted.get("code") == 0)
+    check("I14 适配后 video_model 是 dict",
+          isinstance(adapted["data"]["video_model"], dict))
+    check("I15 适配后能解析出流", len(pb.parse_streams(adapted)) == 1)
+
+    # 文档里必须留下这次结论（否则下个会话又会去猜签名）
+    root = Path(__file__).resolve().parent.parent
+    doc = (root / "docs" / "05-libmetasec逆向.md").read_text(encoding="utf-8")
+    check("I16 文档记录「不校验签名头」", "不校验任何签名头" in doc)
+    check("I17 文档记录新接口路径", "multi_video_model/preload" in doc)
+
+
 def main() -> int:
     for fn in (test_a_utils, test_b_config, test_c_history, test_d_sign,
-               test_e_web, test_f_shelf, test_g_drm, test_h_attribution_guard):
+               test_e_web, test_f_shelf, test_g_drm, test_h_attribution_guard,
+               test_i_preload_protocol):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

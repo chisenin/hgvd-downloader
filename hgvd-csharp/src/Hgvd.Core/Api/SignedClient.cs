@@ -428,10 +428,137 @@ public sealed class SignedClient
 
     // ---------------------------------------------------------------- 播放
 
+    /// <summary>
+    /// ★★★ 2026-11-20 协议变更：播放模型改用 <c>multi_video_model/preload</c>。
+    ///
+    /// 旧接口 <see cref="PathPlayback"/> 已被服务端停用（任何请求恒 HTTP 200 + 0 字节）。
+    /// 新接口**不校验任何签名头**（真机自己发的 X-Argus/X-Ladon 只有 3 字节），
+    /// 只要求 gzip 的 JSON body + 正确 query。
+    /// 详见 docs/05-libmetasec逆向.md §5。
+    /// </summary>
+    public const string PathPreload = "/novel/player/multi_video_model/preload/v1";
+
+    /// <summary>
+    /// <c>mixed_video_id_map</c> 的键 = **内容类型**（实测）：
+    /// 1004 = 视频流/短剧；1000/1001 = 教学合集分集。按顺序试，取第一个有流的。
+    /// </summary>
+    private static readonly string[] PreloadMapKeys = { "1004", "1001", "1000" };
+
+    /// <summary>真机 UA（7.4.1.32）。preload 不验签，但 UA 仍按 App 写。</summary>
+    private const string PreloadUa =
+        "com.phoenix.read/74132 (Linux; U; Android 15; zh_CN_#Hans; 22041216C; " +
+        "Build/V417IR;tt-ok/3.12.13.20)";
+
+    /// <summary>造 preload 的 body：gzip(JSON)。</summary>
+    private static byte[] BuildPreloadBody(string videoId, string mapKey)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["biz_param"] = new Dictionary<string, object>
+            {
+                ["detail_page_version"] = 0,
+                ["device_level"] = 3,
+                ["disable_digg_stat"] = false,
+                ["disable_video_relate_book"] = false,
+                ["need_all_video_definition"] = true,
+                ["need_mp4_align"] = false,
+                ["use_os_player"] = false,
+                ["use_server_dns"] = false,
+                ["video_platform"] = 1024,
+            },
+            ["dr_scene"] = "preload",
+            ["mixed_video_id_map"] = new Dictionary<string, string[]>
+            {
+                [mapKey] = new[] { videoId },
+            },
+        };
+        byte[] raw = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+        using var ms = new System.IO.MemoryStream();
+        using (var gz = new System.IO.Compression.GZipStream(
+                   ms, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+        {
+            gz.Write(raw, 0, raw.Length);
+        }
+        return ms.ToArray();
+    }
+
+    /// <summary>走 preload 取播放模型；拿不到流时返回空模型（由调用方兜底）。</summary>
+    private async Task<PlaybackModel> PlaybackPreloadAsync(string videoId, CancellationToken ct)
+    {
+        string query = string.Join("&", DevicePairs().Select(kv =>
+            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value ?? "")}"));
+
+        foreach (string key in PreloadMapKeys)
+        {
+            byte[] body = BuildPreloadBody(videoId, key);
+            foreach (string baseUrl in PlaybackBaseUrls())
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(
+                        HttpMethod.Post, $"{baseUrl}{PathPreload}?{query}")
+                    {
+                        Content = new ByteArrayContent(body),
+                    };
+                    req.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+                        { CharSet = "UTF-8" };
+                    req.Content.Headers.ContentEncoding.Add("gzip");
+                    req.Headers.TryAddWithoutValidation("User-Agent", PreloadUa);
+                    req.Headers.TryAddWithoutValidation("Accept",
+                        "application/json; charset=utf-8,application/x-protobuf");
+                    req.Headers.TryAddWithoutValidation("x-xs-from-web", "0");
+                    req.Headers.TryAddWithoutValidation("lc", "101");
+                    req.Headers.TryAddWithoutValidation("sdk-version", "2");
+                    if (!string.IsNullOrEmpty(_cookie))
+                        req.Headers.TryAddWithoutValidation("Cookie", _cookie);
+
+                    using var resp = await Net.Client.SendAsync(req, ct);
+                    string text = await resp.Content.ReadAsStringAsync(ct);
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+
+                    using var doc = JsonDocument.Parse(text);
+                    var root = doc.RootElement;
+                    int code = root.TryGetProperty("code", out var c) &&
+                               c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+                    if (code != 0) continue;
+                    if (!root.TryGetProperty("data", out var data) ||
+                        data.ValueKind != JsonValueKind.Object) continue;
+
+                    JsonElement entry;
+                    if (!data.TryGetProperty(videoId, out entry))
+                    {
+                        var first = data.EnumerateObject().Select(p => p.Value).FirstOrDefault();
+                        if (first.ValueKind != JsonValueKind.Object) continue;
+                        entry = first;
+                    }
+                    string vm = J.Str(entry, "video_model");
+                    if (string.IsNullOrEmpty(vm)) continue;
+
+                    // 复用老的解析：包成 {"data":{"video_model":"<raw>"}}
+                    using var wrapped = JsonDocument.Parse(
+                        "{\"data\":{\"video_model\":" + JsonSerializer.Serialize(vm) + "}}");
+                    var model = PlaybackModel.Parse(wrapped);
+                    if (model.Streams.Count > 0) return model;
+                }
+                catch
+                {
+                    // 换下一个网关 / 下一个 key
+                }
+            }
+        }
+        return new PlaybackModel();
+    }
+
     /// <summary>取播放模型（各清晰度的直链 + 加密信息）。</summary>
     public async Task<PlaybackModel> PlaybackAsync(string videoId, int videoIdType = 0,
         CancellationToken ct = default)
     {
+        // ★ 先走新接口（不验签、匿名可用）
+        var preload = await PlaybackPreloadAsync(videoId, ct);
+        if (preload.Streams.Count > 0) return preload;
+
+        // 旧接口兜底：服务端已停用，正常情况下会恒空 body。
         string body = JsonSerializer.Serialize(new Dictionary<string, object>
         {
             ["biz_param"] = new Dictionary<string, object>
@@ -442,7 +569,6 @@ public sealed class SignedClient
             },
             ["video_id"] = videoId,
         });
-        // ★ 必须用**播放专用签名**（真 argus/ladon、无 medusa）
         using var doc = await PostAsync(PathPlayback, body, playback: true, ct: ct);
         return PlaybackModel.Parse(doc!);
     }

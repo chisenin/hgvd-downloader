@@ -1,18 +1,36 @@
-"""App 网关的播放接口（``/novel/player/video_model/v1/``）。
+"""App 网关的播放接口。
 
-★ 这是下载**完整正片**的唯一路径。网页版只给 10 秒试看片段
-（``accessible_episode_cnt`` 实测 = 5，即前 5 集有 SEO 数据）。
+★★★ **2026-11-20 协议变更（MITM 实测，结论已变，以本节为准）**
 
-★ body 是 **protobuf 二进制**（实测 118 字节），不是 JSON。
-签名与 body 强绑定（``x-gorgon``/``x-ss-stub`` 都覆盖 body），
-所以必须**先造出完全相同的 body 字节**，再拿去签名。
+旧接口 ``/novel/player/video_model/v1/`` 已被服务端停用：任何请求都
+**HTTP 200 + 0 字节**（匿名、错 vid、拆签名全一样）。
 
-★ 从 2026-11-10 起，该接口校验真实的 ``x-argus`` / ``x-ladon``；
-搜索、详情等其它接口仍接受 4 字节时间戳桩。
+新接口::
+
+    POST /novel/player/multi_video_model/preload/v1?<query>
+    Content-Type: application/json; charset=utf-8
+    Content-Encoding: gzip
+    body = gzip({"biz_param":{…, "video_platform":1024},
+                 "dr_scene":"preload",
+                 "mixed_video_id_map":{"1004":[vid,…]}})
+
+**这个接口不校验任何签名头** —— 实测去掉 ``x-gorgon`` / ``x-argus`` /
+``x-ladon`` / ``x-khronos`` / ``x-medusa`` / ``x-helios`` / ``x-ss-stub``
+仍然 ``code=0``；query 只留 9 个参数也可以；不带 Cookie（匿名）也可以。
+唯一硬要求是 **body 里必须有 ``biz_param``**（只给 dr_scene + map 会
+``code=100001`` 参数错误）。
+
+⇒ 之前「v04.10 改了 native 签名算法」的判断是**错的** —— 真实原因是
+  接口换了、body 形状换了。详见 ``docs/05-libmetasec逆向.md`` §6。
+
+响应仍是双层 JSON::
+
+    {"code":0,"data":{"<vid>":{"video_model":"<JSON 字符串>", …}}}
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import struct
 import time
@@ -66,6 +84,24 @@ def playback_hosts() -> tuple[str, ...]:
 
 
 PATH_VIDEO_MODEL = "/novel/player/video_model/v1/"
+#: 2026-11-20 起真正可用的播放模型接口（旧的 video_model/v1 已停用）
+PATH_PRELOAD = "/novel/player/multi_video_model/preload/v1"
+
+#: preload 的网关候选（顺序无关紧要，第一个实测可用）
+#: ``mixed_video_id_map`` 的键 = **内容类型**（实测）：
+#: 1004 = 视频流/短剧；1000/1001 = 教学合集分集。顺序即尝试顺序。
+PRELOAD_MAP_KEYS: tuple[str, ...] = ("1004", "1001", "1000")
+
+PRELOAD_HOSTS: tuple[str, ...] = (
+    "api5-normal-sinfonlineb.fqnovel.com",
+    "api5-normal-lf.fqnovel.com",
+    "reading.snssdk.com",
+)
+
+APP_UA_74132 = (
+    "com.phoenix.read/74132 (Linux; U; Android 15; zh_CN_#Hans; 22041216C; "
+    "Build/V417IR;tt-ok/3.12.13.20)"
+)
 
 APP_UA = (
     "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC; "
@@ -240,6 +276,110 @@ def _post_playback(
         return None, f"{host}: 非 JSON (HTTP {r.status_code})"
 
 
+# ------------------------------------------------------- 新接口（preload）
+
+
+def build_preload_body(
+    vids,
+    *,
+    dr_scene: str = "preload",
+    video_platform: int = 1024,
+    map_key: str = "1004",
+    detail_page_version: int = 0,
+    device_level: int = 3,
+    need_all_video_definition: bool = True,
+    use_server_dns: bool = False,
+) -> bytes:
+    """构造 preload 的 body（**gzip 压缩的 JSON**）。
+
+    ★ 字段与取值逐字对齐真机抓包（docs/05 §6）：
+      缺 ``biz_param`` → ``code=100001`` 参数错误；
+      ``mixed_video_id_map`` 的键实测 1004 / 1024 都接受。
+    """
+    payload = {
+        "biz_param": {
+            "detail_page_version": detail_page_version,
+            "device_level": device_level,
+            "disable_digg_stat": False,
+            "disable_video_relate_book": False,
+            "need_all_video_definition": need_all_video_definition,
+            "need_mp4_align": False,
+            "use_os_player": False,
+            "use_server_dns": use_server_dns,
+            "video_platform": video_platform,
+        },
+        "dr_scene": dr_scene,
+        "mixed_video_id_map": {map_key: list(vids)},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return gzip.compress(raw, mtime=0)
+
+
+def preload_query(ident: DeviceIdentity, *, now_ms: int | None = None) -> str:
+    """preload 的 query（实测只留 9 个也能通，这里保持与 App 一致）。"""
+    import urllib.parse
+
+    pairs = list(device_pairs(ident))
+    pairs.insert(3, ("_rticket", str(now_ms or int(time.time() * 1000))))
+    return urllib.parse.urlencode(pairs)
+
+
+def _preload_headers(cookies: dict | None) -> dict:
+    """preload 的请求头。
+
+    ★ **故意不带任何签名头**：实测全去掉仍然 code=0。
+    """
+    hdr = {
+        "User-Agent": APP_UA_74132,
+        "Accept": "application/json; charset=utf-8,application/x-protobuf",
+        "Accept-Encoding": "gzip",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Encoding": "gzip",
+        "x-xs-from-web": "0",
+        "lc": "101",
+        "sdk-version": "2",
+        "x-tt-store-region": "cn-gd",
+        "x-tt-store-region-src": "uid",
+    }
+    if cookies:
+        hdr["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+    return hdr
+
+
+def fetch_preload(
+    session,
+    ident: DeviceIdentity,
+    vids,
+    *,
+    cookies: dict | None = None,
+    timeout: int = 25,
+    hosts: tuple[str, ...] | None = None,
+    dr_scene: str = "preload",
+    map_key: str = "1004",
+) -> dict:
+    """打一发 preload，返回原始 JSON（``data`` 里按 vid 分组）。"""
+    body = build_preload_body(vids, dr_scene=dr_scene, map_key=map_key)
+    last = ""
+    for host in (hosts or PRELOAD_HOSTS):
+        url = f"https://{host}{PATH_PRELOAD}?{preload_query(ident)}"
+        try:
+            r = session.post(url, data=body, headers=_preload_headers(cookies), timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            last = f"{host}: {str(e)[:120]}"
+            continue
+        if not r.content:
+            last = f"{host}: 空 body (HTTP {r.status_code})"
+            continue
+        try:
+            payload = r.json()
+        except Exception:  # noqa: BLE001
+            last = f"{host}: 非 JSON (HTTP {r.status_code})"
+            continue
+        payload["_host"] = host
+        return payload
+    raise RuntimeError(f"multi_video_model/preload 无响应：{last}")
+
+
 def fetch_playback(
     session,
     ident: DeviceIdentity,
@@ -253,51 +393,59 @@ def fetch_playback(
     pause: float = 2.0,
     hosts: tuple[str, ...] | None = None,
 ) -> dict:
-    """取一集的播放模型。
+    """取一集的播放模型（**新接口**，返回结构适配老的 ``data.video_model``）。
 
-    返回原始 JSON（含各清晰度地址、加密信息）。
-
-    ★ ``video_id_type``：``0`` = 传 vid（短剧），``1`` = 传 series_id（教学内容）。
-    ★ 必须用播放专用签名（``sign_playback``：真 argus/ladon、**不带 medusa**）——
-      用普通签名会被网关拦成 **HTTP 200 + 空 body**。
-
-    ★★ **网关故障转移**：``fqnovel`` 那组网关会静默丢弃 ``video_model`` 请求
-      （HTTP 200 + 空 body），``reading.snssdk.com`` 正常。
-      ⇒ 依次试 ``API_HOSTS``，遇到**空 body 立刻换下一个网关**（不等退避），
-      所有网关都空 body 才退避重试一轮。
-
-    ★★★ **video_id_type 自动回退**：拿到 JSON 且 ``code=101000`` 说明
-      **签名是通的**（否则会空 body），只是 id 类型对不上
-      （短剧用 0、教学用 1，且两个网关的语义还不完全一样：
-      snssdk 上短剧用 1 反而正常）。
-      ⇒ 这时**换另一种 type 再打一枪**。
+    ★ 2026-11-20 起走 ``/novel/player/multi_video_model/preload/v1``：
+      不校验签名头、不要求登录，body 是 gzip JSON。
+    ★ ``video_id_type`` 仅为兼容旧调用点保留 —— 新接口不需要它。
     """
-    host_list = tuple(hosts) if hosts else playback_hosts()
-    body = build_playback_body(video_id, definition, video_id_type=video_id_type)
-    last = ""
-    for attempt in range(retries):
-        for host in host_list:
-            payload, err = _post_playback(
-                session, ident, body, cookies, host, timeout)
-            if payload is None:
-                last = err
-                continue
-            code = payload.get("code")
-            if code == 101000 and video_id_type in (0, 1):
-                # ★ id 类型对不上 —— 换另一种再试（只试一次）
-                alt = build_playback_body(
-                    video_id, definition, video_id_type=1 - video_id_type)
-                alt_payload, alt_err = _post_playback(
-                    session, ident, alt, cookies, host, timeout)
-                if alt_payload is not None and alt_payload.get("code") in (0, None):
-                    return alt_payload
-                if alt_err:
-                    last = alt_err
-                elif alt_payload is not None:
-                    last = f"{host}: code={alt_payload.get('code')}"
-            return payload
-        time.sleep(pause * (attempt + 1))
-    raise RuntimeError(f"video_model 无响应：{last}")
+    payload = None
+    for key in PRELOAD_MAP_KEYS:
+        payload = fetch_preload(
+            session, ident, [video_id], cookies=cookies, timeout=timeout,
+            hosts=hosts, map_key=key)
+        code = payload.get("code")
+        data = payload.get("data")
+        if code not in (0, None) or not isinstance(data, dict) or not data:
+            continue
+        entry = data.get(str(video_id)) or next(iter(data.values()), None)
+        if not isinstance(entry, dict):
+            continue
+        adapted = _adapt_preload(payload, entry)
+        if parse_streams(adapted):
+            adapted["_map_key"] = key
+            return adapted
+    return _adapt_preload(payload, None) if payload else {}
+
+
+def _adapt_preload(payload: dict, entry: dict | None) -> dict:
+    """把 preload 响应适配成老的 ``data.video_model`` 形状。"""
+    if entry is None:
+        return payload
+    data = payload.get("data") or {}
+    if entry is None:
+        entry = next(iter(data.values()), None) or {}
+    if not isinstance(entry, dict):
+        return payload
+    vm = entry.get("video_model")
+    if isinstance(vm, str):
+        try:
+            vm = json.loads(vm)
+        except Exception:  # noqa: BLE001
+            vm = None
+    return {
+        "code": 0,
+        "message": payload.get("message"),
+        "_preload": True,
+        "_host": payload.get("_host"),
+        "_entry": entry,
+        "data": {
+            "video_model": vm,
+            "expire_time": entry.get("expire_time"),
+            "video_height": entry.get("video_height"),
+            "video_width": entry.get("video_width"),
+        },
+    }
 
 
 # ---------------------------------------------------------------- 解析
