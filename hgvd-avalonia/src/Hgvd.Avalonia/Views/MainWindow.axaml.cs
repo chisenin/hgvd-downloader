@@ -1545,8 +1545,8 @@ public partial class MainWindow : Window
         UpdateQueueSummary();
         if (res.Aborted)
             ShowBanner("播放接口连续多次返回空 body，已停止本批。"
-                     + "\n★ 这不是限流，等再久也不会自己恢复；先看日志里的判据，"
-                     + "急用可改用「提取App缓存」。", BannerKind.Err);
+                     + "\n★ 2026-11-21 起网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；"
+                     + "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」。", BannerKind.Err);
         Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
     }
 
@@ -1724,8 +1724,8 @@ public partial class MainWindow : Window
             if (r.Aborted)
             {
                 ShowBanner("播放接口连续多次返回空 body，已停止本批。"
-                         + "\n★ 这不是限流，等再久也不会自己恢复；先看日志里的判据，"
-                         + "急用可改用「提取App缓存」出片。", BannerKind.Err);
+                         + "\n★ 2026-11-21 起网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；"
+                         + "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」出片。", BannerKind.Err);
                 break;
             }
         }
@@ -1841,7 +1841,7 @@ public partial class MainWindow : Window
                     // ★ 连续空 body → Core 里已置熔断位，立刻停
                     if (addrFail >= 3 || HongguoService.PlaybackBlocked)
                     {
-                        Log("！播放接口连续空 body，停止本批（不是限流，等待无效）。"
+                        Log("！播放接口连续空 body，停止本批（网关校验收音签名被拒，不是限流）。"
                             + "先看日志判据，急用可改用「提取App缓存」出片。");
                         return (ok, fail, true);
                     }

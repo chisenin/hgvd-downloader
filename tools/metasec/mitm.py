@@ -39,6 +39,7 @@ _leaf_cache: dict[str, tuple[bytes, bytes]] = {}
 _ca_key = None
 _ca_cert = None
 BODY_ALL = False
+RAW_DIR = Path('_ref/metasec/raw')   # --raw：把**未经改动的原始字节**落盘，供逐字节重放
 BODY_KEYS = ('video_model', 'multi_video', 'album_detail', 'bookapi', 'video_detail')
 _rid = itertools.count(1)
 BODY_DIR = Path('_ref/metasec/bodies')
@@ -272,6 +273,14 @@ def do_request(client: socket.socket, addr, host: str, port: int, req: bytes, tl
             dump.append('')
             dump.append(preview(body, hdrs))
 
+    if RAW_DIR is not None and want_body and body:
+        try:
+            RAW_DIR.mkdir(parents=True, exist_ok=True)
+            safe = first.split(' ')[1][:90].replace('/', '_').replace('?', '_').replace('&', '_')
+            (RAW_DIR / f'{rid:04d}-{host}{safe}.bin').write_bytes(req[:len(req) - len(rest)] + body)
+        except Exception as e:
+            log(f'raw dump failed: {e}')
+
     out = ('\r\n'.join([first] + hdrs + ['Connection: close']) + '\r\n\r\n').encode('latin1')
     up = socket.create_connection((host, port), timeout=20)
     if tls:
@@ -315,7 +324,11 @@ def main():
     ap.add_argument('--port', type=int, default=8899)
     ap.add_argument('--bind', default='0.0.0.0')
     ap.add_argument('--body-all', action='store_true')
+    ap.add_argument('--raw', action='store_true', help='把原始请求字节落到 _ref/metasec/raw/')
     args = ap.parse_args()
+    global RAW_DIR
+    if not args.raw:
+        RAW_DIR = None
     BODY_ALL = args.body_all
     ensure_ca()
     log(f'CA subject_hash_old = {subject_hash_old(_ca_cert)}')

@@ -377,7 +377,10 @@ def fetch_preload(
             continue
         payload["_host"] = host
         return payload
-    raise RuntimeError(f"multi_video_model/preload 无响应：{last}")
+    raise RuntimeError(
+        f"multi_video_model/preload 无响应：{last}"
+        "\n★ 2026-11-21 起该端点校验 X-Helios / X-Medusa（与 query+body 绑定），"
+        "空 body 即签名被拒；详见 docs/05 §1.3")
 
 
 def fetch_playback(

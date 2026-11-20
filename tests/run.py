@@ -471,10 +471,49 @@ def test_i_preload_protocol() -> None:
     check("I17 文档记录新接口路径", "multi_video_model/preload" in doc)
 
 
+def test_j_grab() -> None:
+    """J 组：抓流模式的纯函数 + 文档口径。
+
+    ★ 2026-11-21：播放接口开始校验 X-Helios / X-Medusa，宿主机算不出来，
+      于是加了「App 取地址、我们下载」的抓流模式（hgvd/grab.py）。
+      这里守三件事：集名截断、伪 JSON 还原、chunked/gzip 解包。
+    """
+    import gzip as _gzip
+    import json as _json
+
+    from hgvd import grab
+
+    check("J1 集名按句号截断（不留整段简介）",
+          grab._short_title("一觉醒来，全球人类绑定玩家模版，登录进真实修真世界。下一句", "v")
+          == "一觉醒来，全球人类绑定玩家模版，登录进真实修真世界")
+    check("J2 集名为空时退回 vid", grab._short_title("", "7706") == "7706")
+    check("J3 超长无标点集名被截到 32 字",
+          len(grab._short_title("字" * 100, "v")) == 32)
+    check("J4 伪 JSON（单引号）能还原成 dict",
+          grab._as_dict("{'definition': '360p', 'quality': 'normal'}").get("definition") == "360p")
+    check("J5 非法伪 JSON 返回空 dict", grab._as_dict("not a dict") == {})
+
+    body = _json.dumps({"code": 0, "data": {"v": 1}}).encode()
+    chunked = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
+    resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked
+    check("J6 chunked 响应能解出 JSON",
+          (grab._response_json(resp) or {}).get("code") == 0)
+
+    gz = _gzip.compress(body)
+    resp2 = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" + gz
+    check("J7 gzip 响应能解出 JSON",
+          (grab._response_json(resp2) or {}).get("code") == 0)
+
+    doc = open("docs/05-抓包与协议排查.md", encoding="utf-8").read()
+    check("J8 文档记录了 2026-11-21 的强校验判决",
+          "X-Helios" in doc and "X-Medusa" in doc and "2026-11-21" in doc)
+    check("J9 文档记录了抓流链路", "抓流" in doc and "hgvd/grab.py" in doc)
+
+
 def main() -> int:
     for fn in (test_a_utils, test_b_config, test_c_history, test_d_sign,
                test_e_web, test_f_shelf, test_g_drm, test_h_attribution_guard,
-               test_i_preload_protocol):
+               test_i_preload_protocol, test_j_grab):
         try:
             fn()
         except Exception as e:  # noqa: BLE001
