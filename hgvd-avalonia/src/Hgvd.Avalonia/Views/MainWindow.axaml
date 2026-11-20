@@ -4,7 +4,7 @@
         xmlns:vm="using:Hgvd.Avalonia.ViewModels"
         x:Class="Hgvd.Avalonia.Views.MainWindow"
         x:Name="Root"
-        Title="红果视频下载器  v1.1.1"
+        Title="红果视频下载器"
         Width="1180" Height="780" MinWidth="1020" MinHeight="620"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Microsoft YaHei, Segoe UI"
@@ -191,17 +191,27 @@
                            AcceptsReturn="True" TextWrapping="Wrap" Height="86"
                            FontFamily="Consolas, Courier New, monospace" FontSize="12"
                            VerticalContentAlignment="Top" Padding="8,6"
+                           TextChanged="EdLinks_TextChanged"
                            ScrollViewer.VerticalScrollBarVisibility="Auto"
                            Watermark="一行一条：&#10;课名 | https://…/xxx.m3u8&#10;https://…"
                            ToolTip.Tip="支持「课名 | 链接」「课名&#9;链接」「只有链接」；# 开头是注释" />
                 </Border>
-                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,6,0,0">
-                  <TextBlock Grid.Column="0" Text="链接里的 sign 有有效期，过期会 403"
-                             FontSize="10.5" Foreground="{DynamicResource HintBrush}"
-                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" x:Name="BtnAddLinks" Content="加入清单"
+                <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,6,0,0">
+                  <Button Grid.Column="0" x:Name="BtnImport" Content="导入…"
+                          Classes="modern" Padding="8,4" FontSize="12"
+                          Click="BtnImportLinks_Click"
+                          ToolTip.Tip="导入清单文件：.txt / .json（可多选；links.json + names.json 会按 fileId 合并课名）" />
+                  <Button Grid.Column="1" x:Name="BtnAddLinks" Content="加入清单" Margin="6,0,0,0"
                           Classes="primary" Padding="10,4" FontSize="12"
                           Click="BtnAddLinks_Click" />
+                  <TextBlock Grid.Column="2" Text="链接里的 sign 有有效期，过期会 403"
+                             FontSize="10.5" Foreground="{DynamicResource HintBrush}"
+                             Margin="8,0,0,0"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                  <Button Grid.Column="3" x:Name="BtnClearLinks" Content="清空"
+                          Classes="modern" Padding="8,4" FontSize="12" Margin="6,0,0,0"
+                          Click="BtnClearLinks_Click"
+                          ToolTip.Tip="只清空上面的输入框，不动已加入清单的任务" />
                 </Grid>
                 <TextBlock Grid.Row="2" x:Name="LblLinkCount" Text="0 条"
                            FontSize="10.5" Foreground="{DynamicResource HintBrush}"
@@ -218,6 +228,11 @@
                           IsThreeState="True" MinHeight="0" Margin="8,0,0,0"
                           VerticalAlignment="Center" Click="ChkAllCamps_Click"
                           ToolTip.Tip="勾选全部营（会逐个拉课表，比较慢）" />
+                <Button x:Name="BtnRescanCamps" Grid.Column="2" Content="重扫" IsVisible="False"
+                        Classes="modern" Padding="8,3" Margin="8,0,0,0"
+                        HorizontalAlignment="Left"
+                        Click="BtnRescanCamps_Click"
+                        ToolTip.Tip="按磁盘上已有的成品重判状态（≥1MB 且时长对得上才算已存在）" />
                 <Button x:Name="BtnManualToggle" Grid.Column="3" Content="链接…"
                         Classes="modern" Padding="8,3" IsVisible="False"
                         Click="BtnManualToggle_Click"
@@ -235,6 +250,7 @@
             <Grid>
               <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
               </Grid.RowDefinitions>
@@ -245,33 +261,40 @@
                   <TextBlock Text="下载清单 ·" Classes="section" />
                   <ctl:MarqueeControl x:Name="Marquee" Margin="4,0,0,0"
                                       Width="150" ToolTip.Tip="当前正在处理的条目标题" />
-                  <StackPanel Orientation="Horizontal" Margin="10,0,0,0"
-                              VerticalAlignment="Center">
-                    <RadioButton x:Name="RbAll" GroupName="EpView"
-                                 Classes="pill" Content="全部" IsChecked="True"
-                                 Checked="RbView_Checked" />
-                  </StackPanel>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                   <ComboBox x:Name="CmbQuality" Width="140" Margin="3,0,0,0"
                             VerticalAlignment="Center"
                             SelectionChanged="CmbQuality_SelectionChanged" />
-                  <Button x:Name="BtnPause" Content="暂停" Margin="3,0,0,0"
-                          Classes="modern" Click="BtnPause_Click" IsEnabled="False"
-                          IsVisible="False"
-                          ToolTip.Tip="只对兴趣岛任务有效（暂停时保留分片）" />
                   <Button x:Name="BtnRun" Content="下载" Margin="3,0,0,0"
                           Classes="primary" Click="BtnRun_Click"
-                          ToolTip.Tip="有选中行则只下选中的；没选中则下清单里所有待下载的&#10;（左边勾选剧目/营，它们的条目会依次追加到清单里）" />
-                  <Button x:Name="BtnStop" Content="停止" Margin="3,0,0,0"
-                          Classes="modern danger" Click="BtnStop_Click" IsEnabled="False" />
+                          ToolTip.Tip="空闲时 = 开始下载（有选中行只下选中，否则下所有待下载/失败）；&#10;下载中 = 暂停（两源都生效，保留进度与分片）；暂停中 = 继续。" />
+                  <Button x:Name="BtnHistory" Content="历史" Margin="3,0,0,0"
+                          Classes="modern" Click="BtnHistory_Click"
+                          ToolTip.Tip="查看两源的下载历史（最近 500 条，同一成品只留一条）" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
                           Classes="modern" Click="BtnCache_Click"
                           ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;★ 播放接口返回空 body 时，这条路径不经过 video_model，是唯一还能出片的路。" />
                 </StackPanel>
               </Grid>
 
-              <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="8"
+              <!-- 视图筛选：与清单同宽的一行，避免和右侧按钮抢位置 -->
+              <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,7,0,0"
+                          VerticalAlignment="Center" Spacing="2">
+                <RadioButton x:Name="RbAll" GroupName="EpView"
+                             Classes="pill" Content="全部" IsChecked="True"
+                             Checked="RbView_Checked" />
+                <RadioButton x:Name="RbPending" GroupName="EpView"
+                             Classes="pill" Content="待下载" Checked="RbView_Checked" />
+                <RadioButton x:Name="RbRunning" GroupName="EpView"
+                             Classes="pill" Content="下载中" Checked="RbView_Checked" />
+                <RadioButton x:Name="RbDone" GroupName="EpView"
+                             Classes="pill" Content="已完成" Checked="RbView_Checked" />
+                <RadioButton x:Name="RbFailed" GroupName="EpView"
+                             Classes="pill" Content="失败" Checked="RbView_Checked" />
+              </StackPanel>
+
+              <Border Grid.Row="2" Margin="0,8,0,0" CornerRadius="8"
                       Background="White" BorderBrush="{DynamicResource CardBorderBrush}"
                       BorderThickness="1">
                 <Grid>
@@ -282,14 +305,16 @@
 
                   <!-- ★ 表头与数据行用**同样的列定义**，标题列宽度由代码算好同时写进两边 -->
                   <Border Grid.Row="0" Classes="thead" Padding="6,0">
-                    <Grid Height="28" ColumnDefinitions="58,Auto,54,126,74,136">
+                    <Grid Height="28" ColumnDefinitions="58,46,Auto,54,126,72,58,122">
                       <TextBlock Grid.Column="0" Text="状态" Classes="thead" />
-                      <TextBlock x:Name="HdTitle" Grid.Column="1" Text="标题" Classes="thead"
+                      <TextBlock Grid.Column="1" Text="来源" Classes="thead" />
+                      <TextBlock x:Name="HdTitle" Grid.Column="2" Text="标题" Classes="thead"
                                  Margin="0,0,6,0" />
-                      <TextBlock Grid.Column="2" Text="时长" Classes="thead" />
-                      <TextBlock Grid.Column="3" Text="大小" Classes="thead" />
-                      <TextBlock Grid.Column="4" Text="速度" Classes="thead" />
-                      <TextBlock Grid.Column="5" Text="进度" Classes="thead" />
+                      <TextBlock Grid.Column="3" Text="时长" Classes="thead" />
+                      <TextBlock Grid.Column="4" Text="大小" Classes="thead" />
+                      <TextBlock Grid.Column="5" Text="速度" Classes="thead" />
+                      <TextBlock Grid.Column="6" Text="剩余" Classes="thead" />
+                      <TextBlock Grid.Column="7" Text="进度" Classes="thead" />
                     </Grid>
                   </Border>
 
@@ -298,14 +323,34 @@
                            BorderThickness="0" Background="Transparent"
                            SelectionMode="Multiple"
                            DoubleTapped="LstEpisodes_DoubleTapped"
-                           ToolTip.Tip="双击某一行 = 只下这一条（不看勾选、不受筛选影响）"
+                           KeyDown="LstEpisodes_KeyDown"
+                           ToolTip.Tip="双击某一行 = 只下这一条（不看勾选、不受筛选影响）&#10;右键 = 下载 / 重下 / 复制 / 打开 / 移出；Delete 键移出"
                            ScrollViewer.VerticalScrollBarVisibility="Visible">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
                         <Grid>
                           <!-- 正常行 -->
-                          <Grid Height="26" ColumnDefinitions="58,Auto,54,126,74,136"
+                          <Grid Height="26" ColumnDefinitions="58,46,Auto,54,126,72,58,122"
                                 IsVisible="{Binding IsEpisode}">
+                            <Grid.ContextMenu>
+                              <ContextMenu DataContext="{Binding}" Opening="EpMenu_Opening">
+                                <MenuItem Header="下载这一条" Tag="{Binding}"
+                                          Click="MenuDownloadRow_Click" />
+                                <MenuItem Header="重新下载（清缓存）" Tag="{Binding}"
+                                          Click="MenuRetryRow_Click" />
+                                <Separator />
+                                <MenuItem Header="复制链接" Tag="{Binding}"
+                                          IsVisible="{Binding IsXqd}"
+                                          Click="MenuCopyUrlRow_Click" />
+                                <MenuItem Header="复制标题" Tag="{Binding}"
+                                          Click="MenuCopyTitleRow_Click" />
+                                <MenuItem Header="打开所在文件夹" Tag="{Binding}"
+                                          Click="MenuOpenFolderRow_Click" />
+                                <Separator />
+                                <MenuItem Header="移出清单" Tag="{Binding}"
+                                          Click="MenuRemoveRow_Click" />
+                              </ContextMenu>
+                            </Grid.ContextMenu>
                             <Border Grid.Column="0" IsVisible="{Binding ShowPill}"
                                     Background="{Binding StatePillBg}"
                                     BorderBrush="{Binding StatePillBorder}"
@@ -314,18 +359,23 @@
                                     VerticalAlignment="Center">
                               <TextBlock Text="{Binding StateWord}" FontSize="11" />
                             </Border>
-                            <TextBlock Grid.Column="1" Text="{Binding Title}"
+                            <TextBlock Grid.Column="1" Text="{Binding SourceText}"
+                                       FontSize="10.5" Foreground="#8494A8"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Text="{Binding Title}"
                                        Width="{Binding TitleWidth}"
                                        TextTrimming="CharacterEllipsis"
                                        ToolTip.Tip="{Binding Title}"
                                        VerticalAlignment="Center" Margin="0,0,6,0" />
-                            <TextBlock Grid.Column="2" Text="{Binding DurationText}"
+                            <TextBlock Grid.Column="3" Text="{Binding DurationText}"
                                        Foreground="#8494A8" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="3" Text="{Binding SizeText}"
+                            <TextBlock Grid.Column="4" Text="{Binding SizeText}"
                                        Foreground="#8494A8" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="4" Text="{Binding SpeedText}"
+                            <TextBlock Grid.Column="5" Text="{Binding SpeedText}"
                                        Foreground="#8494A8" VerticalAlignment="Center" />
-                            <ctl:ProgressCell Grid.Column="5"
+                            <TextBlock Grid.Column="6" Text="{Binding EtaText}"
+                                       Foreground="#8494A8" VerticalAlignment="Center" />
+                            <ctl:ProgressCell Grid.Column="7"
                                               Percent="{Binding Percent}"
                                               Text="{Binding ProgressText}"
                                               Fill="{Binding ProgressFill}"
@@ -348,7 +398,7 @@
                 </Grid>
               </Border>
 
-              <TextBlock Grid.Row="2" x:Name="LblEpHint" Margin="2,6,0,0"
+              <TextBlock Grid.Row="3" x:Name="LblEpHint" Margin="2,6,0,0"
                          Classes="muted" />
             </Grid>
           </Border>
@@ -376,7 +426,7 @@
               BorderBrush="#E0E5EE" BorderThickness="0,1,0,0">
         <DockPanel Margin="14,0">
           <TextBlock x:Name="LblVersion" DockPanel.Dock="Right" VerticalAlignment="Center"
-                     Text="v1.1.1" Foreground="#7C8AA0" FontSize="11"
+                     Text="v—" Foreground="#7C8AA0" FontSize="11"
                      Margin="12,0,0,0" />
           <TextBlock x:Name="LblStatus" DockPanel.Dock="Left" Text="就绪"
                      VerticalAlignment="Center" Classes="muted" />

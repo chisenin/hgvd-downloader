@@ -2,8 +2,9 @@
 # ★ 发版：打标签并推送 → 触发 GitHub Actions 的 release 工作流
 #
 # 用法：
-#     bash tools/publish_release.sh v1.3.0
-#     bash tools/publish_release.sh v1.0.1
+#     python tools/bump_version.py 1.4.0      # ★ 先升版本（改 build.cmd/build.sh/csproj）
+#     bash tools/publish_release.sh v1.4.0
+#     bash tools/publish_release.sh v1.4.1
 #
 # 前提：仓库已建好（https://github.com/chisenin/hgvd-downloader），
 #       且 origin 指向 git@github.com:chisenin/hgvd-downloader.git
@@ -11,7 +12,7 @@
 #         （界面自检 + 端到端真下载，见下面的门禁）
 #
 # 流程：
-#   0. 门禁：确认最近跑过 verify（IL 裁剪的破坏是静默的，CI 又跑不了这两步）
+#   0. 门禁：版本号三处一致 + 标签对得上（不同步就拒绝）；最近跑过 verify
 #   1. 同步 main
 #   2. 打带注释的标签（版本号 = 标签去掉前缀 v）
 #   3. 推 main + 标签
@@ -22,15 +23,32 @@ set -euo pipefail
 
 TAG="${1:-}"
 if [ -z "$TAG" ]; then
-    echo "用法: bash tools/publish_release.sh v1.3.0" >&2
+    echo "用法: bash tools/publish_release.sh v1.4.0" >&2
     exit 2
 fi
 case "$TAG" in
     v*) ;;
-    *) echo "标签建议带 v 前缀（如 v1.3.0），当前是：$TAG" >&2; exit 2 ;;
+    *) echo "标签建议带 v 前缀（如 v1.4.0），当前是：$TAG" >&2; exit 2 ;;
 esac
 
 cd "$(dirname "$0")/.."
+
+# ══════════════════════════════════════════════════════════════
+#  ★★ 版本门禁：标签必须与仓库版本一致
+#
+#  版本号有三处副本（build.cmd / build.sh / csproj）。只改一处、
+#  或者忘了升版本就打标签，会出现「exe 名是新版、界面显示旧版」
+#  「同一个标签两次构建产物不同」这类无法回溯的问题。
+#  ⇒ 不一致直接拒绝，先跑 python tools/bump_version.py <x.y.z>
+# ══════════════════════════════════════════════════════════════
+echo ">>> 版本门禁"
+if ! python tools/check_version.py "$TAG"; then
+    echo "[拒绝发版] 标签与仓库版本不一致。" >&2
+    echo "           要发新版本：python tools/bump_version.py ${TAG#v}，提交后再发布；" >&2
+    echo "           标签填错了：换一个与仓库版本一致的标签。" >&2
+    exit 4
+fi
+echo
 
 # ══════════════════════════════════════════════════════════════
 #  ★★ 发版门禁：最近 24 小时内必须跑过「界面自检 + 端到端真下载」

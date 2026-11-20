@@ -37,17 +37,28 @@ jobs:
         with:
           python-version: '3.12'
 
+      # ── 0. 版本号必须与标签一致：不一致直接停，别产出无法回溯的包 ──
+      #    ★ 仓库里版本号有三处副本（build.cmd / build.sh / csproj 的 PkgVersion），
+      #      下面的构建又用标签覆盖 PkgVersion —— 只靠标签会让仓库版本悄悄漂移。
+      - name: 校验版本号与标签一致
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python tools/check_version.py "$env:TAG"
+          if ($LASTEXITCODE -ne 0) { throw "版本号与标签不一致，拒绝发布" }
+
       # ── 1. 先跑回归：回归不过就不发版 ──
-      #    ★ 用的是**离线**回归（C# 62 项 + Python 85 项），不发网络请求。
+      #    ★ 用的是**离线**回归（C# 166 项 + Python 107 项），不发网络请求。
       #    界面自检 --uitest 需要真实登录态与收藏夹，CI 上跑不了，故不纳入。
-      - name: C# 离线回归（62 项：签名黄金向量 / 请求头 / 发行版界面 / 命名）
+      - name: C# 离线回归（166 项：签名 / 请求头 / 界面 / 命名 / DRM / 兴趣岛内核）
         shell: pwsh
         run: |
           dotnet restore hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj --configfile .github/nuget.ci.config
           dotnet build   hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug --no-restore
           ./hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe
 
-      - name: Python 离线回归（85 项）
+      - name: Python 离线回归（107 项）
         shell: pwsh
         run: |
           pip install -r requirements.txt
@@ -130,18 +141,69 @@ jobs:
           name: 红果视频下载器 ${{ github.event.inputs.tag || github.ref_name }}
           draft: false
           body: |
+            ## 一个窗口，两个内容源
+
+            红果收藏夹里的剧集、兴趣岛「我的课程」里的课，都能成批导出成通用 MP4。
+            两源**共用同一张下载清单**、同一条队列、同一个日志。
+
             ## 下哪个？
 
-            **推荐：`hgvd-downloader-v*-win-x64.zip`**（目录版）
+            **推荐：`hgvd-downloader-v*-win-x64.zip`（目录版，约 54 MB）**
             - 解压后双击 exe 就能用，不需要装 .NET
             - 启动比单文件版快，也不容易被安全软件误判
             - ⚠️ **必须先「全部解压」再运行**，不要直接在压缩包里双击 exe
 
-            **备选：`hgvd-downloader-v*.exe`**（单文件）
+            **备选：`hgvd-downloader-v*.exe`（单文件，约 58 MB）**
             - 就一个文件，拷到哪都能跑
             - 首次启动会慢几秒（要把内置的 ffmpeg 解压到本机缓存）
 
-            两种形态功能完全一样。系统要求：Windows 10/11 64 位。
+            两种形态功能完全一样。系统要求：Windows 10/11 64 位，零安装
+            （.NET 运行时与 ffmpeg / ffprobe 都已打包在内）。
+
+            ## 三步
+
+            1. 左上角选内容源：**红果视频** / **兴趣岛课程**
+            2. 点「获取授权」—— 启动时不会自动读模拟器，只在这一步读**当前源对应 App** 的登录态
+            3. 左栏勾选剧目 / 营 → 条目追加到右栏清单（可累计）→ 点「下载」
+
+            双击清单某一行 = 只下这一条；下载/暂停/继续共用一个按钮，两源统一（暂停保留连接/分片）。
+
+            清单上方可按状态筛选（全部 / 待下载 / 下载中 / 已完成 / 失败），每行标明来源与剩余时间；
+            右键 = 下载 / 重新下载（清缓存）/ 复制 / 打开文件夹 / 移出清单，`Delete` 同效；
+            右上角「历史」查看两源共用的下载记录。重启后两边的清单都会自动恢复。
+
+            ## 两个源分别能下什么
+
+            | 源 | 能下 | 说明 |
+            |---|---|---|
+            | 红果 · 教学合集 | ✅ 完整正片 | 断点续传 / 已存在跳过 / 成品时长校验 |
+            | 红果 · 短剧 | ⚠️ 能下能解密 | bytevc2 抹掉 SPS/PPS，ffmpeg 解不出画面；批量下载默认跳过 |
+            | 红果 · 图书/听书 | ❌ | 服务端没有视频 |
+            | 兴趣岛 · 正式营 / 体验营 / 公开课 | ✅ | 课表自动发现、现场解析播放地址、HLS 分片并发 + ffmpeg 合成 |
+
+            兜底路径：红果「提取App缓存」（不经过播放接口）；兴趣岛「链接…」手动粘贴课程地址。
+
+            ## 合规
+
+            - 只处理**你自己账号下有权访问与保存**的内容（已购课程 / 已开通的营 / 公开课 / 自己的收藏）
+            - 不提供未购内容的获取能力，不破解 DRM；内容密钥按官方播放器同一套规则在本地解包
+            - **软件本身仅限非商业使用**（PolyForm Noncommercial 1.0.0）：可研究、教学、个人使用，禁止商用
+            - 下载的内容仅供个人学习、备份与离线观看；**不得传播、转售、公开发布或用于商业用途**，看完请及时删除
+            - 登录态与清单只存本机 `%USERPROFILE%\.hgv_tool\`，不上传任何账号信息
+
+            ## 许可与版权
+
+            © 2026 chisenin，按 **PolyForm Noncommercial 1.0.0** 授权：
+            允许个人学习、研究、教学等**非商业**使用（可改、可再分发，须随附许可），
+            **禁止任何商业用途**。许可全文见仓库 `LICENSE`（zip 包内为 `LICENSE.txt`）；
+            严格说它不属于 OSI 开源许可，属源码可用（source-available）。商用请先联系作者。
+
+            内置的 ffmpeg / ffprobe 是第三方独立程序（GPL 构建），版权归 FFmpeg 项目；
+            其余第三方声明见 `NOTICE.md`（zip 包内为 `NOTICE.txt`）。下载内容的版权仍归原作者与平台所有。
+
+            ## 遇到问题
+
+            提 issue 时请带上：下载的附件名、界面右下角版本号、日志面板里的报错文字。
           files: |
             hgvd-avalonia/dist/hgvd-downloader-v*-win-x64.zip
             hgvd-avalonia/dist/hgvd-downloader-v*.exe

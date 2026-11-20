@@ -270,15 +270,15 @@ public static class XqdTests
             q3.Jobs.First(j => j.Title == "课程甲").State == XqdState.Pending,
             q3.Jobs.First(j => j.Title == "课程甲").State);
 
-        // 已存在判定：成品 ≥10KB 才算「已存在」，半截文件不能当成成品
+        // 已存在判定：成品 ≥1MB 才算「已存在」，半截文件不能当成成品
         var jobA = q3.Jobs.First(j => j.Title == "课程甲");
         Directory.CreateDirectory(Path.GetDirectoryName(jobA.OutPath));
-        File.WriteAllBytes(jobA.OutPath, new byte[20 * 1024]);
+        File.WriteAllBytes(jobA.OutPath, new byte[2 * 1024 * 1024]);
         var jobB = q3.Jobs.First(j => j.Title == "课程乙");
         Directory.CreateDirectory(Path.GetDirectoryName(jobB.OutPath));
         File.WriteAllBytes(jobB.OutPath, new byte[1024]);
         int changed = q3.Rescan();
-        Check("成品 ≥10KB → 已存在", jobA.State == XqdState.Exists,
+        Check("成品 ≥1MB → 已存在", jobA.State == XqdState.Exists,
             $"{jobA.State}（变化 {changed} 项）");
         Check("1KB 的半截文件不算已存在", jobB.State == XqdState.Pending, jobB.State);
 

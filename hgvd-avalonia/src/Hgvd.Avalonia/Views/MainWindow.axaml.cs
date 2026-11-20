@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -49,10 +50,18 @@ public partial class MainWindow : Window
     private bool _xqdSource;                 // false = 红果，true = 兴趣岛
     private bool _campsLoaded;
     private volatile bool _campsBusy;
-    private bool _xqdPaused;
+    private readonly PauseGate _hgGate = new();
+    private bool _paused;
     private bool _testMode;                  // --uitest：不碰网络、不写用户清单
     private string _hgQuality = "1080p";
     private string _xqdQuality = "max";
+
+    /// <summary>红果清单的落盘（重启恢复）。兴趣岛用 XqdStore 的 jobs.json。</summary>
+    private QueueStore _hgQueueStore = new();
+    private bool _hgRestored;
+
+    /// <summary>下载历史（两源共用 history.json，与 Python 版同格式）。</summary>
+    private readonly HistoryStore _history = new();
 
     public ObservableCollection<XqdCampRow> CampRows { get; } = new();
     public ObservableCollection<XqdCampRow> FilteredCamps { get; } = new();
@@ -164,9 +173,10 @@ public partial class MainWindow : Window
         BtnRefresh.IsVisible = !xqd;
         BtnRefreshCamps.IsVisible = xqd;
         ChkAllCamps.IsVisible = xqd;
+        BtnRescanCamps.IsVisible = xqd;
         BtnManualToggle.IsVisible = xqd;
         BtnCache.IsVisible = !xqd;      // 提取 App 缓存只对红果有意义
-        BtnPause.IsVisible = xqd;       // 暂停只对兴趣岛队列有效
+        UpdateQueueSummary();
         LblHint.IsVisible = !xqd;
 
         _qualityInit = true;
@@ -249,7 +259,7 @@ public partial class MainWindow : Window
     {
         double avail = LstEpisodes.Bounds.Width;
         if (avail <= 0) return;
-        const double others = 58 + 54 + 126 + 74 + 136;
+        const double others = 58 + 46 + 54 + 126 + 72 + 58 + 122;
         double title = Math.Max(140, avail - others - 20);
         if (Math.Abs(_titleWidth - title) <= 0.5) return;
         _titleWidth = title;
@@ -291,6 +301,9 @@ public partial class MainWindow : Window
         // ★ 2026-11-21 用户要求：启动**不再自动取授权**，只读本机缓存的状态。
         //   要取授权必须点右上角「获取授权」，而且只取当前内容源的那一份。
         SetAuthLabel();
+
+        // ★ 先恢复上次的红果清单（不依赖网络与登录态），再按需刷新收藏夹
+        RestoreHongguoQueueRows();
 
         if (!_svc.LoggedIn)
         {
@@ -334,7 +347,8 @@ public partial class MainWindow : Window
         ShelfRows.Clear();
         _rowMap.Clear();
         ApplyFilter();
-        ClearQueue();       // 清单跟收藏夹同步重建，避免留下已消失的剧
+        // ★ 不再整组清空清单：刷新是「同步收藏夹」，不是「丢弃用户的选择」。
+        //   读完以后按还存在的剧剔除（见 PruneQueueToShelf）。
 
         int titled = 0;
         var sw = Stopwatch.StartNew();
@@ -372,6 +386,7 @@ public partial class MainWindow : Window
                 }
 
             ApplyFilter();
+            PruneQueueToShelf();
             UpdateQueueSummary();
             int dramas = ShelfRows.Count(r => r.IsShortDrama);
             Log($"收藏夹共 {ShelfRows.Count} 项（短剧 {dramas} 部，教学内容 {ShelfRows.Count - dramas} 部）"
@@ -460,26 +475,110 @@ public partial class MainWindow : Window
     // ---------------------------------------------------------- 下载清单
 
     /// <summary>
-    /// 清掉**红果的**清单行（刷新收藏夹时用）。
-    /// ★ 不能整表清空：那张表是两源共用的，兴趣岛的行必须留着。
+    /// 收藏夹刷新完 → 只剔除**已消失**的剧，其余选择保留。
+    /// ★ 以前是 ClearQueue() 整组清空（连用户勾好的 20 集一起丢），
+    ///   合并后兴趣岛那半却会保留 —— 同一张表两种命运。现在两边一致：同步而非清空。
     /// </summary>
-    private void ClearQueue()
+    private void PruneQueueToShelf()
     {
-        var keep = EpisodeRows.Where(r => r.IsXqd).ToList();
-        EpisodeRows.Clear();
-        EpisodeView.Clear();
-        foreach (var r in keep)
+        if (ShelfRows.Count == 0) return;      // 没读到收藏夹就别删东西
+
+        var alive = ShelfRows.Select(s => s.SeriesId).ToHashSet(StringComparer.Ordinal);
+        foreach (string sid in _queueBySeries.Keys.Where(k => !alive.Contains(k)).ToList())
+            RemoveSeriesGroup(sid);
+
+        foreach (var s in ShelfRows)
         {
-            EpisodeRows.Add(r);
-            EpisodeView.Add(r);
+            bool inQueue = _queueBySeries.ContainsKey(s.SeriesId);
+            if (s.IsChecked != inQueue) s.IsChecked = inQueue;
+
+            // 剧名可能被服务端改过 → 同步分组标题（就地替换，不跳滚动）
+            if (inQueue && _queueHeaders.TryGetValue(s.SeriesId, out var h)
+                && h.SeriesTitle != s.Display)
+                RefreshGroupHeader(s.SeriesId, s.Display, _queueBySeries[s.SeriesId].Count);
         }
 
-        _queueBySeries.Clear();
-        _epCache.Clear();
-        foreach (string k in _queueHeaders.Keys.Where(k => !k.StartsWith("xqd:", StringComparison.Ordinal)).ToList())
-            _queueHeaders.Remove(k);
+        PersistHongguoQueue();
+    }
 
-        Marquee.Text = "";
+    /// <summary>把红果清单落盘（测试模式不碰用户文件）。</summary>
+    private void PersistHongguoQueue()
+    {
+        if (_testMode) return;
+        var groups = new List<QueueGroup>();
+        foreach (var kv in _queueBySeries)
+        {
+            var rows = kv.Value.Where(r => r.IsEpisode).ToList();
+            if (rows.Count == 0) continue;
+            var g = new QueueGroup
+            {
+                SeriesId = kv.Key,
+                SeriesTitle = rows[0].SeriesTitle,
+                ShortDrama = _rowMap.TryGetValue(kv.Key, out var s) && s.IsShortDrama,
+            };
+            foreach (var r in rows)
+                g.Episodes.Add(new QueueEpisode
+                {
+                    Vid = r.Vid,
+                    Index = r.Index,
+                    Title = r.Title,
+                    Duration = r.Duration,
+                    VideoIdType = r.VideoIdType,
+                });
+            groups.Add(g);
+        }
+        _hgQueueStore.Save(groups);
+    }
+
+    /// <summary>把上次的红果清单重建到右栏（不联网、不依赖登录态）。</summary>
+    private void RestoreHongguoQueueRows(bool force = false)
+    {
+        if (_hgRestored) return;
+        _hgRestored = true;
+        if (_testMode && !force) return;
+
+        var groups = _hgQueueStore.Load();
+        if (groups.Count == 0) return;
+
+        int total = 0;
+        foreach (var g in groups)
+        {
+            if (_queueBySeries.ContainsKey(g.SeriesId)) continue;
+            string title = string.IsNullOrEmpty(g.SeriesTitle) ? g.SeriesId : g.SeriesTitle;
+
+            var rows = new List<EpisodeRow>();
+            foreach (var e in g.Episodes)
+            {
+                var ep = new Core.Api.Episode
+                {
+                    Vid = e.Vid,
+                    Index = e.Index,
+                    Title = e.Title,
+                    Duration = e.Duration,
+                    SeriesId = g.SeriesId,
+                    SeriesTitle = title,
+                    VideoIdType = e.VideoIdType,
+                };
+                _epCache[ep.Vid] = ep;
+                var r = new EpisodeRow(ep) { TitleWidth = _titleWidth };
+                r.PropertyChanged += EpisodeRow_PropertyChanged;
+                rows.Add(r);
+            }
+            if (rows.Count == 0) continue;
+
+            var header = EpisodeRow.Header(g.SeriesId, title, rows.Count);
+            header.TitleWidth = _titleWidth;
+            _queueHeaders[g.SeriesId] = header;
+            _queueBySeries[g.SeriesId] = rows;
+
+            EpisodeRows.Add(header);
+            EpisodeView.Add(header);
+            foreach (var r in rows) { EpisodeRows.Add(r); EpisodeView.Add(r); }
+            total += rows.Count;
+        }
+
+        Log($"红果：恢复上次清单 {total} 集（{groups.Count} 部）");
+        ApplyEpView();
         UpdateQueueSummary();
     }
 
@@ -523,6 +622,8 @@ public partial class MainWindow : Window
             if (eps.Count > 0) row.EpisodeCnt = eps.Count;
             Marquee.Text = eps.Count > 0 ? $"{row.Display} — {eps[0].Title}" : row.Display;
             Log($"「{row.Display}」{eps.Count} 集已加入下载清单（当前 {_queueBySeries.Count} 部）");
+            PersistHongguoQueue();
+            ApplyEpView();
             UpdateQueueSummary();
             LblStatus.Text = "就绪";
         }
@@ -540,8 +641,14 @@ public partial class MainWindow : Window
     private void RemoveSeriesFromQueue(ShelfRow row)
     {
         if (row is null) return;
-        string sid = row.SeriesId;
+        RemoveSeriesGroup(row.SeriesId);
+    }
+
+    /// <summary>按 series_id 移除整组（不依赖左栏行，刷新剔除时也能用）。</summary>
+    private void RemoveSeriesGroup(string sid)
+    {
         if (!_queueBySeries.TryGetValue(sid, out var rows)) return;
+        string title = rows.Count > 0 ? rows[0].SeriesTitle : sid;
 
         foreach (var r in rows)
         {
@@ -549,14 +656,10 @@ public partial class MainWindow : Window
             EpisodeView.Remove(r);
             _epCache.Remove(r.Vid);
         }
-        if (_queueHeaders.TryGetValue(sid, out var header))
-        {
-            EpisodeRows.Remove(header);
-            EpisodeView.Remove(header);
-            _queueHeaders.Remove(sid);
-        }
+        RemoveHeader(sid);
         _queueBySeries.Remove(sid);
-        Log($"「{row.Display}」已从下载清单移出（当前 {_queueBySeries.Count} 部）");
+        Log($"「{title}」已从下载清单移出（当前 {_queueBySeries.Count} 部）");
+        PersistHongguoQueue();
         UpdateQueueSummary();
     }
 
@@ -580,6 +683,35 @@ public partial class MainWindow : Window
         _xqd = new XqdQueue(new XqdOptions(), new XqdStore(root));
         WireXqd();
         _xqdCookie = "";
+    }
+
+    /// <summary>
+    /// --uitest：在 Show 之前就进测试模式 —— 不恢复、不写入用户真实的清单与历史。
+    /// ★ 必须在 StartupAsync（Opened 事件）之前调用，否则会先把用户清单恢复进来。
+    /// </summary>
+    internal void MarkUiTest()
+    {
+        _testMode = true;
+        _hgRestored = true;
+        _xqdRestored = true;
+        _hgQueueStore = new QueueStore(
+            Path.Combine(Path.GetTempPath(), "hgvd_queue_uitest", "queue.json"));
+    }
+
+    /// <summary>--uitest：清掉现有红果行后，从临时 queue.json 真走一次恢复。</summary>
+    internal void ReloadHongguoQueueForTest()
+    {
+        foreach (string sid in _queueBySeries.Keys.ToList()) RemoveSeriesGroup(sid);
+        _hgRestored = false;
+        RestoreHongguoQueueRows(force: true);
+    }
+
+    /// <summary>给 --uitest 用：红果清单的存储换到临时目录，不碰用户文件。</summary>
+    internal void UseHongguoQueueStoreForTest(string path)
+    {
+        _testMode = true;
+        _hgRestored = false;
+        _hgQueueStore = new QueueStore(path);
     }
 
     /// <summary>首次切到兴趣岛时拉营列表（没授权就只提示，不偷偷去读模拟器）。</summary>
@@ -676,7 +808,9 @@ public partial class MainWindow : Window
             var header = EpisodeRow.Header(key, title, rows.Count);
             header.TitleWidth = _titleWidth;
             _queueHeaders[key] = header;
-            _queueByCamp[camp] = rows;
+            // ★ 手动链接统一用 "__links" 作 key（新增与恢复必须一致，
+            //   否则删单条时找不到组、标题计数不更新）
+            _queueByCamp[camp.Length > 0 ? camp : "__links"] = rows;
 
             EpisodeRows.Add(header);
             EpisodeView.Add(header);
@@ -692,6 +826,7 @@ public partial class MainWindow : Window
             r.IsChecked = _queueByCamp.ContainsKey(r.Name);
 
         Log($"兴趣岛：恢复上次清单 {jobs.Count} 节（{_queueByCamp.Count} 组）");
+        ApplyEpView();
         UpdateQueueSummary();
     }
 
@@ -786,6 +921,7 @@ public partial class MainWindow : Window
 
             Marquee.Text = rows.Count > 0 ? rows[0].Title : row.Name;
             Log($"「{row.Name}」{rows.Count} 节已加入下载清单（新加 {added} 节）");
+            ApplyEpView();
             UpdateQueueSummary();
             LblStatus.Text = "就绪";
         }
@@ -829,6 +965,202 @@ public partial class MainWindow : Window
         ChkAllCamps.IsChecked = n == 0 || k == 0 ? false : (k >= n ? true : null);
     }
 
+    // ---------------------------------------------------------- 单行移出
+    //
+    // ★ 为什么必须有：兴趣岛原来靠右键「移出清单」删单条；合并进共用表后右键没了，
+    //   而手动链接任务没有营/剧的勾选框 —— 粘错一条就再也删不掉（还会写进 jobs.json）。
+    //   现在右键与 Delete 都走同一个入口。
+
+    private void MenuRemoveRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row != null) RemoveRow(row);
+    }
+
+    private EpisodeRow _menuRow;
+
+    /// <summary>右键菜单打开时记住来源行（ContextMenu 不在可视树里，DataContext 未必可靠）。</summary>
+    private void EpMenu_Opening(object sender, CancelEventArgs e)
+    {
+        var cm = sender as ContextMenu;
+        _menuRow = cm?.DataContext as EpisodeRow;
+        if (_menuRow == null && cm?.PlacementTarget is Control target)
+            _menuRow = target.DataContext as EpisodeRow;
+    }
+
+    /// <summary>右键菜单的来源行。Tag / DataContext / 打开时记录的行，三个都试。</summary>
+    private EpisodeRow RowFromMenu(object sender)
+        => (sender as MenuItem)?.Tag as EpisodeRow
+           ?? (sender as MenuItem)?.DataContext as EpisodeRow
+           ?? _menuRow;
+
+    private async void MenuDownloadRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row != null) await DownloadOneAsync(row);
+    }
+
+    private void MenuRetryRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row == null) return;
+
+        if (row.IsXqd && row.Xqd != null)
+        {
+            _xqd.Retry(row.Xqd);          // 清分片 + 重置 + 落盘
+            row.SyncFromXqd();
+            Log($"「{row.Xqd.Title}」已清缓存并重置为待下载");
+            UpdateQueueSummary();
+            return;
+        }
+
+        if (!_epCache.TryGetValue(row.Vid, out var ep))
+        {
+            Log("！这一条还没拿到播放信息，无法清缓存");
+            return;
+        }
+        try
+        {
+            string part = _svc.BuildOutPath(ep) + ".part";
+            if (File.Exists(part)) File.Delete(part);
+        }
+        catch (Exception ex)
+        {
+            Log("！清缓存失败：" + ex.Message);
+            return;
+        }
+        row.State = "待下载";
+        row.Down = 0;
+        row.Total = 0;
+        Log($"「{row.Title}」已清临时文件；完整成品仍会按「已存在」跳过，要重下请先删成品");
+        UpdateQueueSummary();
+    }
+
+    private async void MenuCopyUrlRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row == null) return;
+        string url = row.Xqd?.Url ?? "";
+        if (url.Length == 0)
+        {
+            Log("！这一条没有现成链接（课表任务的地址在下载时才现场解析）");
+            return;
+        }
+        var clip = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clip != null) await clip.SetTextAsync(url);
+        Log("链接已复制");
+    }
+
+    private async void MenuCopyTitleRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row == null) return;
+        var clip = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clip != null) await clip.SetTextAsync(row.Title ?? "");
+        Log("标题已复制");
+    }
+
+    private void MenuOpenFolderRow_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowFromMenu(sender);
+        if (row == null) return;
+        try
+        {
+            string path = row.IsXqd
+                ? row.Xqd?.OutPath ?? ""
+                : (_epCache.TryGetValue(row.Vid, out var ep) ? _svc.BuildOutPath(ep) : "");
+            if (path.Length == 0)
+            {
+                Log("！这一条还没有成品路径");
+                return;
+            }
+            if (File.Exists(path))
+                Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"")
+                { UseShellExecute = true });
+            else
+            {
+                string dir = Path.GetDirectoryName(path);
+                if (string.IsNullOrEmpty(dir)) return;
+                Directory.CreateDirectory(dir);
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dir + "\"")
+                { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex) { Log("！打开文件夹失败：" + ex.Message); }
+    }
+
+    private void LstEpisodes_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete) return;
+        var rows = LstEpisodes.SelectedItems?.Cast<EpisodeRow>()
+            .Where(r => r.IsEpisode).ToList() ?? new List<EpisodeRow>();
+        if (rows.Count == 0) return;
+        foreach (var r in rows) RemoveRow(r);
+        LstEpisodes.Selection.Clear();
+        e.Handled = true;
+    }
+
+    private static string CampKey(string camp) => "xqd:" + (camp.Length > 0 ? camp : "__links");
+    private static string CampTitle(string camp) => camp.Length > 0 ? camp : "手动链接";
+
+    /// <summary>把某一行从共用清单里移出；组空了就把标题行也删掉。</summary>
+    internal bool RemoveRow(EpisodeRow row)
+    {
+        if (row == null || row.IsGroupHeader) return false;
+
+        if (row.IsXqd)
+        {
+            string camp = row.Xqd?.Camp ?? "";
+            string campKey = camp.Length > 0 ? camp : "__links";
+            if (row.Xqd != null) _xqd.Remove(row.Xqd);      // 队列里删掉并落盘
+
+            if (_queueByCamp.TryGetValue(campKey, out var rows))
+            {
+                rows.Remove(row);
+                if (rows.Count == 0)
+                {
+                    _queueByCamp.Remove(campKey);
+                    RemoveHeader(CampKey(camp));
+                    var campRow = CampRows.FirstOrDefault(c => c.Name == camp);
+                    if (campRow != null) campRow.IsChecked = false;
+                    UpdateCampCheckState();
+                }
+                else RefreshGroupHeader(CampKey(camp), CampTitle(camp), rows.Count);
+            }
+        }
+        else
+        {
+            string sid = row.SeriesId;
+            if (_queueBySeries.TryGetValue(sid, out var rows))
+            {
+                rows.Remove(row);
+                _epCache.Remove(row.Vid);
+                if (rows.Count == 0)
+                {
+                    _queueBySeries.Remove(sid);
+                    RemoveHeader(sid);
+                    if (_rowMap.TryGetValue(sid, out var shelf)) shelf.IsChecked = false;
+                }
+                else RefreshGroupHeader(sid, row.SeriesTitle, rows.Count);
+            }
+        }
+
+        EpisodeRows.Remove(row);
+        EpisodeView.Remove(row);
+        PersistHongguoQueue();
+        Log($"已移出清单：{row.Title}（磁盘上的成品不动）");
+        UpdateQueueSummary();
+        return true;
+    }
+
+    private void RemoveHeader(string key)
+    {
+        if (!_queueHeaders.TryGetValue(key, out var header)) return;
+        EpisodeRows.Remove(header);
+        EpisodeView.Remove(header);
+        _queueHeaders.Remove(key);
+    }
+
     private void ChkAllCamps_Click(object sender, RoutedEventArgs e)
     {
         bool want = ChkAllCamps.IsChecked == true;
@@ -853,6 +1185,21 @@ public partial class MainWindow : Window
         await LoadCampsAsync();
     }
 
+    /// <summary>按磁盘上的成品重判兴趣岛任务状态（红果侧由下载时的 SkipExisting 判定）。</summary>
+    private void BtnRescanCamps_Click(object sender, RoutedEventArgs e)
+    {
+        if (_xqdCookie.Length == 0)
+        {
+            ShowBanner("兴趣岛：先点右上角「获取授权」。", BannerKind.Info);
+            return;
+        }
+        int changed = _xqd.Rescan();
+        foreach (var r in EpisodeRows.Where(r => r.IsXqd).ToList()) r.SyncFromXqd();
+        Log($"重新扫描：{changed} 节状态有变化");
+        ApplyEpView();
+        UpdateQueueSummary();
+    }
+
     private void BtnManualToggle_Click(object sender, RoutedEventArgs e)
     {
         ManualPanel.IsVisible = !ManualPanel.IsVisible;
@@ -870,6 +1217,76 @@ public partial class MainWindow : Window
             return;
         }
 
+        AddXqdLinkItems(items, "手动链接");
+        EdLinks.Text = "";
+        LblLinkCount.Text = "0 条";
+    }
+
+    private void EdLinks_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (LblLinkCount == null) return;
+        int n = LinkParser.Parse(EdLinks.Text ?? "").Count;
+        LblLinkCount.Text = $"{n} 条";
+    }
+
+    private void BtnClearLinks_Click(object sender, RoutedEventArgs e)
+    {
+        EdLinks.Text = "";
+        LblLinkCount.Text = "0 条";
+    }
+
+    private async void BtnImportLinks_Click(object sender, RoutedEventArgs e)
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.StorageProvider == null) return;
+
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "导入课程清单（可多选：links.json + names.json 会自动合并）",
+            AllowMultiple = true,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("清单文件 (*.txt;*.json;*.m3u8;*.csv)")
+                {
+                    Patterns = new[] { "*.txt", "*.json", "*.m3u8", "*.csv" },
+                },
+                FilePickerFileTypes.All,
+            },
+        });
+        if (files == null || files.Count == 0) return;
+
+        var sources = new List<List<LinkItem>>();
+        foreach (var f in files)
+        {
+            try
+            {
+                await using var stream = await f.OpenReadAsync();
+                using var reader = new StreamReader(stream, Encoding.UTF8, true);
+                string text = await reader.ReadToEndAsync();
+                var errors = new List<string>();
+                var list = LinkParser.Parse(text, errors);
+                sources.Add(list);
+                Log($"读入 {f.Name}：{list.Count} 条"
+                    + (errors.Count > 0 ? $"，{errors.Count} 行无法识别" : ""));
+            }
+            catch (Exception ex)
+            {
+                Log($"！读取 {f.Name} 失败：{ex.Message}");
+            }
+        }
+
+        var merged = LinkParser.Merge(sources);
+        if (merged.Count == 0)
+        {
+            ShowBanner("这些文件里没有可用的链接。", BannerKind.Info);
+            return;
+        }
+        AddXqdLinkItems(merged, "导入清单");
+    }
+
+    /// <summary>把解析好的链接加入兴趣岛队列，并同步到共用清单（去重由 XqdQueue.Add 负责）。</summary>
+    private void AddXqdLinkItems(List<LinkItem> items, string action)
+    {
         var before = _xqd.Jobs.Select(j => j.Id).ToHashSet(StringComparer.Ordinal);
         int added = _xqd.Add(items);
         var newJobs = _xqd.Jobs.Where(j => !before.Contains(j.Id)).ToList();
@@ -899,9 +1316,8 @@ public partial class MainWindow : Window
             RefreshGroupHeader(key, "手动链接", rows.Count);
         }
 
-        EdLinks.Text = "";
-        LblLinkCount.Text = "0 条";
-        Log($"手动链接：加入 {added} 节（解析 {items.Count} 条）");
+        Log($"{action}：加入 {added} 节（解析 {items.Count} 条）");
+        ApplyEpView();
         UpdateQueueSummary();
     }
 
@@ -924,7 +1340,11 @@ public partial class MainWindow : Window
     {
         var row = EpisodeRows.FirstOrDefault(r => ReferenceEquals(r.Xqd, job));
         if (row == null) return;
+        string prev = row.State;
         row.SyncFromXqd();
+        if (job.State == XqdState.Done && prev != XqdState.Done)
+            RecordHistory("兴趣岛", job.Camp, job.Title, job.CampId, job.TopicId,
+                          job.OutPath, job.Size, job.Duration, "已完成");
         if (XqdState.IsRunning(job.State) || job.State == XqdState.Paused)
             Marquee.Text = job.Display;
         UpdateQueueSummary();
@@ -954,7 +1374,7 @@ public partial class MainWindow : Window
     private void EpisodeRow_PropertyChanged(object sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(EpisodeRow.State)) return;
-        if (_epViewTag == "all") return;
+        if (_epViewTag == EpViewFilter.All) return;
         ApplyEpView();
     }
 
@@ -994,17 +1414,39 @@ public partial class MainWindow : Window
     }
 
     private static bool MatchEpView(EpisodeRow r, string tag)
-    {
-        return tag switch
-        {
-            "pending" => r.State == "待下载",
-            "done" => r.State == "已完成",
-            "failed" => r.State == "失败",
-            _ => true,
-        };
-    }
+        => EpViewFilter.Match(r.State, tag);
 
     // ---------------------------------------------------------- 下载
+
+    private void BtnHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new HistoryWindow(_history.Load());
+        _ = win.ShowDialog(this);
+    }
+
+    /// <summary>记一条下载历史（--uitest 的假下载不写用户文件）。</summary>
+    private void RecordHistory(string source, string title, string episode,
+                               string seriesId, string vid, string path,
+                               long size, double duration, string state)
+    {
+        if (_testMode || string.IsNullOrEmpty(path)) return;
+        try
+        {
+            _history.Add(new HistoryEntry
+            {
+                Source = source,
+                Title = title ?? "",
+                Episode = episode ?? "",
+                SeriesId = seriesId ?? "",
+                Vid = vid ?? "",
+                Path = path,
+                Size = size,
+                Duration = duration,
+                State = state,
+            });
+        }
+        catch { }
+    }
 
     private async void BtnCache_Click(object sender, RoutedEventArgs e)
     {
@@ -1047,7 +1489,9 @@ public partial class MainWindow : Window
 
     private async void BtnRun_Click(object sender, RoutedEventArgs e)
     {
-        if (_downloading) return;   // 下载中重复点会打乱状态，直接忽略
+        // ★ 一个按钮三态：空闲=下载，运行中=暂停，暂停中=继续。
+        if (_downloading) { TogglePause(); return; }
+
         var queued = EpisodeRows.Where(r => r.IsEpisode).ToList();
         if (queued.Count == 0)
         {
@@ -1079,19 +1523,24 @@ public partial class MainWindow : Window
             return;
         }
 
+        await RunBatchAsync(targets);
+    }
+
+    /// <summary>跑一批（下载按钮与自检共用）。</summary>
+    private async Task RunBatchAsync(List<EpisodeRow> targets)
+    {
         // ★ 下载前再强制应用一次目录 —— 即使用户没点别处、也没回车
         ApplyOutDir();
-        // ★ 上次点过「停止」的话令牌已取消，换一个新的，否则这一批会立刻被判为取消
+        // ★ 上次被取消过的话令牌已失效，换一个新的，否则这一批会立刻被判为取消
         if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
 
         _stopRequested = false;
-        _downloading = true;
-        BtnRun.IsEnabled = false;
-        BtnStop.IsEnabled = true;
+        _paused = false;
+        _hgGate.Resume();
+        _xqd.SetPaused(false);
+        SetRunningUi(true);
         var res = await DownloadRowsAsync(targets);
-        _downloading = false;
-        BtnRun.IsEnabled = true;
-        BtnStop.IsEnabled = false;
+        SetRunningUi(false);
         LblStatus.Text = "就绪";
         UpdateQueueSummary();
         if (res.Aborted)
@@ -1099,6 +1548,29 @@ public partial class MainWindow : Window
                      + "\n★ 这不是限流，等再久也不会自己恢复；先看日志里的判据，"
                      + "急用可改用「提取App缓存」。", BannerKind.Err);
         Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
+    }
+
+    /// <summary>统一的运行态 UI：下载 ↔ 暂停 ↔ 继续（两源同一个按钮）。</summary>
+    private void SetRunningUi(bool running)
+    {
+        _downloading = running;
+        BtnRun.IsEnabled = true;          // 运行中也要能点，否则没法暂停
+        BtnRun.Content = running ? (_paused ? "继续" : "暂停") : "下载";
+        if (running) return;
+        _paused = false;
+        _hgGate.Resume();
+        _xqd.SetPaused(false);
+    }
+
+    /// <summary>一个按钮管两源：红果走 PauseGate（保留连接），兴趣岛走 XqdQueue 的暂停。</summary>
+    private void TogglePause()
+    {
+        _paused = !_paused;
+        if (_paused) _hgGate.Pause(); else _hgGate.Resume();
+        _xqd.SetPaused(_paused);
+        BtnRun.Content = _paused ? "继续" : "暂停";
+        LblStatus.Text = _paused ? "已暂停（进度与分片保留）" : "下载中";
+        Log(_paused ? "已暂停（两源同时生效；进度/分片保留）" : "已继续");
     }
 
     /// <summary>
@@ -1145,9 +1617,10 @@ public partial class MainWindow : Window
         ApplyOutDir();      // 与点「下载」一致：文本框里改的目录立即生效
         if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
         _stopRequested = false;
-        _downloading = true;
-        BtnRun.IsEnabled = false;
-        BtnStop.IsEnabled = true;
+        _paused = false;
+        _hgGate.Resume();
+        _xqd.SetPaused(false);
+        SetRunningUi(true);
         LblStatus.Text = $"单独下载第 {row.Index} 集…";
         Log($"▶ 双击单集：第 {row.Index} 集");
         try
@@ -1161,9 +1634,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _downloading = false;
-            BtnRun.IsEnabled = true;
-            BtnStop.IsEnabled = false;
+            SetRunningUi(false);
             UpdateQueueSummary();
         }
     }
@@ -1174,9 +1645,10 @@ public partial class MainWindow : Window
         ApplyOutDir();
         if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
         _stopRequested = false;
-        _downloading = true;
-        BtnRun.IsEnabled = false;
-        BtnStop.IsEnabled = true;
+        _paused = false;
+        _hgGate.Resume();
+        _xqd.SetPaused(false);
+        SetRunningUi(true);
         LblStatus.Text = $"单独下载：{row.Title}";
         Log($"▶ 双击单条：{row.Title}");
         try
@@ -1190,9 +1662,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _downloading = false;
-            BtnRun.IsEnabled = true;
-            BtnStop.IsEnabled = false;
+            SetRunningUi(false);
             UpdateQueueSummary();
         }
     }
@@ -1304,6 +1774,7 @@ public partial class MainWindow : Window
         foreach (var row in targets)
         {
             if (_stopRequested) break;
+            await _hgGate.WaitAsync(_cts.Token);             // 暂停时在两集之间也停住
             if (row.IsGroupHeader) continue;                 // 分组标题不是真实分集
             if (!_epCache.TryGetValue(row.Vid, out var ep)) continue;
 
@@ -1339,7 +1810,7 @@ public partial class MainWindow : Window
             {
                 var res = DownloadHook != null
                     ? await DownloadHook(ep, GetQuality(), cb, _cts.Token)
-                    : await _svc.DownloadEpisodeAsync(ep, GetQuality(), cb, _cts.Token);
+                    : await _svc.DownloadEpisodeAsync(ep, GetQuality(), cb, _cts.Token, _hgGate);
                 if (res.Ok)
                 {
                     ok++;
@@ -1353,6 +1824,9 @@ public partial class MainWindow : Window
                     string tag = res.Skipped ? "已存在" : "完成";
                     Log($"✓ {series} [{row.Index}] {tag} "
                         + $"{Util.FmtSize(res.Size)} {Util.FmtDuration(res.Duration)}");
+                    RecordHistory("红果", series, row.Title, row.SeriesId, row.Vid,
+                                  res.OutPath, res.Size, res.Duration,
+                                  res.Skipped ? "已存在" : "已完成");
                 }
                 else
                 {
@@ -1386,6 +1860,7 @@ public partial class MainWindow : Window
         // 兴趣岛的条目排在红果之后跑：它们要先解析播放地址，慢一些
         if (xqdTargets.Count > 0 && !_stopRequested)
         {
+            await _hgGate.WaitAsync(_cts.Token);             // 暂停中先别切到兴趣岛阶段
             var (xok, xfail) = await DownloadXqdRowsAsync(xqdTargets);
             ok += xok;
             fail += xfail;
@@ -1423,9 +1898,8 @@ public partial class MainWindow : Window
         _xqd.Rescan();
         foreach (var r in rows) r.SyncFromXqd();
 
-        BtnPause.IsEnabled = true;
-        BtnPause.Content = "暂停";
-        _xqdPaused = false;
+        // 统一暂停态：进入兴趣岛阶段时把当前 _paused 应用给队列
+        _xqd.SetPaused(_paused);
         try
         {
             var (ok, fail, skip) = await _xqd.RunAsync(jobs, _cts.Token);
@@ -1433,8 +1907,6 @@ public partial class MainWindow : Window
         }
         finally
         {
-            BtnPause.IsEnabled = false;
-            BtnPause.Content = "暂停";
             foreach (var r in rows) r.SyncFromXqd();
         }
     }
@@ -1449,27 +1921,6 @@ public partial class MainWindow : Window
 
     /// <summary>正在下载（用来禁掉「批量下载」按钮，避免重复点）。</summary>
     private bool _downloading;
-
-    private void BtnStop_Click(object sender, RoutedEventArgs e)
-    {
-        _stopRequested = true;
-        try { _cts.Cancel(); } catch { }
-        _xqd.Cancel();                 // 兴趣岛：正在下的回到「待下载」，分片保留
-        _xqd.SetPaused(false);
-        Log("已请求停止（兴趣岛已下的分片会保留，下次自动续传）");
-        BtnStop.IsEnabled = false;
-        BtnPause.IsEnabled = false;
-    }
-
-    /// <summary>暂停 / 继续（只对兴趣岛队列有效）。</summary>
-    private void BtnPause_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_xqd.Running) return;
-        _xqdPaused = !_xqdPaused;
-        _xqd.SetPaused(_xqdPaused);
-        BtnPause.Content = _xqdPaused ? "继续" : "暂停";
-        LblStatus.Text = _xqdPaused ? "已暂停" : "下载中";
-    }
 
     private string GetQuality()
     {
@@ -1529,8 +1980,14 @@ public partial class MainWindow : Window
     private void RbView_Checked(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded) return;
-        // ★ 目前界面上只保留「全部」；筛选逻辑留着，加回来很快。
-        _epViewTag = sender == RbAll ? "all" : "all";
+        _epViewTag = sender switch
+        {
+            RadioButton rb when ReferenceEquals(rb, RbPending) => EpViewFilter.Pending,
+            RadioButton rb when ReferenceEquals(rb, RbRunning) => EpViewFilter.Running,
+            RadioButton rb when ReferenceEquals(rb, RbDone) => EpViewFilter.Done,
+            RadioButton rb when ReferenceEquals(rb, RbFailed) => EpViewFilter.Failed,
+            _ => EpViewFilter.All,
+        };
         ApplyEpView();
     }
 
@@ -1627,6 +2084,28 @@ public partial class MainWindow : Window
                 }
             }
 
+            // ★ 模拟器在、但没开或 App 没登录 → 边等边取（与红果同一套等待窗）
+            if (!res.Ok)
+            {
+                var insts = TryListMumuInstances();
+                if (insts.Count > 0)
+                {
+                    Say("等待兴趣岛登录（打开模拟器里的兴趣岛并确认已登录）…");
+                    var dlg = new WaitAuthWindow(
+                        "等待兴趣岛登录",
+                        "还没拿到兴趣岛授权 —— 请打开安卓机里的兴趣岛并确认已登录",
+                        "1. 在 MuMu 里启动装了兴趣岛的安卓机（多开时任一台都行）\n"
+                        + "2. 打开「兴趣岛」，确认已经登录（能看到「我的课程」）\n"
+                        + "3. 回到这里等几秒，读到登录态会自动继续",
+                        insts,
+                        "等待超时。可以先启动安卓机、在兴趣岛里登录，然后再点一次「获取授权」。",
+                        (say, ct) => WaitXqdAuthAsync(say, ct));
+                    await dlg.ShowDialog(this);
+                    if (dlg.FoundIndex >= 0)
+                        res = await XqdAuth.AcquireAsync(Say, force: true, CancellationToken.None);
+                }
+            }
+
             if (!res.Ok)
             {
                 Log("✗ " + res.Message);
@@ -1652,6 +2131,44 @@ public partial class MainWindow : Window
             ShowBanner("获取兴趣岛授权失败：" + ex.Message, BannerKind.Err);
         }
         finally { LblStatus.Text = "就绪"; }
+    }
+
+    private static List<Core.Auth.MumuAuth.Instance> TryListMumuInstances()
+    {
+        try
+        {
+            string mumu = Core.Auth.MumuAuth.FindMumu();
+            return Core.Auth.MumuAuth.ListInstances(mumu).ToList();
+        }
+        catch { return new List<Core.Auth.MumuAuth.Instance>(); }
+    }
+
+    /// <summary>兴趣岛侧的「边等边取」：每 3 秒读一次，最多 180 秒。</summary>
+    private static async Task<int> WaitXqdAuthAsync(Action<string> say, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(180);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            bool anyRunning = TryListMumuInstances().Any(i => i.Started);
+            if (!anyRunning)
+            {
+                say("没检测到正在运行的安卓机，3 秒后再看…");
+                await Task.Delay(3000, ct);
+                continue;
+            }
+
+            say("读取 MuMu 里的兴趣岛登录态…");
+            var res = await XqdAuth.AcquireAsync(null, force: true, ct);
+            if (res.Ok) return 0;
+
+            string first = (res.Message ?? "").Split('\n')[0];
+            if (first.Length > 60) first = first.Substring(0, 60) + "…";
+            say(first + "　3 秒后再试…");
+            await Task.Delay(3000, ct);
+        }
+        return -1;
     }
 
     private async void BtnLogin_Click(object sender, RoutedEventArgs e)
@@ -1706,7 +2223,7 @@ public partial class MainWindow : Window
 
         if (dlg.FoundIndex < 0)
         {
-            ShowBanner("没等到授权：请先启动安卓机并在红果里确认已登录，再点「重新授权」。",
+            ShowBanner("没等到授权：请先启动安卓机并在红果里确认已登录，再点「获取授权」。",
                        BannerKind.Err);
             return;
         }

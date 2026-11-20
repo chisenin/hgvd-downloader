@@ -42,7 +42,7 @@ export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
 OUT="dist"
-VER="1.3.0"
+VER="1.4.0"
 APP="hgvd-downloader-v$VER"
 PKG="pkg/$APP"
 ZIP="$OUT/$APP-win-x64.zip"
@@ -76,7 +76,7 @@ echo "[3/5] 发布目录版（B 案主推，输出到 $PKG）"
 python -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$PKG" 2>/dev/null || true
 "$DOTNET" publish "$PROJ" -c Release --no-restore -o "$PKG" -p:PublishSingleFile=false -p:PkgVersion="$VER"
 
-echo "[4/5] 打 zip（顶层保留文件夹名 + 放入 README.txt）"
+echo "[4/5] 打 zip（顶层保留文件夹名 + 放入 README / LICENSE / NOTICE）"
 python ../tools/pack_zip.py "$PKG" "$ZIP" "./PACK-README.txt"
 
 echo "[5/5] 发布单文件（备用形态，输出到 $OUT）"

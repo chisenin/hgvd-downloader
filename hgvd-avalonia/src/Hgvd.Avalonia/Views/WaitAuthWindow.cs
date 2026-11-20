@@ -12,25 +12,53 @@ using Hgvd.Core.Auth;
 namespace Hgvd.Avalonia.Views;
 
 /// <summary>
-/// 「拿不到授权」时的引导窗：直接告诉用户去开哪台安卓机、开红果、确认登录，
-/// 同时**在后台每 2 秒扫一次运行中的实例**，一旦读到可用登录态就自动关窗继续。
+/// 「拿不到授权」时的引导窗：告诉用户去开哪台安卓机、开哪个 App、确认登录，
+/// 同时**在后台每 2–3 秒探一次**，读到可用登录态就自动关窗继续。
 ///
-/// ★ 为什么这么做：普通用户装 MuMu 的位置千变万化，让他「先开模拟器再点授权」是
-///   最自然的一步；工具不该要求他去配环境变量或找 MuMuManager.exe。
+/// ★ 红果与兴趣岛共用这一个窗（探针由调用方传入）：两个源的等待体验必须一致。
 /// ★ 只认「运行中实例里的 App 登录态」，等价于用户手动在 App 里登录这个动作本身。
 /// </summary>
 public sealed class WaitAuthWindow : Window
 {
     private readonly TextBlock _hint = new TextBlock();
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+    private readonly Func<Action<string>, CancellationToken, Task<int>> _wait;
+    private readonly string _timeoutHint;
     private bool _closed;
 
     /// <summary>等到的实例号；-1 = 取消/超时。</summary>
     public int FoundIndex { get; private set; } = -1;
 
+    /// <summary>红果：沿用原来的探测（MumuAuth.WaitForAuth，内部每 2 秒扫一次）。</summary>
     public WaitAuthWindow(string mumu, IReadOnlyList<MumuAuth.Instance> instances)
+        : this(
+            "等待红果登录",
+            "还没拿到红果授权 —— 请打开安卓机里的红果并确认已登录",
+            "1. 在 MuMu 里启动装了红果的安卓机（多开时列表里任一台都行）\n"
+            + "2. 打开「红果短剧」，确认已经登录（能看到收藏/首页内容）\n"
+            + "3. 回到这里等几秒，读到登录态会自动继续，不用再点按钮",
+            instances,
+            "等待超时。可以先启动安卓机、在红果里登录，然后再点一次「获取授权」。",
+            (say, ct) => Task.Run(() => MumuAuth.WaitForAuth(
+                mumu, 180,
+                s => Dispatcher.UIThread.Post(() => say(s)),
+                ct), ct))
     {
-        Title = "等待红果登录";
+    }
+
+    /// <summary>通用构造：等待逻辑由调用方给（兴趣岛用它复用同一套引导）。</summary>
+    public WaitAuthWindow(
+        string title,
+        string headText,
+        string stepsText,
+        IReadOnlyList<MumuAuth.Instance> instances,
+        string timeoutHint,
+        Func<Action<string>, CancellationToken, Task<int>> wait)
+    {
+        _wait = wait;
+        _timeoutHint = timeoutHint;
+
+        Title = title;
         Width = 580;
         Height = 320;
         CanResize = false;
@@ -40,7 +68,7 @@ public sealed class WaitAuthWindow : Window
 
         var head = new TextBlock
         {
-            Text = "还没拿到红果授权 —— 请打开安卓机里的红果并确认已登录",
+            Text = headText,
             FontSize = 15,
             FontWeight = FontWeight.SemiBold,
             TextWrapping = TextWrapping.Wrap,
@@ -48,9 +76,7 @@ public sealed class WaitAuthWindow : Window
 
         var steps = new TextBlock
         {
-            Text = "1. 在 MuMu 里启动装了红果的安卓机（多开时列表里任一台都行）\n"
-                 + "2. 打开「红果短剧」，确认已经登录（能看到收藏/首页内容）\n"
-                 + "3. 回到这里等几秒，读到登录态会自动继续，不用再点按钮",
+            Text = stepsText,
             FontSize = 12,
             Foreground = new SolidColorBrush(Color.Parse("#444444")),
             TextWrapping = TextWrapping.Wrap,
@@ -94,8 +120,13 @@ public sealed class WaitAuthWindow : Window
         panel.Children.Add(cancel);
         Content = panel;
 
-        Opened += async (_, __) => await PollAsync(mumu);
+        Opened += async (_, __) => await PollAsync();
         Closed += (_, __) => _cts.Cancel();
+    }
+
+    private void SetHint(string text)
+    {
+        if (!_closed) _hint.Text = text;
     }
 
     private static string DescribeInstances(IReadOnlyList<MumuAuth.Instance> instances)
@@ -107,17 +138,26 @@ public sealed class WaitAuthWindow : Window
         return sb.ToString();
     }
 
-    private async Task PollAsync(string mumu)
+    private async Task PollAsync()
     {
-        // WaitForAuth 是阻塞实现，放到后台线程，避免卡住 UI
-        int idx = await Task.Run(() => MumuAuth.WaitForAuth(
-            mumu, 180,
-            s => Dispatcher.UIThread.Post(() => { if (!_closed) _hint.Text = s; }),
-            _cts.Token));
+        int idx;
+        try
+        {
+            idx = await _wait(SetHint, _cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            SetHint("等待失败：" + ex.Message);
+            return;
+        }
 
         if (_closed) return;
         FoundIndex = idx;
         if (idx >= 0) Close();
-        else _hint.Text = "等待超时。可以先启动安卓机、在红果里登录，然后再点一次「重新授权」。";
+        else SetHint(_timeoutHint);
     }
 }

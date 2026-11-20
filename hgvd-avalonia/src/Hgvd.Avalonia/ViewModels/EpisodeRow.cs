@@ -79,6 +79,9 @@ public sealed class EpisodeRow : NotifyBase
     public XqdJob Xqd { get; }
     public bool IsXqd => Xqd != null;
 
+    /// <summary>来源列：红果 / 兴趣岛（分组标题行留空）。</summary>
+    public string SourceText => IsGroupHeader ? "" : (IsXqd ? "兴趣岛" : "红果");
+
     /// <summary>true = 分组标题行（不是真实分集，下载时要跳过）。</summary>
     public bool IsGroupHeader { get; }
     public bool IsEpisode => !IsGroupHeader;
@@ -98,6 +101,7 @@ public sealed class EpisodeRow : NotifyBase
                 Raise(nameof(StatePillBg));
                 Raise(nameof(StatePillBorder));
                 Raise(nameof(ProgressFill));
+                Raise(nameof(EtaText));
             }
         }
     }
@@ -141,6 +145,7 @@ public sealed class EpisodeRow : NotifyBase
             Raise(nameof(ProgressText));
             Raise(nameof(Percent));
             Raise(nameof(SizeText));
+            Raise(nameof(EtaText));
         }
     }
 
@@ -153,6 +158,7 @@ public sealed class EpisodeRow : NotifyBase
             Raise(nameof(ProgressText));
             Raise(nameof(Percent));
             Raise(nameof(SizeText));
+            Raise(nameof(EtaText));
         }
     }
 
@@ -168,7 +174,12 @@ public sealed class EpisodeRow : NotifyBase
     public double Speed
     {
         get => _speed;
-        set { if (Set(ref _speed, value)) Raise(nameof(SpeedText)); }
+        set
+        {
+            if (!Set(ref _speed, value)) return;
+            Raise(nameof(SpeedText));
+            Raise(nameof(EtaText));
+        }
     }
 
     public string Error
@@ -199,6 +210,23 @@ public sealed class EpisodeRow : NotifyBase
     }
 
     public string SpeedText => Speed > 0 ? $"{Core.Util.FmtSize((long)Speed)}/s" : "--";
+
+    /// <summary>
+    /// 剩余时间列：按「剩余字节 / 当前速度」估算；没速度或已结束就显示占位符。
+    /// ★ 只作参考 —— 速度会波动，别拿它当承诺。
+    /// </summary>
+    public string EtaText
+    {
+        get
+        {
+            if (State is "已完成" or "已存在" or "失败" or "待下载") return "--";
+            if (Total <= Down || Speed < 1024) return "--";
+            double sec = (Total - Down) / Speed;
+            if (sec <= 0 || sec > 359999) return "--";
+            var ts = TimeSpan.FromSeconds(sec);
+            return ts.TotalHours >= 1 ? ts.ToString(@"h\:mm\:ss") : ts.ToString(@"mm\:ss");
+        }
+    }
 
     /// <summary>进度条填充：已完成走绿色渐变，其余走蓝色渐变。</summary>
     public IBrush ProgressFill => State is "已完成" or "已存在"

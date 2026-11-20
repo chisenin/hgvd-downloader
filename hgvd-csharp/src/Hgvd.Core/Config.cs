@@ -31,6 +31,8 @@ public static class Paths
     public static string DevicesPath => Path.Combine(ToolDir, "devices.json");
     public static string ConfigPath => Path.Combine(ToolDir, "config.json");
     public static string HistoryPath => Path.Combine(ToolDir, "history.json");
+    /// <summary>红果侧的下载清单（重启恢复；与兴趣岛的 xqd\jobs.json 并列）。</summary>
+    public static string QueuePath => Path.Combine(ToolDir, "queue.json");
 
     public static void EnsureDir() => Directory.CreateDirectory(ToolDir);
 }

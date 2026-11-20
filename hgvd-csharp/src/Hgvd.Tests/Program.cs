@@ -23,6 +23,8 @@ public static class Program
         fail += DrmTests.Run();
         // ★ 兴趣岛内核（2026-11-21 合并）：链接解析 / 清单 / 命名 / 队列
         fail += XqdTests.Run();
+        // ★ 2026-11-21 补齐：红果清单落盘 / 下载历史 / 去重口径 / 5 档筛选 / 剩余时间
+        fail += StateTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

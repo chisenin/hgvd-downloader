@@ -19,8 +19,6 @@ namespace Hgvd.Xqd;
 /// </summary>
 public sealed class XqdQueue
 {
-    private const int MinExistingBytes = 10 * 1024;
-
     private readonly XqdStore _store;
     private readonly List<XqdJob> _jobs = new();
     private readonly object _gate = new();
@@ -159,6 +157,21 @@ public sealed class XqdQueue
             return _jobs.Where(j => string.Equals(j.Camp, campName, StringComparison.Ordinal)).ToList();
     }
 
+    /// <summary>清掉某个成品的分片缓存，并把任务重置为「待下载」（右键「重新下载」）。</summary>
+    public void Retry(XqdJob job)
+    {
+        if (job == null) return;
+        _store.PurgeParts(job.OutPath);
+        job.State = XqdState.Pending;
+        job.Message = "";
+        job.Size = 0;
+        job.Duration = 0;
+        job.Down = 0;
+        job.Total = 0;
+        job.Speed = 0;
+        Save();
+    }
+
     /// <summary>清掉已完成 / 已存在的行（不动磁盘文件）。</summary>
     public int ClearFinished()
     {
@@ -203,8 +216,13 @@ public sealed class XqdQueue
         Save();
     }
 
-    /// <summary>按磁盘上已有的成品重判状态：够大就算「已存在」。</summary>
-    public int Rescan()    {
+    /// <summary>
+    /// 按磁盘上已有的成品重判状态。
+    /// ★ 口径与红果对齐：文件 ≥1MB 且（有预期时长时）ffprobe 时长对得上才算「已存在」。
+    ///   上游只看 10KB，截断的成品会被当成完整文件直接跳过 —— 这里宁可重下。
+    /// </summary>
+    public int Rescan()
+    {
         int n = 0;
         lock (_gate)
         {
@@ -217,7 +235,20 @@ public sealed class XqdQueue
                     if (File.Exists(j.OutPath))
                     {
                         size = new FileInfo(j.OutPath).Length;
-                        exists = size >= MinExistingBytes;
+                        if (j.State == XqdState.Done)
+                        {
+                            // 自己下完的：只确认文件还在，不重复 probe（省 IO）
+                            exists = true;
+                        }
+                        else if (size >= XqdDedupe.MinBytes && j.ExpectDuration > 0)
+                        {
+                            double probed = Hgvd.Core.Util.ProbeDuration(j.OutPath);
+                            exists = XqdDedupe.IsExisting(size, j.ExpectDuration, probed);
+                        }
+                        else
+                        {
+                            exists = XqdDedupe.IsExisting(size, 0, 0);
+                        }
                     }
                 }
                 catch { }

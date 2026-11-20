@@ -510,7 +510,7 @@ public sealed class HongguoService
     /// <summary>下载一集。</summary>
     public async Task<DownloadResult> DownloadEpisodeAsync(
         Episode ep, string quality = null, DownloadCallbacks cb = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, PauseGate gate = null)
     {
         quality ??= _cfg.Quality;
         string outPath = BuildOutPath(ep);
@@ -571,7 +571,7 @@ public sealed class HongguoService
             // ★ 主 CDN 主机连不上时自动换备用直链
             BackupUrl = backupUrl,
         };
-        return await Downloader.DownloadAsync(req, cb, ct);
+        return await Downloader.DownloadAsync(req, cb, ct, gate);
     }
 
     /// <summary>构造成品路径：<c>下载目录\剧名\剧名.001.标题.mp4</c>。</summary>

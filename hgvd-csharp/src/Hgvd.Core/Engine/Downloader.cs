@@ -56,7 +56,7 @@ public static class Downloader
     /// <summary>下载一集（支持断点续传、进度回调、ffprobe 校验、CENC 解密）。</summary>
     public static async Task<DownloadResult> DownloadAsync(
         DownloadRequest req, DownloadCallbacks cb = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, PauseGate gate = null)
     {
         cb ??= new DownloadCallbacks();
         var outFull = Path.GetFullPath(req.OutPath);
@@ -127,6 +127,8 @@ public static class Downloader
                 int n;
                 while ((n = await src.ReadAsync(buf, ct)) > 0)
                 {
+                    // ★ 暂停闸门：在分块之间等，保留连接与已写进度
+                    if (gate != null) await gate.WaitAsync(ct);
                     await fs.WriteAsync(buf.AsMemory(0, n), ct);
                     done += n;
                     double speed = sw.Elapsed.TotalSeconds > 0 ? done / sw.Elapsed.TotalSeconds : 0;

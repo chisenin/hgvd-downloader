@@ -29,7 +29,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: C# 离线回归（72 项：签名黄金向量 / 请求头 / 发行版界面 / 命名 / MuMu 定位）
+      - name: C# 离线回归（166 项：签名 / 请求头 / 界面 / 命名 / MuMu 定位 / DRM / 兴趣岛内核）
         shell: pwsh
         run: |
           dotnet restore hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj --configfile .github/nuget.ci.config
@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Python 离线回归（90 项，含「空 body 不得归因为限流」的文案护栏）
+      - name: Python 离线回归（107 项，含「空 body 不得归因为限流」的文案护栏）
         shell: pwsh
         run: |
           python -m pip install --upgrade pip

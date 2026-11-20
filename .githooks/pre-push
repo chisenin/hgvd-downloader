@@ -1,0 +1,36 @@
+#!/bin/sh
+# ★ 推标签时校验版本号：标签必须与仓库版本（build.cmd / build.sh / csproj）一致。
+#
+# 为什么要有这一道：release.yml 是由**标签**触发的，手工 `git push origin v1.4.0`
+# 会绕过 publish_release.sh 的门禁。标签与仓库版本不一致时，CI 虽然会用标签覆盖
+# PkgVersion，但仓库里的 VER 会悄悄漂移 —— 下次本地构建又变回旧号，产物无法回溯。
+#
+# 启用（每个 clone 做一次）：
+#     git config core.hooksPath .githooks
+# 临时绕过（不推荐）：
+#     git push --no-verify ...
+#
+# 推分支不拦，只拦 refs/tags/v*。
+
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # 删除标签（local_sha 全 0）不校验
+    case "$local_sha" in
+        0000*) continue ;;
+    esac
+    case "$remote_ref" in
+        refs/tags/v*)
+            tag="${remote_ref#refs/tags/}"
+            if ! python tools/check_version.py "$tag"; then
+                echo "" >&2
+                echo "[pre-push] 拒绝推送标签 $tag：版本号与仓库不一致。" >&2
+                echo "           标签填错：换一个与仓库版本一致的标签；" >&2
+                echo "           要发新版本：python tools/bump_version.py ${tag#v} 并提交后再推。" >&2
+                status=1
+            fi
+            ;;
+    esac
+done
+
+exit $status

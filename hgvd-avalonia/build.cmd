@@ -45,7 +45,7 @@ if not defined PY (
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
 set "OUT=dist"
-set "VER=1.3.0"
+set "VER=1.4.0"
 set "APP=hgvd-downloader-v%VER%"
 set "PKG=pkg\%APP%"
 set "ZIP=%OUT%\%APP%-win-x64.zip"
@@ -72,7 +72,7 @@ rem ★ 目录版和单文件**必须分两次 publish**：PublishSingleFile 是
 if exist "%PKG%" rd /s /q "%PKG%"
 "%DOTNET%" publish "%PROJ%" -c Release --no-restore -o "%PKG%" -p:PublishSingleFile=false -p:PkgVersion=%VER% || goto :err
 
-echo [4/5] 打 zip（顶层保留文件夹名 + 放入 README.txt）
+echo [4/5] 打 zip（顶层保留文件夹名 + 放入 README / LICENSE / NOTICE）
 "%PY%" "%~dp0..\tools\pack_zip.py" "%PKG%" "%ZIP%" "%~dp0PACK-README.txt" || goto :err
 
 echo [5/5] 发布单文件（备用形态，输出到 %OUT%）

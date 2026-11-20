@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Hgvd.Avalonia.Views.AboutWindow"
         Title="关于 红果视频下载器"
-        Width="520" Height="470"
+        Width="580" Height="680"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
         ShowInTaskbar="False"
@@ -25,43 +25,59 @@
                    Foreground="White" />
         <TextBlock x:Name="LblVersionLine" FontSize="12"
                    Foreground="{DynamicResource BrandSubBrush}" Margin="0,4,0,0" />
+        <TextBlock Text="红果收藏夹 · 兴趣岛课程 —— 一个窗口，两个内容源"
+                   FontSize="11.5" Foreground="{DynamicResource BrandSubBrush}"
+                   Margin="0,5,0,0" />
       </StackPanel>
     </Border>
 
     <!-- 正文 -->
     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
       <StackPanel Margin="22,16,22,10">
-        <TextBlock Text="从红果 App 的收藏夹批量下载剧集，保存为通用 MP4。"
-                   TextWrapping="Wrap" FontSize="13"
-                   Foreground="{DynamicResource TextDarkBrush}" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="把你自己账号里有权访问的剧集与课程，成批下载成通用 MP4。&#10;只处理你已购买 / 已开通的内容，不提供未购内容的获取能力。" />
+
+        <TextBlock Text="两个内容源" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="· 红果视频：勾选收藏夹里的剧 → 分集自动进右栏清单（教学合集可下；短剧默认跳过）。&#10;· 兴趣岛课程：点「获取授权」读一次登录态 → 勾选营，整营课表进同一张清单；也支持粘贴课程链接兜底。" />
 
         <TextBlock Text="怎么用" FontSize="14" FontWeight="SemiBold"
                    Foreground="{DynamicResource SectionTitleBrush}"
                    Margin="0,16,0,6" />
-        <TextBlock Classes="muted" TextWrapping="Wrap"
-                   LineHeight="21"
-                   Text="1. 左栏是收藏夹，勾选要下的剧；&#10;2. 点开某部剧，右栏出现分集列表；&#10;3. 点「下载」下当前视图，或点左下角「批量下载 (N)」下所有勾选的剧；&#10;4. 已下载过的会自动跳过，短剧默认跳过（字节私有 bytevc 编码，解不出画面）。" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="1. 左上角切到要用的内容源；&#10;2. 点「获取授权」（只在这一步读模拟器，启动不读）；&#10;3. 左栏勾选剧目 / 营，条目依次追加到右栏，可累计多组；&#10;4. 点「下载」跑清单，运行中同按钮变「暂停」（两源都生效），再点「继续」；双击某一行只下这一条。" />
 
-        <TextBlock Text="关于授权" FontSize="14" FontWeight="SemiBold"
+        <TextBlock Text="清单操作" FontSize="14" FontWeight="SemiBold"
                    Foreground="{DynamicResource SectionTitleBrush}"
                    Margin="0,16,0,6" />
-        <TextBlock Classes="muted" TextWrapping="Wrap"
-                   LineHeight="21"
-                   Text="登录态来自本机 MuMu 模拟器里的红果 App（点「重新授权」可重读），&#10;不上传任何账号信息，全部请求都直接发往红果自己的服务器。" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="5 档筛选：全部 / 待下载 / 下载中 / 已完成 / 失败；每行标明来源与剩余时间。&#10;右键 = 下载 / 重新下载（清缓存）/ 复制 / 打开文件夹 / 移出清单；Delete 同效。&#10;「历史」看两源共用的下载记录；重启后清单会自动恢复。" />
 
-        <TextBlock Text="说明" FontSize="14" FontWeight="SemiBold"
+        <TextBlock Text="授权与数据" FontSize="14" FontWeight="SemiBold"
                    Foreground="{DynamicResource SectionTitleBrush}"
                    Margin="0,16,0,6" />
-        <TextBlock Classes="muted" TextWrapping="Wrap"
-                   LineHeight="21"
-                   Text="本工具仅供个人学习与备份收藏内容使用，请遵守红果的服务条款与著作权规定。&#10;下载得到的文件版权仍归原作者与平台所有。" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="登录态从本机 MuMu 模拟器里对应 App 读取（红果读 App 数据，兴趣岛读 WebView Cookie），&#10;只存在本机 %USERPROFILE%\.hgv_tool\，不上传任何账号信息；&#10;所有请求直接发往官方服务器，中间没有第三方服务。" />
+
+        <TextBlock Text="合规" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="仅供个人学习、备份与离线观看，不得传播、转售或用于商业用途。&#10;下载不改变内容权利：版权仍归原作者与平台所有，请看完及时删除。&#10;内容密钥按官方播放器同一套规则在本地解包，不做 DRM 破解。" />
+
+        <TextBlock Text="版权与第三方" FontSize="14" FontWeight="SemiBold"
+                   Foreground="{DynamicResource SectionTitleBrush}"
+                   Margin="0,16,0,6" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="© 2026 chisenin。许可：PolyForm Noncommercial 1.0.0 ——&#10;允许个人学习 / 研究 / 教学等非商业使用（可改、可再分发，须随附许可），禁止商用。&#10;内置的 ffmpeg / ffprobe 为第三方独立程序，按 GPL 分发，版权归 FFmpeg 项目；&#10;协议实现参考了 Apache-2.0 的 openhongguo，详见仓库 NOTICE.md。" />
 
         <TextBlock Text="技术栈" FontSize="14" FontWeight="SemiBold"
                    Foreground="{DynamicResource SectionTitleBrush}"
                    Margin="0,16,0,6" />
-        <TextBlock Classes="muted" TextWrapping="Wrap"
-                   LineHeight="21"
-                   Text="界面为 C# / Avalonia 11（跨平台），核心与 C++ / WPF 版共用同一套签名链与数据目录。" />
+        <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
+                   Text="界面 C# + Avalonia 11（跨平台）；下载内核 Hgvd.Core（红果）+ Hgvd.Xqd（兴趣岛）；&#10;Python 版（hgvd/）与发行版共用同一套协议理解，用于验证逻辑。&#10;项目主页：github.com/chisenin/hgvd-downloader" />
       </StackPanel>
     </ScrollViewer>
 

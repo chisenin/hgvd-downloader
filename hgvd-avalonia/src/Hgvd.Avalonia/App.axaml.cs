@@ -64,6 +64,7 @@ public partial class App : Application
                     // ★ 窗口要真的 Show 一次（Opacity=0 不可见），否则 ListBox 不会
                     //   生成行容器，勾选框根本找不到。
                     var w = new MainWindow { ShowInTaskbar = false, Opacity = 0 };
+                    w.MarkUiTest();          // ★ 先禁掉「恢复用户清单」，再 Show
                     RunThenShutdown(async () =>
                     {
                         w.Show();

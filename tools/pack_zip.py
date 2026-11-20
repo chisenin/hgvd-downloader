@@ -44,6 +44,26 @@ def build(src: str, out: str, readme: str | None) -> int:
             f.write(text)
         print(f"[zip] 已放入 {README_NAME}（UTF-8 with BOM，CRLF）")
 
+    # ★ 许可与第三方声明必须随包分发：
+    #   PolyForm Noncommercial 要求「拿到副本的人同时拿到条款」；
+    #   ffmpeg 是 GPL，再分发也要带声明。文件名用英文，避免解压乱码。
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for src_name, dst_name, bom in (
+        ("LICENSE", "LICENSE.txt", False),
+        ("NOTICE.md", "NOTICE.txt", True),
+    ):
+        p = os.path.join(repo, src_name)
+        if not os.path.isfile(p):
+            print(f"[zip] ！缺 {src_name}，包里不会有 {dst_name}", file=sys.stderr)
+            continue
+        enc = "utf-8-sig" if bom else "utf-8"
+        with open(p, "r", encoding="utf-8-sig") as f:
+            text = f.read()
+        with open(os.path.join(src, dst_name), "w",
+                  encoding=enc, newline="\r\n") as f:
+            f.write(text)
+        print(f"[zip] 已放入 {dst_name}")
+
     if os.path.exists(out):
         os.remove(out)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)

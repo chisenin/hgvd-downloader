@@ -45,7 +45,9 @@ public partial class AboutWindow : Window
     {
         try
         {
-            string text = $"红果视频下载器 {AppVersion}\n{RuntimeInfo}";
+            string text = $"红果视频下载器 {AppVersion}（红果收藏夹 · 兴趣岛课程）\n"
+                        + $"{RuntimeInfo}\n"
+                        + "https://github.com/chisenin/hgvd-downloader";
             var top = GetTopLevel(this);
             if (top?.Clipboard != null) await top.Clipboard.SetTextAsync(text);
             BtnCopy.Content = "已复制 ✓";

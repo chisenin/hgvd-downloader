@@ -84,13 +84,9 @@ public partial class MainWindow
             EpisodeView.Add(r);
         }
         _stopRequested = false;
-        _downloading = true;
-        BtnRun.IsEnabled = false;
-        BtnStop.IsEnabled = true;
+        SetRunningUi(true);
         await DownloadRowsAsync(rows.Skip(skip).Take(3).ToList());
-        _downloading = false;
-        BtnRun.IsEnabled = true;
-        BtnStop.IsEnabled = false;
+        SetRunningUi(false);
     }
 
     /// <summary>
@@ -146,6 +142,7 @@ public partial class MainWindow
     public async Task UiTestAsync()
     {
         Log("═══ 界面自检 ═══");
+
         int fail = 0;
         var report = new StringBuilder();
         void Check(string name, bool ok, string detail = "")
@@ -369,7 +366,7 @@ public partial class MainWindow
             Width = w;
             await Task.Delay(140);           // 等布局跑完
             bool fits = true;
-            foreach (var c in new Control[] { CmbQuality, BtnRun, BtnStop, BtnCache })
+            foreach (var c in new Control[] { CmbQuality, BtnRun, BtnCache, BtnHistory })
             {
                 var p = c.TranslatePoint(new Point(c.Bounds.Width, 0), this);
                 if (p is null || p.Value.X > Bounds.Width + 1) { fits = false; break; }
@@ -423,6 +420,51 @@ public partial class MainWindow
         Check("兴趣岛的条目在清单里带分组标题", hasLinkHeader,
             hasLinkHeader ? "有「手动链接」分组" : "没有「手动链接」分组标题");
 
+        // 来源列 / 暂停作用域 / 5 档筛选（2026-11-21 补齐）
+        var xRow = EpisodeRows.FirstOrDefault(r => r.IsXqd && r.IsEpisode);
+        Check("来源列：兴趣岛行标「兴趣岛」", xRow?.SourceText == "兴趣岛", xRow?.SourceText ?? "无行");
+        // 单按钮三态：下载 →（点）暂停 →（点）继续 →（结束）下载
+        _downloading = true;
+        _paused = false;
+        SetRunningUi(true);
+        string cRun = BtnRun.Content as string ?? "";
+        TogglePause();
+        string cPause = BtnRun.Content as string ?? "";
+        TogglePause();
+        string cResume = BtnRun.Content as string ?? "";
+        SetRunningUi(false);
+        string cIdle = BtnRun.Content as string ?? "";
+        Check("单按钮三态：下载 / 暂停 / 继续",
+            cRun == "暂停" && cPause == "继续" && cResume == "暂停" && cIdle == "下载",
+            $"{cRun} → {cPause} → {cResume} → {cIdle}");
+
+        // 右键菜单的「来源行」解析：ContextMenu 不在可视树里，靠 Opening 记录 + Tag 兜底
+        var probeRow = EpisodeRows.FirstOrDefault(r => r.IsXqd && r.IsEpisode);
+        var probeMenu = new ContextMenu { DataContext = probeRow };
+        EpMenu_Opening(probeMenu, new System.ComponentModel.CancelEventArgs());
+        Check("右键菜单能定位到所在行",
+            probeRow != null && ReferenceEquals(RowFromMenu(new MenuItem()), probeRow),
+            probeRow?.Title ?? "无行");
+
+        RbDone.IsChecked = true;
+        await Task.Delay(200);
+        // 前面用假下载把红果的 91 集标成了「已完成」，所以这里应当只剩它们：
+        // 不能再有「待下载」的兴趣岛行，且可见行必须是终态。
+        var doneView = EpisodeView.Where(r => r.IsEpisode).ToList();
+        Check("筛选「已完成」→ 只剩已完成，待下载的课被隐藏",
+            doneView.All(r => r.State is "已完成" or "已存在") && !doneView.Any(r => r.IsXqd),
+            $"{doneView.Count} 行，其中兴趣岛 {doneView.Count(r => r.IsXqd)}");
+        RbPending.IsChecked = true;
+        await Task.Delay(200);
+        Check("筛选「待下载」→ 两节课都在",
+            EpisodeView.Count(r => r.IsEpisode && r.IsXqd) == 2,
+            $"{EpisodeView.Count(r => r.IsEpisode && r.IsXqd)} 行");
+        RbAll.IsChecked = true;
+        await Task.Delay(200);
+        Check("筛选「全部」→ 恢复完整清单",
+            EpisodeView.Count(r => r.IsEpisode) == EpisodeRows.Count(r => r.IsEpisode),
+            $"{EpisodeView.Count(r => r.IsEpisode)} / {EpisodeRows.Count(r => r.IsEpisode)}");
+
         TabHongguo.IsChecked = true;
         await Task.Delay(300);
         Check("切回红果 → 收藏夹恢复", LstShelf.IsVisible && !LstCamps.IsVisible);
@@ -433,8 +475,56 @@ public partial class MainWindow
             EpisodeRows.Count(r => r.IsEpisode && !r.IsXqd) == hgRowsBefore,
             $"{EpisodeRows.Count(r => r.IsEpisode && !r.IsXqd)} 行（原 {hgRowsBefore}）");
 
+        // 右键 / Delete 的实体：单行移出（兴趣岛手动链接原本根本删不掉）
+        var victim = EpisodeRows.FirstOrDefault(r => r.IsXqd && r.IsEpisode);
+        int xqdBeforeRemove = EpisodeRows.Count(r => r.IsXqd && r.IsEpisode);
+        bool removed = victim != null && RemoveRow(victim);
+        // ★ 标题行是**替换**成新对象的（RefreshGroupHeader），必须重新取，不能用旧引用
+        var linkHeader = EpisodeRows.FirstOrDefault(r => r.IsGroupHeader && r.SeriesId == "xqd:__links");
+        Check("移出清单：行被删掉、分组计数同步",
+            removed && EpisodeRows.Count(r => r.IsXqd && r.IsEpisode) == xqdBeforeRemove - 1
+                    && (linkHeader?.HeaderText.Contains("共 1 节") ?? false),
+            $"removed={removed} 剩 {EpisodeRows.Count(r => r.IsXqd && r.IsEpisode)} 行 "
+            + $"标题=\"{(linkHeader?.HeaderText ?? "")}\"");
+        Check("移出清单：兴趣岛队列里也删掉了（会落盘）",
+            _xqd.Jobs.Count == 1, $"{_xqd.Jobs.Count} 个任务");
+
+        // 红果清单：落盘 → 恢复（临时文件，不碰用户的 queue.json）
+        string qpath = Path.Combine(Path.GetTempPath(), "hgvd_queue_uitest", "queue.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(qpath));
+            File.WriteAllText(qpath, """
+            [
+              {"SeriesId":"uitest_s1","SeriesTitle":"恢复测试剧","ShortDrama":false,
+               "Episodes":[
+                 {"Vid":"uitest_v1","Index":1,"Title":"第 1 集","Duration":120,"VideoIdType":1},
+                 {"Vid":"uitest_v2","Index":2,"Title":"第 2 集","Duration":121,"VideoIdType":1}
+               ]}
+            ]
+            """);
+        }
+        catch { }
+        ReloadHongguoQueueForTest();
+        var restoredRows = EpisodeRows.Where(r => r.IsEpisode && !r.IsXqd).ToList();
+        bool restoredHeader = EpisodeRows.Any(r => r.IsGroupHeader && r.SeriesId == "uitest_s1");
+        Check("红果清单：从 queue.json 恢复（两集 + 分组标题）",
+            restoredRows.Count == 2 && restoredHeader,
+            $"{restoredRows.Count} 行，标题行={restoredHeader}");
+        Check("红果清单：恢复后一律「待下载」（已存在由下载时判）",
+            restoredRows.All(r => r.State == "待下载"),
+            string.Join(",", restoredRows.Select(r => r.State)));
+
+        // 历史窗口：裁剪后仍能构建（FuncDataTemplate 不靠反射，但顺手守一道）
+        var hw = new HistoryWindow(new List<HistoryEntry>
+        {
+            new HistoryEntry { Source = "红果", Title = "剧", Episode = "第 1 集", Path = @"D://x//1.mp4", Size = 10, Ts = 1700000000 },
+        });
+        Check("历史窗口能构建并带记录", hw.Content != null && (hw.Title ?? "").Contains("1 条"), hw.Title ?? "");
+        hw.Close();
+
         // 清理掉测试加进清单的行（避免影响退出前的状态）
-        foreach (var r in EpisodeRows.Where(r => r.IsXqd).ToList())
+        foreach (var r in EpisodeRows.Where(r => r.IsXqd || r.SeriesId == "uitest_s1").ToList())
         {
             EpisodeRows.Remove(r);
             EpisodeView.Remove(r);
