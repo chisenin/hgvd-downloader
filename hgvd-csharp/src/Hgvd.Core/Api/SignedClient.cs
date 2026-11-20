@@ -62,8 +62,8 @@ public sealed class ApiException : Exception
         {
             ApiFailure.EmptyBody =>
                 "空 body（HTTP 200 但零字节）—— 服务端/网关把这个请求丢弃了。" +
-                "**不是限流**：先看同刻其它带签名端点是否也空（全空 = 签名整体没被接受），" +
-                "再核对网关与请求参数；干等不会恢复",
+                "**不是限流**：先确认路径是否还有效（匿名打一发、换个路径对照），" +
+                "干等不会恢复",
             ApiFailure.ErrorCode => code == 101000
                 ? $"服务端返回 code=101000 服务异常 —— " +
                   $"**多半是 video_id_type 用错了**（教学类内容要用 1、短剧用 0），" +
