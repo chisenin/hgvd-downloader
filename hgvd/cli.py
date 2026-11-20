@@ -473,7 +473,8 @@ def cmd_cache(args) -> int:
     ★ App 播放过的视频会缓存成**标准 MP4**（HEVC/AAC），
       这条路完全不经过 ``video_model``（因此不受空 body 影响）。
     """
-    from .auth.cache_extract import extract_all, list_cache
+    from .auth.cache_extract import (extract_all, guess_episodes, list_cache,
+                                     make_thumbs, write_index_html)
 
     if args.list:
         entries = list_cache(args.instance)
@@ -487,8 +488,54 @@ def cmd_cache(args) -> int:
 
     out = args.out or str(Path.home() / "hgvd_cache")
     print(f"从 MuMu 实例 {args.instance} 提取缓存到 {out} …")
-    res = extract_all(args.instance, out_dir=out, limit=args.limit or 0)
+    res = extract_all(args.instance, out_dir=out, limit=args.limit or 0,
+                      min_size=args.min_size)
     print(f"\n共提取 {len(res)} 个视频。")
+
+    if not getattr(args, "no_thumbs", False):
+        n = make_thumbs(out)
+        if n:
+            print(f"已生成 {n} 张缩略图")
+        page = write_index_html(out)
+        print(f"缩略图索引：{page}")
+
+    if args.series:
+        # ★ 只给候选，**不改名** —— 实测过按时长改名会张冠李戴：
+        #   218s 在《奇趣百科》里"唯一匹配"第 3 集，抽帧一看却是另一部剧。
+        from types import SimpleNamespace
+
+        from .api import detail as D
+        from .api.album import fetch_album
+
+        svc = _svc()
+        if not svc.account.ok:
+            print("按剧比对需要登录态（只用来读合集分集）。")
+            return 0
+        ident, ck = svc.device_identity(), svc.cookie_dict()
+        sp = lambda p, b: D.signed_post(svc.session, ident, p, b, ck,
+                                        retries=1, quiet=True)  # noqa: E731
+        album = None
+        for bt in (3, 2):
+            try:
+                album = fetch_album(sp, args.series, bt)
+                if album and album.episodes:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        if not album or not album.episodes:
+            print("没拿到该剧的分集列表，跳过比对。")
+            return 0
+        eps = [SimpleNamespace(index=i + 1, title=e.title, duration=e.duration,
+                               series_title=album.title)
+               for i, e in enumerate(album.episodes)]
+        rows = guess_episodes(out, eps)
+        print(f"\n按《{album.title}》（{len(eps)} 集）的时长比对，"
+              f"{len(rows)} 个缓存可能属于该剧：")
+        for name, cands in rows:
+            print(f"  {name}")
+            for c in cands:
+                print(f"      {c}")
+        print("  ⚠ 时长不唯一，请以缩略图画面为准。")
     return 0 if res else 1
 
 
@@ -549,6 +596,13 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--instance", type=int, default=1, help="MuMu 实例号")
     pc.add_argument("--out", help="输出目录")
     pc.add_argument("--limit", type=int, default=0, help="最多提取几个")
+    pc.add_argument("--min-size", type=int, default=1_000_000,
+                    help="只提取大于该字节数的缓存（默认 1 MB，"
+                         "用来过滤播放器的 128 KB 预览分片）")
+    pc.add_argument("--series",
+                    help="传 series_id：把已提取文件的时长与该剧分集比对，列出候选（不改名）")
+    pc.add_argument("--no-thumbs", action="store_true",
+                    help="不生成缩略图与索引页")
     pc.set_defaults(func=cmd_cache)
 
     pl = sub.add_parser("list", help="列出某部剧的分集")
