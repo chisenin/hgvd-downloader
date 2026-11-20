@@ -425,8 +425,15 @@ public static class MumuAuth
         }
     }
 
-    private static string Sh(string mumu, int index, string cmd, int timeoutMs = 30000)
-    {
+    /// <summary>
+    /// 执行 MuMu 内部 RPC 的 sh 命令并返回 stdout。
+    /// ★ 给兴趣岛侧复用：它要读自己 App 的 WebView Cookie 库，
+    ///   定位 MuMu / 列实例 / 执行命令这套逻辑没必要抄两遍。
+    /// </summary>
+    public static string RunShell(string mumu, int index, string cmd, int timeoutMs = 60000)
+        => Sh(mumu, index, cmd, timeoutMs);
+
+    private static string Sh(string mumu, int index, string cmd, int timeoutMs = 30000)    {
         var psi = new ProcessStartInfo(mumu)
         {
             RedirectStandardOutput = true,

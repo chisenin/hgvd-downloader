@@ -30,6 +30,9 @@ public sealed class XqdQueue
     private XqdControl _control;
     private bool _running;
 
+    /// <summary>兴趣岛 API（课表任务解析播放地址用）；未授权时为 null。</summary>
+    private Api.QianliaoPlatform _platform;
+
     public XqdQueue(XqdOptions options, XqdStore store = null)
     {
         Options = options ?? new XqdOptions();
@@ -38,6 +41,20 @@ public sealed class XqdQueue
 
     public XqdOptions Options { get; }
     public XqdStore Store => _store;
+
+    /// <summary>
+    /// 装配兴趣岛授权（Cookie）。课表任务靠它解析播放地址；
+    /// 只粘链接的任务不需要。
+    /// </summary>
+    public void Configure(string cookie)
+    {
+        _platform = string.IsNullOrEmpty(cookie) ? null : new Api.QianliaoPlatform(cookie);
+    }
+
+    public bool HasAuth => _platform != null;
+
+    /// <summary>已装配的 API（营列表 / 课表用；未授权时为 null）。</summary>
+    public Api.QianliaoPlatform Platform => _platform;
 
     /// <summary>兴趣岛成品的根目录（&lt;下载目录&gt;\兴趣岛）。</summary>
     public string OutDir => Path.Combine(Options.OutRoot ?? "", "兴趣岛");
@@ -66,7 +83,7 @@ public sealed class XqdQueue
             foreach (var it in items)
             {
                 if (!it.HasUrl) continue;
-                string id = XqdJob.MakeId(it.Title, it.Url);
+                string id = XqdJob.MakeId(it.Title, it.Url, it.Camp, "");
                 if (_jobs.Any(j => j.Id == id)) continue;
 
                 var job = new XqdJob
@@ -92,6 +109,54 @@ public sealed class XqdQueue
     {
         lock (_gate) _jobs.Remove(job);
         Save();
+    }
+
+    /// <summary>
+    /// 把一个营的课表加入清单（自动发现路径）。
+    /// 按「营 + topicId」去重，重复勾选同一个营不会翻倍。
+    /// </summary>
+    public int AddLessons(Camp camp, IEnumerable<Lesson> lessons)
+    {
+        int added = 0;
+        lock (_gate)
+        {
+            foreach (var l in lessons)
+            {
+                if (string.IsNullOrEmpty(l.TopicId) && string.IsNullOrEmpty(l.RoomId)) continue;
+                string campName = camp?.Name ?? l.CampName ?? "";
+                string id = XqdJob.MakeId(l.Title, "", campName, l.TopicId);
+                if (_jobs.Any(j => j.Id == id)) continue;
+
+                var job = new XqdJob
+                {
+                    Id = id,
+                    Title = l.Title,
+                    Camp = campName,
+                    CampId = !string.IsNullOrEmpty(l.CampId) ? l.CampId : camp?.CampId ?? "",
+                    PeriodId = !string.IsNullOrEmpty(l.PeriodId) ? l.PeriodId : camp?.PeriodId ?? "",
+                    TopicId = l.TopicId,
+                    RoomId = l.RoomId,
+                    LessonType = l.Type,
+                    Seq = l.Index + 1,
+                    WhenDate = l.WhenDate,
+                    ExpectDuration = l.Duration,
+                    AddedAt = XqdStore.Now(),
+                    State = XqdState.Pending,
+                };
+                job.OutPath = OutPathFor(job);
+                _jobs.Add(job);
+                added++;
+            }
+        }
+        if (added > 0) Save();
+        return added;
+    }
+
+    /// <summary>某个营当前有多少任务在清单里（界面上取消勾选营时用）。</summary>
+    public List<XqdJob> JobsOfCamp(string campName)
+    {
+        lock (_gate)
+            return _jobs.Where(j => string.Equals(j.Camp, campName, StringComparison.Ordinal)).ToList();
     }
 
     /// <summary>清掉已完成 / 已存在的行（不动磁盘文件）。</summary>
@@ -194,7 +259,13 @@ public sealed class XqdQueue
     private string OutPathFor(XqdJob job)
     {
         string dir = OutDir;
-        string name = XqdNaming.StemFromTitle(job.Title) + ".mp4";
+        // 课表任务按营分子目录，和红果「<剧名>\<序号>.<集名>」的结构对齐
+        if (!string.IsNullOrEmpty(job.Camp)) dir = Path.Combine(dir, XqdNaming.SafeName(job.Camp));
+
+        string name = job.Seq > 0
+            ? XqdNaming.LessonFileName(job.Seq, job.Title, job.WhenDate)
+            : XqdNaming.StemFromTitle(job.Title) + ".mp4";
+
         string path = Path.Combine(dir, name);
         // 同名不同链接（不同课）不能互相覆盖：按清单里已占用的路径加 -2/-3
         var used = new HashSet<string>(
@@ -316,10 +387,26 @@ public sealed class XqdQueue
 
         try
         {
+            // 课表任务：现场解析播放地址（签名每次都在变，不缓存）
+            string playUrl = job.Url;
+            if (string.IsNullOrEmpty(playUrl))
+            {
+                if (job.FromCatalog)
+                {
+                    if (_platform == null)
+                        throw new InvalidOperationException("尚未获取兴趣岛授权，无法解析课表任务的播放地址");
+                    playUrl = await _platform.ResolveJobAsync(job, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    throw new InvalidOperationException("任务缺少播放地址");
+                }
+            }
+
             string segDir = _store.PartsDirFor(job.OutPath);
             Directory.CreateDirectory(segDir);
             var result = await XqdDownloader.DownloadAsync(
-                job, Options, segDir, cb, _control, ct).ConfigureAwait(false);
+                job, playUrl, Options, segDir, cb, _control, ct).ConfigureAwait(false);
 
             if (result.Ok)
             {

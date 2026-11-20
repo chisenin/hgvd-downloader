@@ -54,4 +54,29 @@ public static class XqdNet
         var bytes = await GetBytesAsync(url, timeoutSeconds, ct).ConfigureAwait(false);
         return Encoding.UTF8.GetString(bytes);
     }
+
+    /// <summary>
+    /// POST JSON（兴趣岛业务网关）。返回原始文本 —— 网关出错时会回 HTML，
+    /// 由调用方先判首字节再决定是否解析。
+    /// </summary>
+    public static async Task<string> PostJsonAsync(
+        string url, string json,
+        System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string, string>> headers = null,
+        int timeoutSeconds = 30, CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8),
+        };
+        req.Content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json") { CharSet = "UTF-8" };
+        if (headers != null)
+            foreach (var kv in headers)
+                req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        using var resp = await Client.SendAsync(req, cts.Token).ConfigureAwait(false);
+        return await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+    }
 }

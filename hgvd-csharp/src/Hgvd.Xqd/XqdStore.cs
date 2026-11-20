@@ -54,7 +54,8 @@ public sealed class XqdStore
                 if (XqdState.IsRunning(j.State) || j.State == XqdState.Paused)
                     j.State = XqdState.Pending;
             }
-            return list.Where(j => !string.IsNullOrEmpty(j.Url)).ToList();
+            // ★ 课表任务没有 URL（下载时才解析），不能按「有链接」筛掉
+            return list.Where(j => !string.IsNullOrEmpty(j.Url) || j.FromCatalog).ToList();
         }
         catch { return new List<XqdJob>(); }
     }

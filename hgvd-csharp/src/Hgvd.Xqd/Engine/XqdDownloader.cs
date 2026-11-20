@@ -16,14 +16,16 @@ namespace Hgvd.Xqd.Engine;
 public static class XqdDownloader
 {
     public static async Task<XqdResult> DownloadAsync(
-        XqdJob job, XqdOptions opt, string segDir,
+        XqdJob job, string playUrl, XqdOptions opt, string segDir,
         XqdCallbacks cb = null, XqdControl control = null, CancellationToken ct = default)
     {
         cb ??= new XqdCallbacks();
         control ??= new XqdControl();
+        if (string.IsNullOrEmpty(playUrl))
+            return Fail("没有播放地址", job.OutPath);
         try
         {
-            return await CoreAsync(job, opt, cb, control, ct, segDir).ConfigureAwait(false);
+            return await CoreAsync(job, playUrl, opt, cb, control, ct, segDir).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (OperationCanceledException)
@@ -37,7 +39,7 @@ public static class XqdDownloader
     }
 
     private static async Task<XqdResult> CoreAsync(
-        XqdJob job, XqdOptions opt, XqdCallbacks cb, XqdControl control,
+        XqdJob job, string playUrl, XqdOptions opt, XqdCallbacks cb, XqdControl control,
         CancellationToken ct, string segDir)
     {
         string outPath = job.OutPath;
@@ -45,7 +47,7 @@ public static class XqdDownloader
         int workers = opt.SegmentWorkers > 0 ? opt.SegmentWorkers : 12;
 
         cb.OnPhase("解析");
-        var manifest = await ManifestParser.ParseAsync(job.Url, opt.Quality, ct).ConfigureAwait(false);
+        var manifest = await ManifestParser.ParseAsync(playUrl, opt.Quality, ct).ConfigureAwait(false);
         if (manifest == null || manifest.Segments.Count == 0)
             return Fail(manifest != null ? manifest.Note : "清单解析失败", outPath);
 
@@ -57,7 +59,7 @@ public static class XqdDownloader
         {
             cb.OnPhase("下载");
             var direct = await DirectDownloader.DownloadAsync(
-                job.Url, outPath, expect, cb, control, ct).ConfigureAwait(false);
+                playUrl, outPath, expect, cb, control, ct).ConfigureAwait(false);
             return new XqdResult
             {
                 Ok = direct.ok,

@@ -111,6 +111,17 @@ public partial class App : Application
                     });
                     return;
                 }
+            case "--xqdcatalog":
+                {
+                    // ★ 兴趣岛课表诊断：取授权 → 列营 → 拉课表 → 解析第一节地址（只读）
+                    var w = new MainWindow { ShowInTaskbar = false, Opacity = 0 };
+                    RunThenShutdown(async () =>
+                    {
+                        w.Show();
+                        await w.XqdCatalogTestAsync(p1 ?? "", p2 ?? "");
+                    });
+                    return;
+                }
             case "--xqdui":
                 {
                     // ★ 开发期：直接停在「兴趣岛课程」页并塞几条示例（临时清单，不写用户数据）

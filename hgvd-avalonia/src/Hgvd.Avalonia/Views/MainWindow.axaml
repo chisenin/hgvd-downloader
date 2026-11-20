@@ -1,8 +1,9 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ctl="using:Hgvd.Avalonia.Controls"
-        xmlns:views="using:Hgvd.Avalonia.Views"
+        xmlns:vm="using:Hgvd.Avalonia.ViewModels"
         x:Class="Hgvd.Avalonia.Views.MainWindow"
+        x:Name="Root"
         Title="红果视频下载器  v1.1.1"
         Width="1180" Height="780" MinWidth="1020" MinHeight="620"
         WindowStartupLocation="CenterScreen"
@@ -19,166 +20,218 @@
 
   <Grid>
     <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="*" />
-      <RowDefinition Height="Auto" />
-    </Grid.RowDefinitions>
-
-    <!-- ══════════════ 顶栏 ══════════════ -->
-    <!-- ★ 整条顶栏都可以拖动窗口（原来只有左上角 logo 那一小块能拖，
-         鼠标一移出那块就断了，下载时更明显）。 -->
-    <Border Grid.Row="0" Height="62" Background="{DynamicResource BrandGradient}"
-            PointerPressed="TopBar_PointerPressed">
-      <DockPanel Margin="18,8,18,8" LastChildFill="False">
-        <Border x:Name="BrandBox" DockPanel.Dock="Left" Background="Transparent"
-                Cursor="Hand" VerticalAlignment="Center"
-                ToolTip.Tip="单击查看「关于」 · 拖动可移动窗口 · 双击最大化">
-          <StackPanel>
-            <TextBlock Text="红果视频下载器" FontSize="16" FontWeight="SemiBold"
-                       Foreground="White" />
-            <TextBlock Text="红果收藏夹 · 兴趣岛课程 · 批量导出通用 MP4" FontSize="11"
-                       Foreground="{DynamicResource BrandSubBrush}" />
-          </StackPanel>
-        </Border>
-
-        <TextBlock DockPanel.Dock="Left" Text="下载目录" Foreground="White"
-                   VerticalAlignment="Center" Margin="24,0,0,0" />
-        <TextBox x:Name="EdOut" DockPanel.Dock="Left" Width="250" Margin="8,0,0,0"
-                 Classes="round"
-                 VerticalAlignment="Center"
-                 LostFocus="EdOut_LostFocus"
-                 KeyDown="EdOut_KeyDown"
-                 ToolTip.Tip="改完直接回车或点别处即生效" />
-        <Button x:Name="BtnBrowse" DockPanel.Dock="Left" Content="浏览…" Margin="6,0,0,0"
-                Classes="modern" Click="BtnBrowse_Click" />
-
-        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
-                    VerticalAlignment="Stretch" Margin="0,0,-18,0">
-          <ctl:WindowButton x:Name="BtnWinMin" Kind="Minimize" Click="BtnWinMin_Click" />
-          <ctl:WindowButton x:Name="BtnWinMax" Kind="Maximize" Click="BtnWinMax_Click" />
-          <ctl:WindowButton x:Name="BtnWinClose" Kind="Close" Click="BtnWinClose_Click" />
-        </StackPanel>
-
-        <Button x:Name="BtnLogin" DockPanel.Dock="Right" Content="重新授权"
-                Classes="modern" Click="BtnLogin_Click"
-                ToolTip.Tip="从 MuMu 模拟器重新读取红果 App 登录态。" />
-        <TextBlock x:Name="LblAuth" DockPanel.Dock="Right" Text="授权：检查中…"
-                   Foreground="{DynamicResource BrandSubBrush}"
-                   VerticalAlignment="Center" Margin="14,0" />
-      </DockPanel>
-    </Border>
-
-    <!-- ══════════════ 主体 ══════════════ -->
-    <Grid Grid.Row="1" Margin="14,12,14,10">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto" />
-        <RowDefinition Height="Auto" />
         <RowDefinition Height="*" />
+        <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
 
-      <!-- ══ 内容源切换：红果视频 / 兴趣岛课程（同一窗口，共用下载目录与底栏） ══ -->
-      <Grid Grid.Row="0" ColumnDefinitions="Auto,*" Margin="0,0,0,10">
-        <Border Grid.Column="0" Background="#E9EEF6" CornerRadius="8" Padding="3">
-          <StackPanel Orientation="Horizontal">
-            <RadioButton x:Name="TabHongguo" GroupName="src" Classes="src"
-                         Content="红果视频" IsChecked="True" Checked="Src_Checked" />
-            <RadioButton x:Name="TabXqd" GroupName="src" Classes="src"
-                         Content="兴趣岛课程" Checked="Src_Checked" />
+      <!-- ══════════════ 顶栏 ══════════════ -->
+      <Border Grid.Row="0" Height="62" Background="{DynamicResource BrandGradient}"
+              PointerPressed="TopBar_PointerPressed">
+        <DockPanel Margin="18,8,18,8" LastChildFill="False">
+          <!-- 右：窗口三键（先占位，永远贴右上角） -->
+          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                      VerticalAlignment="Stretch" Margin="0,0,-18,0">
+            <ctl:WindowButton x:Name="BtnWinMin" Kind="Minimize" Click="BtnWinMin_Click" />
+            <ctl:WindowButton x:Name="BtnWinMax" Kind="Maximize" Click="BtnWinMax_Click" />
+            <ctl:WindowButton x:Name="BtnWinClose" Kind="Close" Click="BtnWinClose_Click" />
           </StackPanel>
-        </Border>
-        <TextBlock x:Name="LblSrcHint" Grid.Column="1" Margin="12,0,0,0" Classes="muted"
-                   VerticalAlignment="Center"
-                   Text="红果：从收藏夹批量下载 · 需要 MuMu 里的 App 登录态" />
-      </Grid>
 
-      <!-- 提示条 -->
-      <Border x:Name="Banner" Grid.Row="1" IsVisible="False" CornerRadius="8"
-              Padding="12,9" Margin="0,0,0,10" BorderThickness="1"
-              Background="{DynamicResource BannerInfoBg}"
-              BorderBrush="{DynamicResource BannerInfoBd}">
-        <TextBlock x:Name="TxtBanner" TextWrapping="Wrap"
-                   Foreground="{DynamicResource BannerInfoFg}" />
+          <!-- 右：授权（★ 启动不自动取，点这个按钮才按当前源去取） -->
+          <Button x:Name="BtnLogin" DockPanel.Dock="Right" Content="获取授权"
+                  Classes="modern" Click="BtnLogin_Click"
+                  ToolTip.Tip="按当前内容源去 MuMu 里读对应 App 的登录态：&#10;· 红果 → 红果 App&#10;· 兴趣岛 → 兴趣岛 App&#10;已有本机缓存时不会启动模拟器。" />
+          <TextBlock x:Name="LblAuth" DockPanel.Dock="Right" Text="授权：未获取"
+                     Foreground="{DynamicResource BrandSubBrush}"
+                     VerticalAlignment="Center" Margin="14,0" MaxWidth="200"
+                     TextTrimming="CharacterEllipsis" />
+
+          <Border x:Name="BrandBox" DockPanel.Dock="Left" Background="Transparent"
+                  Cursor="Hand" VerticalAlignment="Center"
+                  ToolTip.Tip="单击查看「关于」 · 拖动可移动窗口 · 双击最大化">
+            <StackPanel>
+              <TextBlock Text="红果视频下载器" FontSize="16" FontWeight="SemiBold"
+                         Foreground="White" />
+              <TextBlock Text="红果收藏夹 · 兴趣岛课程 · 批量导出通用 MP4" FontSize="11"
+                         Foreground="{DynamicResource BrandSubBrush}" />
+            </StackPanel>
+          </Border>
+
+          <TextBlock DockPanel.Dock="Left" Text="下载目录" Foreground="White"
+                     VerticalAlignment="Center" Margin="24,0,0,0" />
+          <TextBox x:Name="EdOut" DockPanel.Dock="Left" Width="250" Margin="8,0,0,0"
+                   Classes="round"
+                   VerticalAlignment="Center"
+                   LostFocus="EdOut_LostFocus"
+                   KeyDown="EdOut_KeyDown"
+                   ToolTip.Tip="改完直接回车或点别处即生效" />
+          <Button x:Name="BtnBrowse" DockPanel.Dock="Left" Content="浏览…" Margin="6,0,0,0"
+                  Classes="modern" Click="BtnBrowse_Click" />
+        </DockPanel>
       </Border>
 
-      <Grid Grid.Row="2">
-        <Grid x:Name="PaneHongguo">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="320" />
-          <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+      <!-- ══════════════ 主体 ══════════════ -->
+      <Grid Grid.Row="1" Margin="14,12,14,10">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="150" />
+        </Grid.RowDefinitions>
 
-        <!-- ── 左栏：收藏夹 ── -->
-        <Border Grid.Column="0" Classes="card" Margin="0,0,10,0">
-          <Grid>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="*" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <DockPanel Grid.Row="0" LastChildFill="False">
-              <TextBlock Text="收藏夹" Classes="section" />
-            </DockPanel>
-
-            <TextBox x:Name="EdSearch" Grid.Row="1" Classes="round" Margin="0,8,0,6"
-                     Watermark="搜索剧名…"
-                     TextChanged="EdSearch_TextChanged"
-                     ToolTip.Tip="按剧名筛选（留空 = 显示全部）" />
-
-            <ListBox x:Name="LstShelf" Grid.Row="2"
-                     Classes="shelf"
-                     BorderThickness="0" Background="Transparent"
-                     SelectionMode="Single"
-                     SelectionChanged="LstShelf_SelectionChanged">
-              <ListBox.ItemTemplate>
-                <DataTemplate>
-                  <!-- ★ 用 Grid 两列：DockPanel 会把右侧的类型文字挤没 -->
-                  <Grid Background="Transparent" ToolTip.Tip="{Binding ToolTip}">
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="*" />
-                      <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <!-- ★ 勾选即把该剧的分集「追加」进右栏下载清单（取消勾选则移出） -->
-                    <CheckBox Grid.Column="0"
-                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
-                              VerticalAlignment="Center" Margin="0,0,8,0"
-                              Click="ShkChk_Click" />
-                    <TextBlock Grid.Column="1" Text="{Binding Display}"
-                               Width="{Binding TitleWidth}"
-                               VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
-                    <TextBlock Grid.Column="2" Text="{Binding MetaText}"
-                               Width="66"
-                               FontSize="10" Foreground="#9AA6B5"
-                               TextTrimming="CharacterEllipsis"
-                               VerticalAlignment="Center" />
-                  </Grid>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-
-            <DockPanel Grid.Row="3" Margin="0,8,0,0" LastChildFill="False">
-              <Button x:Name="BtnRefresh" DockPanel.Dock="Left" Content="刷新"
-                      Classes="modern" Click="BtnRefresh_Click" />
-              <TextBlock x:Name="LblHint" DockPanel.Dock="Right" Margin="10,0,0,0"
-                         Classes="muted"
-                         TextTrimming="CharacterEllipsis"
-                         HorizontalAlignment="Right" />
-            </DockPanel>
-          </Grid>
+        <!-- 提示条 -->
+        <Border x:Name="Banner" Grid.Row="0" IsVisible="False" CornerRadius="8"
+                Padding="12,9" Margin="0,0,0,10" BorderThickness="1"
+                Background="{DynamicResource BannerInfoBg}"
+                BorderBrush="{DynamicResource BannerInfoBd}">
+          <TextBlock x:Name="TxtBanner" TextWrapping="Wrap"
+                     Foreground="{DynamicResource BannerInfoFg}" />
         </Border>
 
-        <!-- ── 右栏：分集列表 + 日志 ── -->
-        <Grid Grid.Column="1">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="*" />
-            <RowDefinition Height="150" />
-          </Grid.RowDefinitions>
+        <Grid Grid.Row="1" ColumnDefinitions="320,*">
 
-          <Border Grid.Row="0" Classes="card" Margin="0,0,0,10">
+          <!-- ── 左：内容源列表（收藏夹 / 我的课程） ── -->
+          <Border Grid.Column="0" Classes="card" Margin="0,0,10,0">
+            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+
+              <!-- 源切换 -->
+              <Border Grid.Row="0" Background="#E9EEF6" CornerRadius="8" Padding="3">
+                <StackPanel Orientation="Horizontal">
+                  <RadioButton x:Name="TabHongguo" GroupName="src" Classes="src"
+                               Content="红果视频" IsChecked="True" Checked="Src_Checked" />
+                  <RadioButton x:Name="TabXqd" GroupName="src" Classes="src"
+                               Content="兴趣岛课程" Checked="Src_Checked" />
+                </StackPanel>
+              </Border>
+
+              <!-- 搜索（两源各自一个框，切换显示） -->
+              <TextBox x:Name="EdSearch" Grid.Row="1" Classes="round" Margin="0,8,0,6"
+                       Watermark="搜索剧名…"
+                       TextChanged="EdSearch_TextChanged"
+                       ToolTip.Tip="按剧名筛选（留空 = 显示全部）" />
+              <TextBox x:Name="EdCampSearch" Grid.Row="1" Classes="round" Margin="0,8,0,6"
+                       IsVisible="False"
+                       Watermark="筛选营名…"
+                       TextChanged="EdCampSearch_TextChanged"
+                       ToolTip.Tip="按营名筛选（留空 = 显示全部）" />
+
+              <!-- 列表（红果收藏夹 / 兴趣岛营列表，叠在同一格） -->
+              <Grid Grid.Row="2">
+                <ListBox x:Name="LstShelf"
+                         Classes="shelf"
+                         BorderThickness="0" Background="Transparent"
+                         SelectionMode="Single"
+                         SelectionChanged="LstShelf_SelectionChanged">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Grid Background="Transparent" ToolTip.Tip="{Binding ToolTip}">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox Grid.Column="0"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  VerticalAlignment="Center" Margin="0,0,8,0"
+                                  Click="ShkChk_Click" />
+                        <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                   Width="{Binding TitleWidth}"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="2" Text="{Binding MetaText}"
+                                   Width="66"
+                                   FontSize="10" Foreground="#9AA6B5"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center" />
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+
+                <ListBox x:Name="LstCamps" IsVisible="False"
+                         Classes="shelf"
+                         BorderThickness="0" Background="Transparent"
+                         SelectionMode="Single"
+                         DoubleTapped="LstCamps_DoubleTapped">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Grid Background="Transparent" ToolTip.Tip="{Binding ToolTip}"
+                            Height="30">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox Grid.Column="0"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  VerticalAlignment="Center" Margin="0,0,8,0"
+                                  Click="CampChk_Click" />
+                        <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                   Width="{Binding TitleWidth}"
+                                   VerticalAlignment="Center"
+                                   FontSize="12.5"
+                                   TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
+                        <Border Grid.Column="2" Background="#F1F4F8" CornerRadius="8"
+                                Padding="7,2" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Badge}" FontSize="10.5"
+                                     Foreground="{DynamicResource MutedBrush}" />
+                        </Border>
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+
+              <!-- 手动链接（折叠；自动发现之外的兜底入口） -->
+              <Grid x:Name="ManualPanel" Grid.Row="3" IsVisible="False"
+                    RowDefinitions="Auto,Auto,Auto" Margin="0,8,0,0">
+                <Border Grid.Row="0" CornerRadius="8" BorderThickness="1"
+                        BorderBrush="{DynamicResource CardBorderBrush}" Background="White">
+                  <TextBox x:Name="EdLinks" BorderThickness="0" Background="Transparent"
+                           AcceptsReturn="True" TextWrapping="Wrap" Height="86"
+                           FontFamily="Consolas, Courier New, monospace" FontSize="12"
+                           VerticalContentAlignment="Top" Padding="8,6"
+                           ScrollViewer.VerticalScrollBarVisibility="Auto"
+                           Watermark="一行一条：&#10;课名 | https://…/xxx.m3u8&#10;https://…"
+                           ToolTip.Tip="支持「课名 | 链接」「课名&#9;链接」「只有链接」；# 开头是注释" />
+                </Border>
+                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,6,0,0">
+                  <TextBlock Grid.Column="0" Text="链接里的 sign 有有效期，过期会 403"
+                             FontSize="10.5" Foreground="{DynamicResource HintBrush}"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                  <Button Grid.Column="1" x:Name="BtnAddLinks" Content="加入清单"
+                          Classes="primary" Padding="10,4" FontSize="12"
+                          Click="BtnAddLinks_Click" />
+                </Grid>
+                <TextBlock Grid.Row="2" x:Name="LblLinkCount" Text="0 条"
+                           FontSize="10.5" Foreground="{DynamicResource HintBrush}"
+                           Margin="2,4,0,0" />
+              </Grid>
+
+              <!-- 底栏：按源切换 -->
+              <Grid Grid.Row="4" Margin="0,8,0,0" ColumnDefinitions="Auto,Auto,*,Auto">
+                <Button x:Name="BtnRefresh" Grid.Column="0" Content="刷新"
+                        Classes="modern" Click="BtnRefresh_Click" />
+                <Button x:Name="BtnRefreshCamps" Grid.Column="0" Content="刷新课程"
+                        Classes="modern" IsVisible="False" Click="BtnRefreshCamps_Click" />
+                <CheckBox x:Name="ChkAllCamps" Grid.Column="1" Content="全选" IsVisible="False"
+                          IsThreeState="True" MinHeight="0" Margin="8,0,0,0"
+                          VerticalAlignment="Center" Click="ChkAllCamps_Click"
+                          ToolTip.Tip="勾选全部营（会逐个拉课表，比较慢）" />
+                <Button x:Name="BtnManualToggle" Grid.Column="3" Content="链接…"
+                        Classes="modern" Padding="8,3" IsVisible="False"
+                        Click="BtnManualToggle_Click"
+                        ToolTip.Tip="手动粘贴课程链接（自动发现之外的兜底）" />
+                <TextBlock x:Name="LblHint" Grid.Column="3" Margin="10,0,0,0"
+                           Classes="muted"
+                           TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Right" />
+              </Grid>
+            </Grid>
+          </Border>
+
+          <!-- ── 右：两源共用的下载清单 ── -->
+          <Border Grid.Column="1" Classes="card">
             <Grid>
               <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -186,25 +239,14 @@
                 <RowDefinition Height="Auto" />
               </Grid.RowDefinitions>
 
-              <!-- ★★ 用 Grid 而**不是** DockPanel。
-                   DockPanel 是「按子元素顺序依次 dock，后面的拿剩下的」——
-                   窗口一窄，右边这组（画质/下载/停止/提取App缓存）就被挤出可视区，
-                   用户截图里红框标的就是被挤到窗口外的「提取App缓存」。
-                   Auto,*,Auto 的含义：两侧永远按内容所需宽度排布、绝不压缩，
-                   能压缩的只有中间那段空白。 -->
+              <!-- ★★ 用 Grid 而**不是** DockPanel：窗口一窄，右侧按钮会被挤出可视区 -->
               <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto">
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                   <TextBlock Text="下载清单 ·" Classes="section" />
-                  <!-- ★ 跑马灯要限宽：它有内容时会把右边的
-                       画质/下载/停止/提取缓存按钮挤出窗口 -->
                   <ctl:MarqueeControl x:Name="Marquee" Margin="4,0,0,0"
-                                      Width="150" ToolTip.Tip="当前剧目的第一集标题" />
+                                      Width="150" ToolTip.Tip="当前正在处理的条目标题" />
                   <StackPanel Orientation="Horizontal" Margin="10,0,0,0"
                               VerticalAlignment="Center">
-                    <!-- ★ 用户反馈：「待下载 / 已完成 / 失败」三个筛选标签
-                         毫无意义，已去掉（红框标注处）。
-                         筛选逻辑（MatchEpView / ApplyEpView）保留在代码里，
-                         以后想加回来很快。 -->
                     <RadioButton x:Name="RbAll" GroupName="EpView"
                                  Classes="pill" Content="全部" IsChecked="True"
                                  Checked="RbView_Checked" />
@@ -214,9 +256,13 @@
                   <ComboBox x:Name="CmbQuality" Width="140" Margin="3,0,0,0"
                             VerticalAlignment="Center"
                             SelectionChanged="CmbQuality_SelectionChanged" />
+                  <Button x:Name="BtnPause" Content="暂停" Margin="3,0,0,0"
+                          Classes="modern" Click="BtnPause_Click" IsEnabled="False"
+                          IsVisible="False"
+                          ToolTip.Tip="只对兴趣岛任务有效（暂停时保留分片）" />
                   <Button x:Name="BtnRun" Content="下载" Margin="3,0,0,0"
                           Classes="primary" Click="BtnRun_Click"
-                          ToolTip.Tip="有选中行则只下选中的；没选中则下清单里所有待下载的&#10;（左边勾选几部剧，它们的分集会依次追加到清单里）" />
+                          ToolTip.Tip="有选中行则只下选中的；没选中则下清单里所有待下载的&#10;（左边勾选剧目/营，它们的条目会依次追加到清单里）" />
                   <Button x:Name="BtnStop" Content="停止" Margin="3,0,0,0"
                           Classes="modern danger" Click="BtnStop_Click" IsEnabled="False" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
@@ -234,8 +280,7 @@
                     <RowDefinition Height="*" />
                   </Grid.RowDefinitions>
 
-                  <!-- ★ 表头与数据行用**同样的列定义**，
-                       标题列的宽度由代码算好后同时写进两边 → 永远对齐。 -->
+                  <!-- ★ 表头与数据行用**同样的列定义**，标题列宽度由代码算好同时写进两边 -->
                   <Border Grid.Row="0" Classes="thead" Padding="6,0">
                     <Grid Height="28" ColumnDefinitions="58,Auto,54,126,74,136">
                       <TextBlock Grid.Column="0" Text="状态" Classes="thead" />
@@ -253,15 +298,14 @@
                            BorderThickness="0" Background="Transparent"
                            SelectionMode="Multiple"
                            DoubleTapped="LstEpisodes_DoubleTapped"
-                           ToolTip.Tip="双击某一集 = 只下这一集（不看勾选、不受筛选影响）"
+                           ToolTip.Tip="双击某一行 = 只下这一条（不看勾选、不受筛选影响）"
                            ScrollViewer.VerticalScrollBarVisibility="Visible">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
                         <Grid>
-                          <!-- 正常分集行 -->
+                          <!-- 正常行 -->
                           <Grid Height="26" ColumnDefinitions="58,Auto,54,126,74,136"
                                 IsVisible="{Binding IsEpisode}">
-                            <!-- 状态胶囊 -->
                             <Border Grid.Column="0" IsVisible="{Binding ShowPill}"
                                     Background="{Binding StatePillBg}"
                                     BorderBrush="{Binding StatePillBorder}"
@@ -270,7 +314,6 @@
                                     VerticalAlignment="Center">
                               <TextBlock Text="{Binding StateWord}" FontSize="11" />
                             </Border>
-                            <!-- 标题 -->
                             <TextBlock Grid.Column="1" Text="{Binding Title}"
                                        Width="{Binding TitleWidth}"
                                        TextTrimming="CharacterEllipsis"
@@ -282,7 +325,6 @@
                                        Foreground="#8494A8" VerticalAlignment="Center" />
                             <TextBlock Grid.Column="4" Text="{Binding SpeedText}"
                                        Foreground="#8494A8" VerticalAlignment="Center" />
-                            <!-- 进度：渐变条 + 居中百分比 -->
                             <ctl:ProgressCell Grid.Column="5"
                                               Percent="{Binding Percent}"
                                               Text="{Binding ProgressText}"
@@ -290,7 +332,7 @@
                                               VerticalAlignment="Center" />
                           </Grid>
 
-                          <!-- ★ 分组标题行：多部剧累计时把每部剧分开，序号各归各的 -->
+                          <!-- 分组标题行：多部剧/多个营累计时把它们分开 -->
                           <Border IsVisible="{Binding IsGroupHeader}" Height="26"
                                   Margin="0,6,0,2" Padding="10,0" CornerRadius="6"
                                   Background="#F1F4FA">
@@ -310,70 +352,62 @@
                          Classes="muted" />
             </Grid>
           </Border>
-
-          <!-- 日志 -->
-          <Border Grid.Row="1" Classes="card" Margin="0">
-            <Grid>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-              </Grid.RowDefinitions>
-              <DockPanel Grid.Row="0" LastChildFill="False">
-                <TextBlock Text="运行日志" Classes="section" />
-                <Button x:Name="BtnClearLog" DockPanel.Dock="Right" Content="清空"
-                        Classes="modern" Click="BtnClearLog_Click" Padding="8,3" />
-              </DockPanel>
-              <TextBox x:Name="TxtLog" Grid.Row="1" Margin="0,6,0,0" Classes="log" />
-            </Grid>
-          </Border>
-        </Grid>
         </Grid>
 
-        <!-- ── 兴趣岛课程页（切到该源时显示；红果侧布局一行未动） ── -->
-        <views:XqdPage x:Name="PaneXqd" IsVisible="False" />
+        <!-- ── 运行日志（全宽，两源共用） ── -->
+        <Border Grid.Row="2" Classes="card" Margin="0,10,0,0">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Grid.Row="0" LastChildFill="False">
+              <TextBlock Text="运行日志" Classes="section" />
+              <Button x:Name="BtnClearLog" DockPanel.Dock="Right" Content="清空"
+                      Classes="modern" Click="BtnClearLog_Click" Padding="8,3" />
+            </DockPanel>
+            <TextBox x:Name="TxtLog" Grid.Row="1" Margin="0,6,0,0" Classes="log" />
+          </Grid>
+        </Border>
       </Grid>
+
+      <!-- ══════════════ 底栏 ══════════════ -->
+      <Border Grid.Row="2" Height="28" Background="{DynamicResource StatusBgBrush}"
+              BorderBrush="#E0E5EE" BorderThickness="0,1,0,0">
+        <DockPanel Margin="14,0">
+          <TextBlock x:Name="LblVersion" DockPanel.Dock="Right" VerticalAlignment="Center"
+                     Text="v1.1.1" Foreground="#7C8AA0" FontSize="11"
+                     Margin="12,0,0,0" />
+          <TextBlock x:Name="LblStatus" DockPanel.Dock="Left" Text="就绪"
+                     VerticalAlignment="Center" Classes="muted" />
+          <TextBlock x:Name="LblRight" VerticalAlignment="Center" Margin="10,0,0,0"
+                     Classes="muted" />
+        </DockPanel>
+      </Border>
     </Grid>
 
-    <!-- ══════════════ 底栏 ══════════════ -->
-    <Border Grid.Row="2" Height="28" Background="{DynamicResource StatusBgBrush}"
-            BorderBrush="#E0E5EE" BorderThickness="0,1,0,0">
-      <DockPanel Margin="14,0">
-        <!-- ★ 右侧固定放版本号（用户要求）；
-             「已完成 N / M」挪到左边、跟在状态文字后面。 -->
-        <TextBlock x:Name="LblVersion" DockPanel.Dock="Right" VerticalAlignment="Center"
-                   Text="v1.1.1" Foreground="#7C8AA0" FontSize="11"
-                   Margin="12,0,0,0" />
-        <TextBlock x:Name="LblStatus" DockPanel.Dock="Left" Text="就绪"
-                   VerticalAlignment="Center" Classes="muted" />
-        <TextBlock x:Name="LblRight" VerticalAlignment="Center" Margin="10,0,0,0"
-                   Classes="muted" />
-      </DockPanel>
-    </Border>
-  </Grid>
-      <!-- ══════════════ 缩放热区 ══════════════ -->
-      <!-- ★ 自绘窗口（SystemDecorations=None）没有系统边框，
-           这圈透明热区负责把「拖边」变成「改窗口大小」。 -->
-      <Grid ZIndex="100">
-        <Border Name="GripLeft" Width="6" HorizontalAlignment="Left" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripRight" Width="6" HorizontalAlignment="Right" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripTop" Height="6" VerticalAlignment="Top" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripBottom" Height="6" VerticalAlignment="Bottom" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripTopLeft" Width="16" Height="16" HorizontalAlignment="Left"
-                VerticalAlignment="Top" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripTopRight" Width="16" Height="16" HorizontalAlignment="Right"
-                VerticalAlignment="Top" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripBottomLeft" Width="16" Height="16" HorizontalAlignment="Left"
-                VerticalAlignment="Bottom" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-        <Border Name="GripBottomRight" Width="16" Height="16" HorizontalAlignment="Right"
-                VerticalAlignment="Bottom" Background="Transparent"
-                PointerPressed="Grip_PointerPressed" />
-      </Grid>
+    <!-- ══════════════ 缩放热区 ══════════════ -->
+    <Grid ZIndex="100">
+      <Border Name="GripLeft" Width="6" HorizontalAlignment="Left" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripRight" Width="6" HorizontalAlignment="Right" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripTop" Height="6" VerticalAlignment="Top" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripBottom" Height="6" VerticalAlignment="Bottom" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripTopLeft" Width="16" Height="16" HorizontalAlignment="Left"
+              VerticalAlignment="Top" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripTopRight" Width="16" Height="16" HorizontalAlignment="Right"
+              VerticalAlignment="Top" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripBottomLeft" Width="16" Height="16" HorizontalAlignment="Left"
+              VerticalAlignment="Bottom" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+      <Border Name="GripBottomRight" Width="16" Height="16" HorizontalAlignment="Right"
+              VerticalAlignment="Bottom" Background="Transparent"
+              PointerPressed="Grip_PointerPressed" />
+    </Grid>
   </Grid>
 </Window>

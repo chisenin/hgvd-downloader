@@ -51,6 +51,43 @@ public static class XqdNaming
         return Path.Combine(dir, stem + ".part.mp4");
     }
 
+    /// <summary>startTime 毫秒 → YYYY.MM.DD（本地时区，成品名后缀）。</summary>
+    public static string FmtDate(long ms)
+    {
+        if (ms <= 0) return "";
+        try
+        {
+            return System.DateTimeOffset.FromUnixTimeMilliseconds(ms)
+                .ToLocalTime().ToString("yyyy.MM.dd",
+                    System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>startTime 毫秒 → MM.DD HH:MM（与 App 课表一致）。</summary>
+    public static string FmtWhen(long ms)
+    {
+        if (ms <= 0) return "";
+        try
+        {
+            return System.DateTimeOffset.FromUnixTimeMilliseconds(ms)
+                .ToLocalTime().ToString("MM.dd HH:mm",
+                    System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// 课表任务的成品名：&lt;序号&gt;.&lt;课名&gt;.&lt;日期&gt;.mp4（与上游一致）。
+    /// 序号为空时退回 &lt;课名&gt;。
+    /// </summary>
+    public static string LessonFileName(int seq, string title, string whenDate)
+    {
+        string name = (seq > 0 ? seq.ToString("000") + "." : "") + SafeName(title);
+        if (!string.IsNullOrEmpty(whenDate)) name += "." + whenDate;
+        return name + ".mp4";
+    }
+
     /// <summary>
     /// 目标文件名已被占用时追加 -2 / -3（只在「同名不同链接」时用；
     /// 同名同链接靠 Id 去重，不会走到这里）。

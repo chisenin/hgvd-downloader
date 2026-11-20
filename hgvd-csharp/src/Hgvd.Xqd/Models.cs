@@ -34,14 +34,57 @@ public static class XqdState
     };
 }
 
-/// <summary>一条待下载的课程。由链接清单解析而来，也是界面上的一行。</summary>
+/// <summary>一个营（我的课程里的一个合集）。对应兴趣岛 myCourseListV2 的一项。</summary>
+public sealed class Camp
+{
+    public string Name { get; set; } = "";
+    public string CampId { get; set; } = "";
+    /// <summary>公开课没有 campId，只有 periodId（走 openCourse 端点）。</summary>
+    public string PeriodId { get; set; } = "";
+    public string SkuType { get; set; } = "";
+    public string Kind { get; set; } = "";
+    public int Count { get; set; }
+    public string Badge => Count > 0 ? $"{Kind} · {Count} 节" : Kind;
+    public override string ToString() => $"<Camp {Name} ({Count})>";
+}
+
+/// <summary>一节课（课表里的一行）。</summary>
+public sealed class Lesson
+{
+    /// <summary>营内顺序，0 起；成品名里的序号 = Index + 1。</summary>
+    public int Index { get; set; }
+    public string Title { get; set; } = "";
+    public string When { get; set; } = "";
+    public string WhenDate { get; set; } = "";
+    public double Duration { get; set; }
+    /// <summary>VIDEO / INTELLIGENT_LIVE / AUDIO / OPEN_COURSE。</summary>
+    public string Type { get; set; } = "";
+    public string TopicId { get; set; } = "";
+    public string RoomId { get; set; } = "";
+    public string CampName { get; set; } = "";
+    public string CampId { get; set; } = "";
+    public string PeriodId { get; set; } = "";
+}
+
+/// <summary>一条待下载的课程。来源可以是粘贴的链接，也可以是自动发现的课表。</summary>
 public sealed class XqdJob
 {
-    /// <summary>稳定标识：标题 + URL（URL 变了就是新任务）。</summary>
+    /// <summary>稳定标识：标题 + 营 + topicId + URL。</summary>
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
+    /// <summary>直链 / 清单地址。课表来的任务这里为空，下载时再解析。</summary>
     public string Url { get; set; } = "";
     public string Camp { get; set; } = "";
+
+    // ── 课表来源（有 TopicId 或 CampId/PeriodId 即视为课表任务）──
+    public string CampId { get; set; } = "";
+    public string PeriodId { get; set; } = "";
+    public string TopicId { get; set; } = "";
+    public string RoomId { get; set; } = "";
+    public string LessonType { get; set; } = "";
+    /// <summary>营内序号（1 起）；0 = 链接任务。</summary>
+    public int Seq { get; set; }
+    public string WhenDate { get; set; } = "";
 
     /// <summary>成品路径（加入队列时算好，下载时按需改扩展名）。</summary>
     public string OutPath { get; set; } = "";
@@ -61,10 +104,15 @@ public sealed class XqdJob
     [System.Text.Json.Serialization.JsonIgnore] public long Total { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public double Speed { get; set; }
 
+    /// <summary>true = 课表任务（需要先用 API 解析播放地址）。</summary>
+    public bool FromCatalog => !string.IsNullOrEmpty(TopicId) || !string.IsNullOrEmpty(CampId)
+                               || !string.IsNullOrEmpty(PeriodId);
+
     /// <summary>「营 · 课名」，界面显示与日志用。</summary>
     public string Display => string.IsNullOrEmpty(Camp) ? Title : Camp + " · " + Title;
 
-    public static string MakeId(string title, string url) => XqdUtil.Md5Hex16(title + "\n" + url);
+    public static string MakeId(string title, string url, string camp = "", string topicId = "")
+        => XqdUtil.Md5Hex16((title ?? "") + "\n" + (url ?? "") + "\n" + (camp ?? "") + "\n" + (topicId ?? ""));
 }
 
 /// <summary>下载进度快照。</summary>

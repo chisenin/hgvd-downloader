@@ -13,6 +13,8 @@ using Avalonia.VisualTree;
 using Hgvd.Avalonia.ViewModels;
 using Hgvd.Core;
 using Hgvd.Core.Engine;
+using Hgvd.Xqd;
+using Hgvd.Xqd.Api;
 
 namespace Hgvd.Avalonia.Views;
 
@@ -383,34 +385,60 @@ public partial class MainWindow
                       : need > MinWidth ? $"MinWidth 至少要比 {need:0} 大"
                                         : "有余量");
 
-        // ⑫ ★ 内容源切换 + 兴趣岛页（2026-11-21 把兴趣岛下载内核合并进来）
-        //    ★ 用临时存储目录，绝不把测试清单写进用户真实的 ~/.hgv_tool/xqd/jobs.json
+        // ⑫ ★ 双源共用清单 + 按需授权（2026-11-21 第二版）
+        //    ★ 用临时存储目录，绝不把测试清单写进用户真实的 ~/.hgv_tool/xqd/jobs.json；
+        //      _testMode 同时禁掉课表自动发现（不联网）。
         string xqdRoot = Path.Combine(Path.GetTempPath(), "hgvd_xqd_uitest");
         try { if (Directory.Exists(xqdRoot)) Directory.Delete(xqdRoot, true); } catch { }
-        PaneXqd.UseStoreForTest(xqdRoot);
+        UseXqdStoreForTest(xqdRoot);
+
+        Check("授权按钮写的是「获取授权」（启动不自动取）",
+            (BtnLogin.Content as string) == "获取授权",
+            BtnLogin.Content?.ToString() ?? "");
+
+        int hgRowsBefore = EpisodeRows.Count(r => r.IsEpisode && !r.IsXqd);
 
         TabXqd.IsChecked = true;
         await Task.Delay(400);
-        Check("切到兴趣岛 → 兴趣岛页显示", PaneXqd.IsVisible && !PaneHongguo.IsVisible,
-            $"xqd={PaneXqd.IsVisible} 红果={PaneHongguo.IsVisible}");
-        Check("切到兴趣岛 → 收起红果专属的授权控件",
-            !BtnLogin.IsVisible && !LblAuth.IsVisible);
+        Check("切到兴趣岛 → 左栏换成营列表", LstCamps.IsVisible && !LstShelf.IsVisible,
+            $"营列表={LstCamps.IsVisible} 收藏夹={LstShelf.IsVisible}");
+        Check("切到兴趣岛 → 隐藏红果专属的「提取App缓存」", !BtnCache.IsVisible);
+        Check("切到兴趣岛 → 授权状态切到兴趣岛",
+            (LblAuth.Text ?? "").StartsWith("兴趣岛", StringComparison.Ordinal),
+            LblAuth.Text ?? "");
+        Check("切到兴趣岛 → 右栏还是同一张下载清单",
+            ReferenceEquals(LstEpisodes.ItemsSource, EpisodeView),
+            ReferenceEquals(LstEpisodes.ItemsSource, EpisodeView) ? "同一实例" : "ItemsSource 被换掉了");
 
-        int xqdAdded = PaneXqd.AddFromText(
-            "第一节：试看 | https://example.com/a.m3u8\n" +
+        // 手动链接兜底入口：仍然进**同一张**清单
+        EdLinks.Text =
+            "测试课甲 | https://example.com/a.m3u8\n" +
             "https://example.com/b.m3u8\n" +
-            "第一节：试看 | https://example.com/a.m3u8");
-        Check("链接清单能解析并去重", xqdAdded == 2, $"加入 {xqdAdded} 节");
-        Check("兴趣岛清单行数与数据一致", PaneXqd.JobRowCount == 2, $"{PaneXqd.JobRowCount} 行");
-
-        int xqdAgain = PaneXqd.AddFromText("第一节：试看 | https://example.com/a.m3u8");
-        Check("同一条链接不会重复加入", xqdAgain == 0, $"又加了 {xqdAgain} 节");
+            "测试课甲 | https://example.com/a.m3u8";
+        BtnAddLinks_Click(null, null);
+        await Task.Delay(300);
+        int xqdRows = EpisodeRows.Count(r => r.IsXqd && r.IsEpisode);
+        Check("手动链接加入共用清单（去重后 2 条）", xqdRows == 2, $"{xqdRows} 行");
+        bool hasLinkHeader = EpisodeRows.Any(r => r.IsGroupHeader && r.SeriesId == "xqd:__links");
+        Check("兴趣岛的条目在清单里带分组标题", hasLinkHeader,
+            hasLinkHeader ? "有「手动链接」分组" : "没有「手动链接」分组标题");
 
         TabHongguo.IsChecked = true;
-        await Task.Delay(400);
-        Check("切回红果 → 红果页恢复", PaneHongguo.IsVisible && !PaneXqd.IsVisible,
-            $"红果={PaneHongguo.IsVisible} xqd={PaneXqd.IsVisible}");
-        Check("切回红果 → 授权控件恢复", BtnLogin.IsVisible && LblAuth.IsVisible);
+        await Task.Delay(300);
+        Check("切回红果 → 收藏夹恢复", LstShelf.IsVisible && !LstCamps.IsVisible);
+        Check("切回红果 → 兴趣岛的条目仍在同一张清单里",
+            EpisodeRows.Count(r => r.IsXqd && r.IsEpisode) == xqdRows,
+            $"{EpisodeRows.Count(r => r.IsXqd && r.IsEpisode)} 行");
+        Check("切回红果 → 红果的行没被影响",
+            EpisodeRows.Count(r => r.IsEpisode && !r.IsXqd) == hgRowsBefore,
+            $"{EpisodeRows.Count(r => r.IsEpisode && !r.IsXqd)} 行（原 {hgRowsBefore}）");
+
+        // 清理掉测试加进清单的行（避免影响退出前的状态）
+        foreach (var r in EpisodeRows.Where(r => r.IsXqd).ToList())
+        {
+            EpisodeRows.Remove(r);
+            EpisodeView.Remove(r);
+        }
 
         Log(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");
         Console.WriteLine(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");
@@ -461,15 +489,17 @@ public partial class MainWindow
         try { if (Directory.Exists(outRoot)) Directory.Delete(outRoot, true); } catch { }
         Directory.CreateDirectory(outRoot);
 
-        PaneXqd.ResolveOutDir = () => outRoot;
-        PaneXqd.UseStoreForTest(Path.Combine(outRoot, "state"));
+        UseXqdStoreForTest(Path.Combine(outRoot, "state"));
+        EdOut.Text = outRoot;                       // 只改文本框，不写用户配置
         TabXqd.IsChecked = true;
         await Task.Delay(300);
 
         string name = string.IsNullOrWhiteSpace(title) ? "冒烟测试" : title;
-        int added = PaneXqd.AddFromText($"{name} | {url}");
-        Line($"清单：加入 {added} 节");
-        if (added == 0)
+        EdLinks.Text = $"{name} | {url}";
+        BtnAddLinks_Click(null, null);
+        var row = EpisodeRows.LastOrDefault(r => r.IsXqd && r.IsEpisode);
+        Line(row == null ? "清单：加入 0 节" : "清单：加入 1 节");
+        if (row == null)
         {
             Line("✗ 链接没能加入清单（格式不对？）");
             WriteXqdReport(report, false);
@@ -477,12 +507,12 @@ public partial class MainWindow
         }
 
         var sw = Stopwatch.StartNew();
-        var (ok, fail, skip) = await PaneXqd.RunAllForTestAsync();
+        var (ok, fail) = await DownloadXqdRowsAsync(new List<EpisodeRow> { row });
         sw.Stop();
-        Line($"结果：成功 {ok} · 失败 {fail} · 跳过 {skip} · 用时 {sw.Elapsed.TotalSeconds:0.0}s");
+        Line($"结果：成功 {ok} · 失败 {fail} · 用时 {sw.Elapsed.TotalSeconds:0.0}s");
 
-        string file = PaneXqd.JobPaths().FirstOrDefault(File.Exists);
-        if (string.IsNullOrEmpty(file))
+        string file = row.Xqd?.OutPath;
+        if (string.IsNullOrEmpty(file) || !File.Exists(file))
         {
             // 直链音频可能改了扩展名（.mp3/.m4a），按目录里最大的文件兜底
             string dir = Path.Combine(outRoot, "兴趣岛");
@@ -509,6 +539,88 @@ public partial class MainWindow
         WriteXqdReport(report, pass);
     }
 
+    /// <summary>
+    /// 兴趣岛课表诊断（--xqdcatalog [营名关键字]）：
+    /// 取授权 → 列营 → 拉一个营的课表 → 解析第一节的播放地址。只读，不下载。
+    /// ★ 结果写 <c>~/.hgv_tool/xqdcatalog.log</c>，末行 <c>=== pass=1 ===</c>。
+    /// </summary>
+    public async Task XqdCatalogTestAsync(string filter = "", string mode = "")
+    {
+        const string Hdr = "═══ 兴趣岛课表诊断 ═══";
+        Log(Hdr);
+        Console.WriteLine(Hdr);
+
+        var report = new StringBuilder();
+        void Line(string s)
+        {
+            Log(s);
+            Console.WriteLine(s);
+            report.AppendLine(s);
+        }
+
+        bool pass = false;
+        try
+        {
+            var res = await XqdAuth.AcquireAsync(m => Line("· " + m));
+            Line(res.Ok
+                ? $"授权：{(res.FromCache ? "本机缓存" : "MuMu 读取")} — {res.Message}"
+                : "授权失败：" + res.Message);
+            if (!res.Ok) { WriteCatalogReport(report, false); return; }
+
+            var platform = new QianliaoPlatform(res.Cookie);
+            var camps = await platform.ListAllCampsAsync();
+            int formal = camps.Count(c => c.Kind == "正式营");
+            int trial = camps.Count(c => c.Kind == "体验营");
+            Line($"营：{camps.Count} 个（正式营 {formal} · 体验营 {trial} · 公开课 {camps.Count - formal - trial}）");
+
+            foreach (var c in camps.Take(8))
+                Line($"  · {c.Name} — {c.Badge}"
+                     + (string.IsNullOrEmpty(c.CampId) ? "（公开课）" : ""));
+
+            var camp = camps.FirstOrDefault(c =>
+                           !string.IsNullOrEmpty(filter) &&
+                           (c.Name?.Contains(filter, StringComparison.CurrentCultureIgnoreCase) ?? false))
+                       ?? camps.FirstOrDefault(c => c.Kind == "正式营")
+                       ?? camps.FirstOrDefault();
+
+            if (camp == null) { Line("✗ 没有可用的营"); WriteCatalogReport(report, false); return; }
+
+            var lessons = await platform.CampCatalogAsync(camp);
+            Line($"课表：「{camp.Name}」{lessons.Count} 节");
+            foreach (var l in lessons.Take(3))
+                Line($"  · {l.Index + 1:000}. {l.Title}  ({l.Duration:0}s, {l.When})");
+
+            if (lessons.Count == 0) { WriteCatalogReport(report, false); return; }
+
+            var url = await platform.ResolveAsync(camp, lessons[0]);
+            Line("播放地址：" + (url.Length > 0 ? "✓ " + new Uri(url).Host : "✗ 空"));
+            // ★ 排障用：--xqdcatalog <关键字> url 会打印完整地址，可直接喂给 --xqdtest
+            if (string.Equals(mode, "url", StringComparison.OrdinalIgnoreCase))
+                Line("URL=" + url);
+            pass = lessons.Count > 0 && url.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception e)
+        {
+            Line("✗ 异常：" + e.Message);
+        }
+
+        WriteCatalogReport(report, pass);
+    }
+
+    private static void WriteCatalogReport(StringBuilder report, bool pass)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hgv_tool");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "xqdcatalog.log"),
+                report + $"=== pass={(pass ? 1 : 0)} ===\n");
+        }
+        catch { }
+        Console.WriteLine(pass ? "═══ 通过 ═══" : "═══ 未通过 ═══");
+    }
+
     private static void WriteXqdReport(StringBuilder report, bool pass)
     {
         try
@@ -532,16 +644,28 @@ public partial class MainWindow
         string root = Path.Combine(Path.GetTempPath(), "hgvd_xqd_shot");
         try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
 
-        PaneXqd.ResolveOutDir = () => root;
-        PaneXqd.UseStoreForTest(Path.Combine(root, "state"));
+        UseXqdStoreForTest(Path.Combine(root, "state"));
+        EdOut.Text = root;
         TabXqd.IsChecked = true;
 
-        PaneXqd.AddFromText(
+        // 假营列表（截图用：结构真实、数据虚构，不联网）
+        CampRows.Add(new XqdCampRow(new Camp
+        { Name = "引气归源太极营", CampId = "1001", Kind = "正式营", Count = 24 }));
+        CampRows.Add(new XqdCampRow(new Camp
+        { Name = "静坐内观-身心共养计划", CampId = "1002", Kind = "正式营", Count = 18 }));
+        CampRows.Add(new XqdCampRow(new Camp
+        { Name = "五行养生音乐", CampId = "1003", Kind = "体验营", Count = 12 }));
+        CampRows.Add(new XqdCampRow(new Camp
+        { Name = "才艺名师公开课", PeriodId = "170814973572", Kind = "公开课", Count = 9 }));
+        ApplyCampFilter();
+
+        // 共用清单里放几条兴趣岛任务（示例，不下载）
+        EdLinks.Text =
             "先导课：解谜自然之道 | https://example.com/a.m3u8 [48:12]\n" +
             "五行导引功第一课：龟形导引功教学 | https://example.com/b.m3u8 [36:40]\n" +
             "聚气凝神巩固课——五行导引功串联+六字呼吸法 | https://example.com/c.m3u8 [1:12:30]\n" +
-            "【静坐姿势】道家七支坐法 | https://example.com/d.m3u8 [21:05]\n" +
-            "【静坐法门】静坐准备、方法和注意事项 | https://example.com/e.m3u8 [15:22]");
+            "【静坐姿势】道家七支坐法 | https://example.com/d.m3u8 [21:05]";
+        BtnAddLinks_Click(null, null);
     }
 
     /// <summary>在可视树里找到某一行的勾选框。</summary>

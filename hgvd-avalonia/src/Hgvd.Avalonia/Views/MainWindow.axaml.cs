@@ -20,6 +20,8 @@ using Hgvd.Avalonia.ViewModels;
 using Hgvd.Core;
 using Hgvd.Core.Api;
 using Hgvd.Core.Engine;
+using Hgvd.Xqd;
+using Hgvd.Xqd.Api;
 
 namespace Hgvd.Avalonia.Views;
 
@@ -41,6 +43,20 @@ public partial class MainWindow : Window
     private readonly HongguoService _svc = new();
     private CancellationTokenSource _cts = new();
 
+    // ── 兴趣岛（第二个内容源）：课表发现 + 自己的下载队列 ──
+    private XqdQueue _xqd = new(new XqdOptions());
+    private string _xqdCookie = "";
+    private bool _xqdSource;                 // false = 红果，true = 兴趣岛
+    private bool _campsLoaded;
+    private volatile bool _campsBusy;
+    private bool _xqdPaused;
+    private bool _testMode;                  // --uitest：不碰网络、不写用户清单
+    private string _hgQuality = "1080p";
+    private string _xqdQuality = "max";
+
+    public ObservableCollection<XqdCampRow> CampRows { get; } = new();
+    public ObservableCollection<XqdCampRow> FilteredCamps { get; } = new();
+
     public ObservableCollection<ShelfRow> ShelfRows { get; } = new();
     /// <summary>
     /// 右栏下载清单（含每部剧的分组标题行）。
@@ -58,7 +74,9 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Core.Api.Episode> _epCache = new();
     /// <summary>series_id → 已加入清单的分集行（取消勾选时整组移除）。</summary>
     private readonly Dictionary<string, List<EpisodeRow>> _queueBySeries = new();
-    /// <summary>series_id → 该剧的分组标题行。</summary>
+    /// <summary>营名 → 已加入清单的课表行（取消勾选营时整组移除）。</summary>
+    private readonly Dictionary<string, List<EpisodeRow>> _queueByCamp = new();
+    /// <summary>series_id / 营名 → 该组的分组标题行。</summary>
     private readonly Dictionary<string, EpisodeRow> _queueHeaders = new();
 
     /// <summary>分集视图过滤（全部 / 待下载 / 已完成 / 失败）。</summary>
@@ -99,28 +117,23 @@ public partial class MainWindow : Window
         LblVersion.Text = "v" + AboutWindow.AppVersion;
         Title = $"红果视频下载器  v{AboutWindow.AppVersion}";
 
-        // ★ 画质下拉框（默认「最高画质」= 用户要求）
+        // ★ 画质下拉框（红果的取值；切到兴趣岛时换成 max/1080/720/480）
         _qualityInit = true;
-        CmbQuality.ItemsSource = new[]
-        {
-            new QualityOption("最高画质 (1080p)", "1080p"),
-            new QualityOption("高清 (720p)", "720p"),
-            new QualityOption("省流量 (360p)", "360p"),
-        };
-        CmbQuality.SelectedIndex = 0;
-        SelectQuality(_svc.Config.Quality);
+        _hgQuality = string.IsNullOrEmpty(_svc.Config.Quality) ? "1080p" : _svc.Config.Quality;
+        ApplyQualityOptions(false);
         _qualityInit = false;
 
         LstShelf.ItemsSource = FilteredShelf;
         LstEpisodes.ItemsSource = EpisodeView;
+        LstCamps.ItemsSource = FilteredCamps;
 
-        // ★ 兴趣岛页：下载目录跟着顶栏输入框走；状态回写到同一条底栏
-        PaneXqd.ResolveOutDir = () => (EdOut.Text ?? "").Trim();
-        PaneXqd.StatusChanged += (left, right) =>
-        {
-            if (!string.IsNullOrEmpty(left)) LblStatus.Text = left;
-            if (!string.IsNullOrEmpty(right)) LblRight.Text = right;
-        };
+        // ★ 兴趣岛队列 → 共用下载清单。进度回调来自后台线程，统一切回 UI 线程。
+        WireXqd();
+        _xqdCookie = XqdCreds.Load();
+        if (_xqdCookie.Length > 0) _xqd.Configure(_xqdCookie);
+
+        // ★ 初始化时 Checked 会早于控件创建触发（被 guard 挡掉），这里补一次源相关控件的显隐
+        Src_Checked(TabHongguo, new RoutedEventArgs());
 
         // ★ 标题列吃掉剩余宽度（列定义不支持 "*"，只能自己算）
         SizeChanged += (_, _) => UpdateEpisodeColumns();
@@ -133,38 +146,76 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 内容源切换：红果视频 ↔ 兴趣岛课程。
-    /// ★ 只切显示与「红果专属」控件（授权状态 / 重新授权），不打断任何正在跑的下载。
+    /// ★ 只切**左栏**与源专属控件；右栏下载清单、日志、底栏两源共用。
+    /// ★ 用 sender 判断，不要读 TabXqd.IsChecked —— 单选组「取消另一项」发生在本事件之后。
     /// </summary>
     private void Src_Checked(object sender, RoutedEventArgs e)
     {
         // InitializeComponent 期间 Checked 会先于其它控件赋值触发
-        if (PaneHongguo == null || PaneXqd == null || LblSrcHint == null) return;
+        if (LstShelf == null || LstCamps == null || CmbQuality == null) return;
 
-        // ★ 用 sender 判断，不要读 TabXqd.IsChecked ——
-        //   单选组的「取消另一项」发生在本事件之后，此刻两项可能都还是 true，
-        //   读 IsChecked 会把「切回红果」误判成「切到兴趣岛」。
         bool xqd = ReferenceEquals(sender, TabXqd);
-        PaneHongguo.IsVisible = !xqd;
-        PaneXqd.IsVisible = xqd;
+        _xqdSource = xqd;
 
-        if (BtnLogin != null) BtnLogin.IsVisible = !xqd;
-        if (LblAuth != null) LblAuth.IsVisible = !xqd;
+        LstShelf.IsVisible = !xqd;
+        LstCamps.IsVisible = xqd;
+        EdSearch.IsVisible = !xqd;
+        EdCampSearch.IsVisible = xqd;
+        BtnRefresh.IsVisible = !xqd;
+        BtnRefreshCamps.IsVisible = xqd;
+        ChkAllCamps.IsVisible = xqd;
+        BtnManualToggle.IsVisible = xqd;
+        BtnCache.IsVisible = !xqd;      // 提取 App 缓存只对红果有意义
+        BtnPause.IsVisible = xqd;       // 暂停只对兴趣岛队列有效
+        LblHint.IsVisible = !xqd;
 
-        LblSrcHint.Text = xqd
-            ? "兴趣岛：粘贴课程链接即可下载 · 不需要授权，也不用开模拟器"
-            : "红果：从收藏夹批量下载 · 需要 MuMu 里的 App 登录态";
+        _qualityInit = true;
+        ApplyQualityOptions(xqd);
+        _qualityInit = false;
 
+        SetAuthLabel();
         LblStatus.Text = "就绪";
+        LblRight.Text = "";
+
         if (xqd)
         {
-            PaneXqd.EnsureLoaded();
-            LblRight.Text = $"兴趣岛：清单 {PaneXqd.JobRowCount} 节";
-            // ★ 目录可能在上次切走之后被改过，这里同步一次
-            PaneXqd.SyncOutDir();
+            UpdateQueueSummary();
+            _ = EnsureCampsAsync();
         }
         else
         {
-            LblRight.Text = "";
+            UpdateQueueSummary();
+            if (!_svc.LoggedIn)
+                ShowBanner("红果：尚未获取授权。点右上角「获取授权」从 MuMu 里的红果 App 读取登录态。",
+                           BannerKind.Info);
+            else HideBanner();
+        }
+    }
+
+    /// <summary>按内容源切换画质下拉框的取值（红果按分辨率后缀，兴趣岛按短边）。</summary>
+    private void ApplyQualityOptions(bool xqd)
+    {
+        if (xqd)
+        {
+            CmbQuality.ItemsSource = new[]
+            {
+                new QualityOption("最高画质（自动）", "max"),
+                new QualityOption("1080P", "1080"),
+                new QualityOption("720P", "720"),
+                new QualityOption("480P", "480"),
+            };
+            SelectQuality(_xqdQuality);
+            _xqd.Options.Quality = _xqdQuality;
+        }
+        else
+        {
+            CmbQuality.ItemsSource = new[]
+            {
+                new QualityOption("最高画质 (1080p)", "1080p"),
+                new QualityOption("高清 (720p)", "720p"),
+                new QualityOption("省流量 (360p)", "360p"),
+            };
+            SelectQuality(_hgQuality);
         }
     }
 
@@ -187,6 +238,10 @@ public partial class MainWindow : Window
         if (Math.Abs(_shelfTitleWidth - title) <= 0.5) return;
         _shelfTitleWidth = title;
         foreach (var r in ShelfRows) r.TitleWidth = title;
+
+        // 兴趣岛营列表：右侧只有一个「正式营 · N 节」的小胶囊
+        double campTitle = Math.Max(60, avail - 32 - 92);
+        foreach (var r in CampRows) r.TitleWidth = campTitle;
     }
 
     /// <summary>右栏分集表：标题列吃掉剩余宽度（列定义不支持 "*"，只能自己算）。</summary>
@@ -233,17 +288,19 @@ public partial class MainWindow : Window
         // ★ ffmpeg / ffprobe 已随 exe 一起打包（首次运行自解压到本机缓存），
         //   这里不再做「环境检查」，缺少依赖时由调用处给出具体报错。
 
+        // ★ 2026-11-21 用户要求：启动**不再自动取授权**，只读本机缓存的状态。
+        //   要取授权必须点右上角「获取授权」，而且只取当前内容源的那一份。
+        SetAuthLabel();
+
         if (!_svc.LoggedIn)
         {
-            Diag("未登录");
-            LblAuth.Text = "授权：未登录";
-            ShowBanner("尚未授权。点右上角「重新授权」可从 MuMu 模拟器读取红果 App 的登录态。",
-                       BannerKind.Info);
-            Log("未登录 —— 点「重新授权」从 MuMu 读登录态");
+            Diag("未登录（等待用户点获取授权）");
+            Log("尚未获取红果授权 —— 点右上角「获取授权」才会去 MuMu 读取（启动不自动取）");
+            ShowBanner("尚未获取授权。点右上角「获取授权」按需读取当前内容源的登录态。\n"
+                     + "★ 启动时不会自动启动模拟器，也不会读 MuMu。", BannerKind.Info);
             return;
         }
-        LblAuth.Text = "授权：已就绪";
-        Log("已登录（复用本机保存的授权）");
+        Log("已读取本机保存的红果授权（未启动模拟器）");
 
         // ★ 下载目录不可用 → 启动就说清楚（别等用户下完 30 集才发现文件不见了）
         if (!string.IsNullOrEmpty(_outDirError))
@@ -393,19 +450,34 @@ public partial class MainWindow : Window
 
     private void SetAuthLabel()
     {
-        LblAuth.Text = _svc.LoggedIn ? "授权：已就绪" : "授权：未登录";
+        if (_xqdSource)
+            LblAuth.Text = _xqdCookie.Length > 0 ? "兴趣岛：已授权" : "兴趣岛：未授权";
+        else
+            LblAuth.Text = _svc.LoggedIn ? "授权：已就绪" : "授权：未登录";
     }
 
     // ---------------------------------------------------------- 下载清单
 
-    /// <summary>清空右栏下载清单（刷新收藏夹时用）。</summary>
+    /// <summary>
+    /// 清掉**红果的**清单行（刷新收藏夹时用）。
+    /// ★ 不能整表清空：那张表是两源共用的，兴趣岛的行必须留着。
+    /// </summary>
     private void ClearQueue()
     {
+        var keep = EpisodeRows.Where(r => r.IsXqd).ToList();
         EpisodeRows.Clear();
         EpisodeView.Clear();
+        foreach (var r in keep)
+        {
+            EpisodeRows.Add(r);
+            EpisodeView.Add(r);
+        }
+
         _queueBySeries.Clear();
-        _queueHeaders.Clear();
         _epCache.Clear();
+        foreach (string k in _queueHeaders.Keys.Where(k => !k.StartsWith("xqd:", StringComparison.Ordinal)).ToList())
+            _queueHeaders.Remove(k);
+
         Marquee.Text = "";
         UpdateQueueSummary();
     }
@@ -487,6 +559,376 @@ public partial class MainWindow : Window
         UpdateQueueSummary();
     }
 
+    // ---------------------------------------------------------- 兴趣岛：课表发现
+
+    /// <summary>把队列事件接到界面（换测试实例时也要重接）。</summary>
+    private void WireXqd()
+    {
+        _xqd.JobChanged += job => RunOnUi(() => SyncXqdRow(job));
+        _xqd.JobProgress += (job, _) => RunOnUi(() => SyncXqdRow(job));
+        _xqd.Log += msg => RunOnUi(() => Log(msg));
+    }
+
+    /// <summary>
+    /// 给 --uitest / 截图用：换到临时清单目录，并禁掉自动发现（不联网）。
+    /// </summary>
+    internal void UseXqdStoreForTest(string root)
+    {
+        _testMode = true;
+        _xqdRestored = false;
+        _xqd = new XqdQueue(new XqdOptions(), new XqdStore(root));
+        WireXqd();
+        _xqdCookie = "";
+    }
+
+    /// <summary>首次切到兴趣岛时拉营列表（没授权就只提示，不偷偷去读模拟器）。</summary>
+    private async Task EnsureCampsAsync()
+    {
+        if (_testMode) return;
+        RestoreXqdQueueRows();
+        if (_campsLoaded || _campsBusy) return;
+        if (_xqdCookie.Length == 0)
+        {
+            LblHint.Text = "未授权";
+            LblStatus.Text = "兴趣岛：未授权";
+            ShowBanner("兴趣岛：尚未获取授权。点右上角「获取授权」从 MuMu 里的兴趣岛 App 读取登录态。",
+                       BannerKind.Info);
+            return;
+        }
+        await LoadCampsAsync();
+    }
+
+    private async Task LoadCampsAsync()
+    {
+        if (_campsBusy) return;
+        if (_xqdCookie.Length == 0)
+        {
+            ShowBanner("兴趣岛：先点右上角「获取授权」。", BannerKind.Info);
+            return;
+        }
+
+        _campsBusy = true;
+        LblStatus.Text = "正在读取兴趣岛课程…";
+        LblHint.Text = "读取中…";
+        try
+        {
+            _xqd.Configure(_xqdCookie);
+            var camps = await _xqd.Platform!.ListAllCampsAsync(_cts.Token);
+            CampRows.Clear();
+            foreach (var c in camps)
+                CampRows.Add(new XqdCampRow(c) { TitleWidth = _shelfTitleWidth });
+            ApplyCampFilter();
+            _campsLoaded = true;
+            // 恢复出来的清单可能先于营列表到达，这里把勾选状态补上
+            foreach (var r in CampRows) r.IsChecked = _queueByCamp.ContainsKey(r.Name);
+            UpdateCampCheckState();
+
+            int formal = CampRows.Count(r => r.Kind == "正式营");
+            int trial = CampRows.Count(r => r.Kind == "体验营");
+            int open = CampRows.Count - formal - trial;
+            Log($"兴趣岛：{CampRows.Count} 个营（正式营 {formal} · 体验营 {trial} · 公开课 {open}）");
+            LblHint.Text = $"共 {CampRows.Count} 个营";
+            LblStatus.Text = "就绪";
+            HideBanner();
+        }
+        catch (Exception e)
+        {
+            Log("读取兴趣岛课程失败：" + e.Message);
+            ShowBanner("读取兴趣岛课程失败：" + e.Message
+                     + "\n点右上角「获取授权」可重新读取登录态。", BannerKind.Err);
+            LblStatus.Text = "就绪";
+        }
+        finally { _campsBusy = false; }
+    }
+
+    private bool _xqdRestored;
+
+    /// <summary>
+    /// 把上次遗留的兴趣岛任务重建到共用清单里（按营分组）。
+    /// ★ 只在第一次进入兴趣岛时做；红果侧不受影响。
+    /// </summary>
+    private void RestoreXqdQueueRows()
+    {
+        if (_xqdRestored) return;
+        _xqdRestored = true;
+
+        _xqd.Load();
+        var jobs = _xqd.Jobs;
+        if (jobs.Count == 0) return;
+
+        foreach (var group in jobs.GroupBy(j => j.Camp ?? ""))
+        {
+            string camp = group.Key;
+            string key = "xqd:" + (camp.Length > 0 ? camp : "__links");
+            string title = camp.Length > 0 ? camp : "手动链接";
+
+            var rows = new List<EpisodeRow>();
+            foreach (var j in group)
+            {
+                var r = EpisodeRow.FromXqd(j);
+                r.TitleWidth = _titleWidth;
+                r.PropertyChanged += EpisodeRow_PropertyChanged;
+                r.SyncFromXqd();
+                rows.Add(r);
+            }
+
+            var header = EpisodeRow.Header(key, title, rows.Count);
+            header.TitleWidth = _titleWidth;
+            _queueHeaders[key] = header;
+            _queueByCamp[camp] = rows;
+
+            EpisodeRows.Add(header);
+            EpisodeView.Add(header);
+            foreach (var r in rows)
+            {
+                EpisodeRows.Add(r);
+                EpisodeView.Add(r);
+            }
+        }
+
+        // 已加入清单的营：把左栏勾选框补上（程序化赋值不会触发 Click）
+        foreach (var r in CampRows)
+            r.IsChecked = _queueByCamp.ContainsKey(r.Name);
+
+        Log($"兴趣岛：恢复上次清单 {jobs.Count} 节（{_queueByCamp.Count} 组）");
+        UpdateQueueSummary();
+    }
+
+    private void ApplyCampFilter()    {
+        string kw = (EdCampSearch.Text ?? "").Trim();
+        FilteredCamps.Clear();
+        foreach (var r in CampRows)
+        {
+            if (kw.Length == 0 ||
+                (r.Display?.Contains(kw, StringComparison.CurrentCultureIgnoreCase) ?? false))
+                FilteredCamps.Add(r);
+        }
+        UpdateCampCheckState();
+    }
+
+    private void EdCampSearch_TextChanged(object sender, TextChangedEventArgs e) => ApplyCampFilter();
+
+    private async void CampChk_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox cb || cb.DataContext is not XqdCampRow row) return;
+        if (cb.IsChecked == true) await AddCampToQueueAsync(row);
+        else RemoveCampFromQueue(row);
+        UpdateCampCheckState();
+    }
+
+    private async void LstCamps_DoubleTapped(object sender, TappedEventArgs e)
+    {
+        var row = (e.Source as Visual)?
+            .GetVisualAncestors().OfType<ListBoxItem>().FirstOrDefault()?
+            .DataContext as XqdCampRow;
+        if (row == null) return;
+        row.IsChecked = !row.IsChecked;
+        if (row.IsChecked) await AddCampToQueueAsync(row);
+        else RemoveCampFromQueue(row);
+        UpdateCampCheckState();
+    }
+
+    /// <summary>
+    /// 勾选一个营 → 拉课表 → 把这一营的课**追加**进共用下载清单（带分组标题行）。
+    /// </summary>
+    private async Task AddCampToQueueAsync(XqdCampRow row)
+    {
+        if (row is null) return;
+        if (_queueByCamp.ContainsKey(row.Name)) return;
+        if (_xqdCookie.Length == 0)
+        {
+            row.IsChecked = false;
+            ShowBanner("兴趣岛：先点右上角「获取授权」，再勾选营。", BannerKind.Info);
+            return;
+        }
+
+        LblStatus.Text = $"正在读取「{row.Name}」的课表…";
+        try
+        {
+            _xqd.Configure(_xqdCookie);
+            var lessons = await _xqd.Platform!.CampCatalogAsync(row.Camp, _cts.Token);
+
+            // 等待期间用户可能已取消勾选
+            if (!row.IsChecked || _queueByCamp.ContainsKey(row.Name)) return;
+
+            if (lessons.Count == 0)
+            {
+                row.IsChecked = false;
+                Log($"「{row.Name}」课表为空（可能没有排课）");
+                LblStatus.Text = "就绪";
+                return;
+            }
+
+            int added = _xqd.AddLessons(row.Camp, lessons);
+            var jobs = _xqd.JobsOfCamp(row.Name);
+            var rows = new List<EpisodeRow>();
+            foreach (var j in jobs)
+            {
+                var r = EpisodeRow.FromXqd(j);
+                r.TitleWidth = _titleWidth;
+                r.PropertyChanged += EpisodeRow_PropertyChanged;
+                rows.Add(r);
+            }
+
+            string key = "xqd:" + row.Name;
+            var header = EpisodeRow.Header(key, row.Name, rows.Count);
+            _queueHeaders[key] = header;
+            _queueByCamp[row.Name] = rows;
+
+            EpisodeRows.Add(header);
+            EpisodeView.Add(header);
+            foreach (var r in rows)
+            {
+                EpisodeRows.Add(r);
+                EpisodeView.Add(r);
+            }
+
+            Marquee.Text = rows.Count > 0 ? rows[0].Title : row.Name;
+            Log($"「{row.Name}」{rows.Count} 节已加入下载清单（新加 {added} 节）");
+            UpdateQueueSummary();
+            LblStatus.Text = "就绪";
+        }
+        catch (Exception e)
+        {
+            row.IsChecked = false;
+            Log($"取「{row.Name}」课表失败：{e.Message}");
+            ShowBanner($"取「{row.Name}」课表失败：{e.Message}", BannerKind.Err);
+            LblStatus.Text = "就绪";
+        }
+    }
+
+    /// <summary>取消勾选营 → 整组移出清单（顺手把队列里的任务也删掉）。</summary>
+    private void RemoveCampFromQueue(XqdCampRow row)
+    {
+        if (row is null) return;
+        string key = "xqd:" + row.Name;
+        if (_queueByCamp.TryGetValue(row.Name, out var rows))
+        {
+            foreach (var r in rows)
+            {
+                EpisodeRows.Remove(r);
+                EpisodeView.Remove(r);
+                if (r.Xqd != null) _xqd.Remove(r.Xqd);
+            }
+            _queueByCamp.Remove(row.Name);
+        }
+        if (_queueHeaders.TryGetValue(key, out var header))
+        {
+            EpisodeRows.Remove(header);
+            EpisodeView.Remove(header);
+            _queueHeaders.Remove(key);
+        }
+        Log($"「{row.Name}」已从下载清单移出");
+        UpdateQueueSummary();
+    }
+
+    private void UpdateCampCheckState()
+    {
+        int n = CampRows.Count, k = CampRows.Count(r => r.IsChecked);
+        ChkAllCamps.IsChecked = n == 0 || k == 0 ? false : (k >= n ? true : null);
+    }
+
+    private void ChkAllCamps_Click(object sender, RoutedEventArgs e)
+    {
+        bool want = ChkAllCamps.IsChecked == true;
+        foreach (var r in FilteredCamps.Where(x => x.IsChecked != want).ToList())
+        {
+            r.IsChecked = want;
+            if (want) _ = AddCampToQueueAsync(r);
+            else RemoveCampFromQueue(r);
+        }
+        UpdateCampCheckState();
+    }
+
+    private async void BtnRefreshCamps_Click(object sender, RoutedEventArgs e)
+    {
+        if (_xqdCookie.Length == 0)
+        {
+            ShowBanner("兴趣岛：先点右上角「获取授权」。", BannerKind.Info);
+            return;
+        }
+        _campsLoaded = false;
+        // 刷新会重拉营列表；已加入清单的课不受影响
+        await LoadCampsAsync();
+    }
+
+    private void BtnManualToggle_Click(object sender, RoutedEventArgs e)
+    {
+        ManualPanel.IsVisible = !ManualPanel.IsVisible;
+        if (ManualPanel.IsVisible) EdLinks.Focus();
+    }
+
+    /// <summary>手动粘贴链接（自动发现之外的兜底）→ 加入同一张下载清单。</summary>
+    private void BtnAddLinks_Click(object sender, RoutedEventArgs e)
+    {
+        var items = LinkParser.Parse(EdLinks.Text ?? "");
+        LblLinkCount.Text = $"{items.Count} 条";
+        if (items.Count == 0)
+        {
+            ShowBanner("没解析到链接。一行一条：课名 | https://…/xxx.m3u8", BannerKind.Info);
+            return;
+        }
+
+        var before = _xqd.Jobs.Select(j => j.Id).ToHashSet(StringComparer.Ordinal);
+        int added = _xqd.Add(items);
+        var newJobs = _xqd.Jobs.Where(j => !before.Contains(j.Id)).ToList();
+
+        const string key = "xqd:__links";
+        if (newJobs.Count > 0)
+        {
+            _queueByCamp.TryGetValue("__links", out var rows);
+            rows ??= new List<EpisodeRow>();
+            if (!_queueHeaders.ContainsKey(key))
+            {
+                var header = EpisodeRow.Header(key, "手动链接", 0);
+                _queueHeaders[key] = header;
+                EpisodeRows.Add(header);
+                EpisodeView.Add(header);
+            }
+            foreach (var j in newJobs)
+            {
+                var r = EpisodeRow.FromXqd(j);
+                r.TitleWidth = _titleWidth;
+                r.PropertyChanged += EpisodeRow_PropertyChanged;
+                rows.Add(r);
+                EpisodeRows.Add(r);
+                EpisodeView.Add(r);
+            }
+            _queueByCamp["__links"] = rows;
+            RefreshGroupHeader(key, "手动链接", rows.Count);
+        }
+
+        EdLinks.Text = "";
+        LblLinkCount.Text = "0 条";
+        Log($"手动链接：加入 {added} 节（解析 {items.Count} 条）");
+        UpdateQueueSummary();
+    }
+
+    /// <summary>用新的节数替换分组标题行（就地替换，滚动位置不跳）。</summary>
+    private void RefreshGroupHeader(string key, string title, int count)
+    {
+        if (!_queueHeaders.TryGetValue(key, out var old)) return;
+        var fresh = EpisodeRow.Header(key, title, count);
+        fresh.TitleWidth = _titleWidth;
+        _queueHeaders[key] = fresh;
+
+        int idx = EpisodeRows.IndexOf(old);
+        if (idx >= 0) EpisodeRows[idx] = fresh;
+        int vi = EpisodeView.IndexOf(old);
+        if (vi >= 0) EpisodeView[vi] = fresh;
+    }
+
+    /// <summary>队列状态变了 → 同步到共用清单里的那一行。</summary>
+    private void SyncXqdRow(XqdJob job)
+    {
+        var row = EpisodeRows.FirstOrDefault(r => ReferenceEquals(r.Xqd, job));
+        if (row == null) return;
+        row.SyncFromXqd();
+        if (XqdState.IsRunning(job.State) || job.State == XqdState.Paused)
+            Marquee.Text = job.Display;
+        UpdateQueueSummary();
+    }
+
     /// <summary>
     /// 单独把某一部剧的分集读出来（只返回数据行，**不往右栏清单里加**）。
     /// ★ 给 --batchtest / 批量下载这类「一次性过一遍」的流程用，不动用户已勾选的清单。
@@ -518,10 +960,9 @@ public partial class MainWindow : Window
     /// <summary>按当前过滤条件刷新分集视图（保留选中行；分组标题行跟随本组是否有可见行）。</summary>
     private void ApplyEpView()
     {
-        // 先记下选中的行（按 Vid 认，刷新后行对象会换）
+        // 先记下选中的行（★ 按对象认，不按 Vid —— 兴趣岛行没有 Vid）
         var sel = LstEpisodes.SelectedItems?.Cast<EpisodeRow>()
-            .Where(r => r.IsEpisode)
-            .Select(r => r.Vid).ToHashSet() ?? new HashSet<string>();
+            .Where(r => r.IsEpisode).ToHashSet() ?? new HashSet<EpisodeRow>();
 
         EpisodeView.Clear();
         EpisodeRow? lastHeader = null;
@@ -547,7 +988,7 @@ public partial class MainWindow : Window
         if (sel.Count == 0) return;
         LstEpisodes.Selection.Clear();
         for (int i = 0; i < EpisodeView.Count; i++)
-            if (EpisodeView[i].IsEpisode && sel.Contains(EpisodeView[i].Vid))
+            if (EpisodeView[i].IsEpisode && sel.Contains(EpisodeView[i]))
                 LstEpisodes.Selection.Select(i);
     }
 
@@ -606,44 +1047,41 @@ public partial class MainWindow : Window
     private async void BtnRun_Click(object sender, RoutedEventArgs e)
     {
         if (_downloading) return;   // 下载中重复点会打乱状态，直接忽略
-        var queued = _queueBySeries.Values
-            .SelectMany(v => v)
-            .Where(r => r.IsEpisode).ToList();
+        var queued = EpisodeRows.Where(r => r.IsEpisode).ToList();
         if (queued.Count == 0)
         {
-            ShowBanner("先在左边勾选剧目，它的分集会加到右边清单里。", BannerKind.Info);
+            ShowBanner("先在左边勾选剧目/营，它们的条目会加到右边清单里。", BannerKind.Info);
             return;
         }
 
-        // ★ 有选中行 → 只下选中的；没选中 → 下清单里所有**待下载**的（已完成不重复跑）
+        // ★ 有选中行 → 只下选中的；没选中 → 下清单里所有**待下载 / 失败**的
         var sel = LstEpisodes.SelectedItems?.Cast<EpisodeRow>()
             .Where(r => r.IsEpisode).ToList() ?? new List<EpisodeRow>();
         var targets = sel.Count > 0
             ? sel
-            : queued.Where(r => r.State == "待下载").ToList();
+            : queued.Where(r => r.State is "待下载" or "失败").ToList();
         if (targets.Count == 0)
         {
-            ShowBanner("清单里没有待下载的分集（都已完成）。", BannerKind.Info);
+            ShowBanner("清单里没有待下载的条目（都已完成）。", BannerKind.Info);
             return;
         }
 
-        // ★ 短剧默认跳过（bytevc 加密，解不出画面）
-        if (targets.Any(t => t.State == "待下载" && IsDramaRow(t)))
-        {
-            int n = targets.Count(t => t.State == "待下载" && IsDramaRow(t));
-            ShowBanner($"已跳过 {n} 部短剧 —— 它的编码是字节私有 bytevc，下载后无法正常播放。",
+        // ★ 短剧默认跳过（bytevc 加密，解不出画面）—— 只针对红果的行
+        int dramas = targets.Count(t => !t.IsXqd && t.State == "待下载" && IsDramaRow(t));
+        if (dramas > 0)
+            ShowBanner($"已跳过 {dramas} 部短剧 —— 它的编码是字节私有 bytevc，下载后无法正常播放。",
                        BannerKind.Info);
-        }
-        targets = targets.Where(t => !IsDramaRow(t)).ToList();
+        targets = targets.Where(t => t.IsXqd || !IsDramaRow(t)).ToList();
         if (targets.Count == 0)
         {
             ShowBanner("没有可下载的分集（短剧会自动跳过）。", BannerKind.Info);
             return;
         }
 
-        // ★ 下载前再强制应用一次目录 —— 即使用户没点别处、也没回车，
-        //   文本框里改的内容也必须生效。
+        // ★ 下载前再强制应用一次目录 —— 即使用户没点别处、也没回车
         ApplyOutDir();
+        // ★ 上次点过「停止」的话令牌已取消，换一个新的，否则这一批会立刻被判为取消
+        if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
 
         _stopRequested = false;
         _downloading = true;
@@ -689,6 +1127,14 @@ public partial class MainWindow : Window
             Log("！这是分组标题行，双击无效 —— 请双击具体分集");
             return;
         }
+
+        // ★ 兴趣岛的行：不需要 _epCache，直接交给队列
+        if (row.IsXqd)
+        {
+            await DownloadXqdSingleAsync(row);
+            return;
+        }
+
         if (!_epCache.ContainsKey(row.Vid))
         {
             Log($"！「{row.Title}」还没拿到播放信息，双击无效");
@@ -696,6 +1142,7 @@ public partial class MainWindow : Window
         }
 
         ApplyOutDir();      // 与点「下载」一致：文本框里改的目录立即生效
+        if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
         _stopRequested = false;
         _downloading = true;
         BtnRun.IsEnabled = false;
@@ -710,6 +1157,35 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log("✗ 单集下载异常：" + ex.Message);
+        }
+        finally
+        {
+            _downloading = false;
+            BtnRun.IsEnabled = true;
+            BtnStop.IsEnabled = false;
+            UpdateQueueSummary();
+        }
+    }
+
+    /// <summary>双击兴趣岛某一行 → 只下这一节。</summary>
+    private async Task DownloadXqdSingleAsync(EpisodeRow row)
+    {
+        ApplyOutDir();
+        if (_cts.IsCancellationRequested) _cts = new CancellationTokenSource();
+        _stopRequested = false;
+        _downloading = true;
+        BtnRun.IsEnabled = false;
+        BtnStop.IsEnabled = true;
+        LblStatus.Text = $"单独下载：{row.Title}";
+        Log($"▶ 双击单条：{row.Title}");
+        try
+        {
+            var (ok, _) = await DownloadXqdRowsAsync(new List<EpisodeRow> { row });
+            LblStatus.Text = ok > 0 ? "已完成" : "下载失败（详见日志）";
+        }
+        catch (Exception ex)
+        {
+            Log("✗ 单条下载异常：" + ex.Message);
         }
         finally
         {
@@ -798,6 +1274,10 @@ public partial class MainWindow : Window
         List<EpisodeRow> targets)
     {
         int ok = 0, fail = 0, addrFail = 0;
+
+        // ★ 两源共用一张清单：兴趣岛的行走自己的队列，红果的行照旧走签名链路。
+        var xqdTargets = targets.Where(r => r.IsXqd && r.IsEpisode).ToList();
+        targets = targets.Where(r => !r.IsXqd).ToList();
 
         // ★★ 开下之前先确认下载目录真的可写。
         //    否则每一集都会在 BuildOutPath 里抛一次同样的错、刷满日志，
@@ -901,7 +1381,61 @@ public partial class MainWindow : Window
             }
             UpdateHint();
         }
+
+        // 兴趣岛的条目排在红果之后跑：它们要先解析播放地址，慢一些
+        if (xqdTargets.Count > 0 && !_stopRequested)
+        {
+            var (xok, xfail) = await DownloadXqdRowsAsync(xqdTargets);
+            ok += xok;
+            fail += xfail;
+        }
+
         return (ok, fail, false);
+    }
+
+    /// <summary>
+    /// 兴趣岛部分的下载：交给 XqdQueue（课间并发 2 / 课内分片 12），
+    /// 进度通过 JobChanged/JobProgress 回调同步到共用清单的同一行。
+    /// </summary>
+    private async Task<(int Ok, int Fail)> DownloadXqdRowsAsync(List<EpisodeRow> rows)
+    {
+        var jobs = rows.Where(r => r.Xqd != null).Select(r => r.Xqd).Distinct().ToList();
+        if (jobs.Count == 0) return (0, 0);
+
+        if (_xqdCookie.Length > 0) _xqd.Configure(_xqdCookie);
+        if (!_xqd.HasAuth && jobs.Any(j => j.FromCatalog))
+        {
+            ShowBanner("兴趣岛课程需要授权：点右上角「获取授权」读取兴趣岛 App 的登录态后再下载。",
+                       BannerKind.Err);
+            return (0, jobs.Count);
+        }
+
+        string outRoot = (EdOut.Text ?? "").Trim();
+        if (outRoot.Length == 0)
+        {
+            ShowBanner("没有下载目录：请先在上方设置。", BannerKind.Err);
+            return (0, jobs.Count);
+        }
+        _xqd.Options.OutRoot = outRoot;
+        _xqd.Options.Quality = _xqdQuality;
+        _xqd.RebasePaths();
+        _xqd.Rescan();
+        foreach (var r in rows) r.SyncFromXqd();
+
+        BtnPause.IsEnabled = true;
+        BtnPause.Content = "暂停";
+        _xqdPaused = false;
+        try
+        {
+            var (ok, fail, skip) = await _xqd.RunAsync(jobs, _cts.Token);
+            return (ok + skip, fail);
+        }
+        finally
+        {
+            BtnPause.IsEnabled = false;
+            BtnPause.Content = "暂停";
+            foreach (var r in rows) r.SyncFromXqd();
+        }
     }
 
     private bool IsDramaRow(EpisodeRow row)
@@ -918,9 +1452,22 @@ public partial class MainWindow : Window
     private void BtnStop_Click(object sender, RoutedEventArgs e)
     {
         _stopRequested = true;
-        _cts.Cancel();
-        Log("已请求停止");
+        try { _cts.Cancel(); } catch { }
+        _xqd.Cancel();                 // 兴趣岛：正在下的回到「待下载」，分片保留
+        _xqd.SetPaused(false);
+        Log("已请求停止（兴趣岛已下的分片会保留，下次自动续传）");
         BtnStop.IsEnabled = false;
+        BtnPause.IsEnabled = false;
+    }
+
+    /// <summary>暂停 / 继续（只对兴趣岛队列有效）。</summary>
+    private void BtnPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_xqd.Running) return;
+        _xqdPaused = !_xqdPaused;
+        _xqd.SetPaused(_xqdPaused);
+        BtnPause.Content = _xqdPaused ? "继续" : "暂停";
+        LblStatus.Text = _xqdPaused ? "已暂停" : "下载中";
     }
 
     private string GetQuality()
@@ -989,9 +1536,17 @@ public partial class MainWindow : Window
     private void CmbQuality_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_qualityInit || !IsLoaded) return;
-        _svc.Config.Quality = GetQuality();
+        if (_xqdSource)
+        {
+            _xqdQuality = GetQuality();
+            _xqd.Options.Quality = _xqdQuality;
+            Log($"兴趣岛画质切换为 {_xqdQuality}");
+            return;
+        }
+        _hgQuality = GetQuality();
+        _svc.Config.Quality = _hgQuality;
         _svc.Config.Save();
-        Log($"画质切换为 {GetQuality()}");
+        Log($"画质切换为 {_hgQuality}");
     }
 
     private void BtnClearLog_Click(object sender, RoutedEventArgs e)
@@ -1046,11 +1601,66 @@ public partial class MainWindow : Window
         LblStatus.Text = "就绪";
     }
 
+    /// <summary>
+    /// 取兴趣岛授权（只在用户点「获取授权」时调用）。
+    /// 先看本机缓存并在线验证；无效再去 MuMu 里读兴趣岛 App 的 Cookie。
+    /// </summary>
+    private async Task AuthXqdAsync()
+    {
+        LblStatus.Text = "正在获取兴趣岛授权…";
+        void Say(string m) => RunOnUi(() => { LblStatus.Text = m; Log(m); });
+
+        try
+        {
+            var res = await XqdAuth.AcquireAsync(Say, force: false, CancellationToken.None);
+
+            if (res.Ok && res.FromCache)
+            {
+                Say("校验本机保存的兴趣岛授权…");
+                var (valid, _) = await new QianliaoPlatform(res.Cookie)
+                    .CheckAuthAsync(CancellationToken.None);
+                if (!valid)
+                {
+                    Say("本机授权已失效，改为从 MuMu 读取…");
+                    res = await XqdAuth.AcquireAsync(Say, force: true, CancellationToken.None);
+                }
+            }
+
+            if (!res.Ok)
+            {
+                Log("✗ " + res.Message);
+                ShowBanner(res.Message, BannerKind.Err);
+                SetAuthLabel();
+                return;
+            }
+
+            _xqdCookie = res.Cookie;
+            _xqd.Configure(_xqdCookie);
+            SetAuthLabel();
+            Log("兴趣岛：" + res.Message);
+            ShowBanner("兴趣岛：" + res.Message, BannerKind.Ok);
+
+            // 授权成功 → 立刻把营列表拉出来（这是用户点按钮的实际目的）
+            _campsLoaded = false;
+            await LoadCampsAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log("✗ 获取兴趣岛授权失败：" + ex.Message);
+            ShowBanner("获取兴趣岛授权失败：" + ex.Message, BannerKind.Err);
+        }
+        finally { LblStatus.Text = "就绪"; }
+    }
+
     private async void BtnLogin_Click(object sender, RoutedEventArgs e)
     {
         BtnLogin.IsEnabled = false;
         try
         {
+            // ★ 按**当前内容源**取授权：两个 App 的登录态互不相干
+            if (_xqdSource) { await AuthXqdAsync(); return; }
+
             if (await LoginOnceAsync()) return;
 
             // ★ 第一步：先确认能不能找到 MuMuManager（装在哪里都行）
@@ -1443,6 +2053,12 @@ public partial class MainWindow : Window
         }
         if (Dispatcher.UIThread.CheckAccess()) Append();
         else Dispatcher.UIThread.Post(Append);
+    }
+
+    private void HideBanner()
+    {
+        if (Dispatcher.UIThread.CheckAccess()) Banner.IsVisible = false;
+        else Dispatcher.UIThread.Post(() => Banner.IsVisible = false);
     }
 
     private void ShowBanner(string msg, BannerKind kind)

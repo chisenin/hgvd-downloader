@@ -1,10 +1,11 @@
 using System;
 using Avalonia.Media;
 using Hgvd.Avalonia.Controls;
+using Hgvd.Xqd;
 
 namespace Hgvd.Avalonia.ViewModels;
 
-/// <summary>一集（右栏一行）。</summary>
+/// <summary>下载清单里的一行：红果的一集，或兴趣岛的一节课（两源共用一张表）。</summary>
 public sealed class EpisodeRow : NotifyBase
 {
     private string _state = "待下载";
@@ -14,6 +15,7 @@ public sealed class EpisodeRow : NotifyBase
     private double _speed;
     private string _error = "";
     private double _titleWidth = 240;
+    private double _duration;
     private readonly int _groupCount;
 
     public EpisodeRow(Core.Api.Episode ep)
@@ -21,10 +23,25 @@ public sealed class EpisodeRow : NotifyBase
         Vid = ep.Vid;
         Index = ep.Index;
         Title = ep.Title;
-        Duration = ep.Duration;
+        _duration = ep.Duration;
         SeriesId = ep.SeriesId;
         SeriesTitle = ep.SeriesTitle;
         VideoIdType = ep.VideoIdType;
+    }
+
+    /// <summary>兴趣岛课表 / 链接任务。</summary>
+    public EpisodeRow(XqdJob job)
+    {
+        Xqd = job;
+        Vid = "";
+        Index = job.Seq;
+        Title = job.Title;
+        _duration = job.ExpectDuration;
+        SeriesId = "xqd:" + (job.Camp ?? "");
+        SeriesTitle = job.Camp ?? "";
+        VideoIdType = 0;
+        _state = job.State;
+        if (job.Size > 0) _planSize = job.Size;
     }
 
     private EpisodeRow(string seriesId, string title, int count)
@@ -33,7 +50,7 @@ public sealed class EpisodeRow : NotifyBase
         Vid = "";
         Index = 0;
         Title = title;
-        Duration = 0;
+        _duration = 0;
         SeriesId = seriesId;
         SeriesTitle = title;
         VideoIdType = 0;
@@ -41,26 +58,33 @@ public sealed class EpisodeRow : NotifyBase
     }
 
     /// <summary>
-    /// 分组标题行（「某剧 · 共 N 集」）。
+    /// 分组标题行（「某剧 · 共 N 集」/「某营 · 共 N 节」）。
     /// ★ 勾选多部剧时，右栏是**累计清单**，靠这行把每部剧分开，
     ///   免得几部剧的分集混在一起分不清序号属于谁。
     /// </summary>
     public static EpisodeRow Header(string seriesId, string title, int count)
-        => new EpisodeRow(seriesId, title, count);
+        => new EpisodeRow(seriesId, title, count) { IsCampHeader = seriesId.StartsWith("xqd:", StringComparison.Ordinal) };
+
+    public static EpisodeRow FromXqd(XqdJob job) => new EpisodeRow(job);
 
     public string Vid { get; }
     public int Index { get; }
     public string Title { get; }
-    public double Duration { get; }
+    public double Duration => _duration;
     public string SeriesId { get; }
     public string SeriesTitle { get; }
     public int VideoIdType { get; }
 
+    /// <summary>非空 = 这一行来自兴趣岛（下载走 XqdQueue）。</summary>
+    public XqdJob Xqd { get; }
+    public bool IsXqd => Xqd != null;
+
     /// <summary>true = 分组标题行（不是真实分集，下载时要跳过）。</summary>
     public bool IsGroupHeader { get; }
     public bool IsEpisode => !IsGroupHeader;
+    public bool IsCampHeader { get; private set; }
 
-    public string HeaderText => $"{SeriesTitle} · 共 {_groupCount} 集";
+    public string HeaderText => $"{SeriesTitle} · 共 {_groupCount} {(IsCampHeader ? "节" : "集")}";
 
     public string State
     {
@@ -78,23 +102,30 @@ public sealed class EpisodeRow : NotifyBase
         }
     }
 
-    public string StateWord => State == "待下载" ? "" : State;
+    /// <summary>
+    /// 待下载时状态词是空串 —— 把整个胶囊收起来，别留一个空的小圆角块。
+    /// ★ 兴趣岛任务例外：新加的课全是「待下载」，空着看不出是没开始还是没读到状态。
+    /// </summary>
+    public string StateWord => State == "待下载" && !IsXqd ? "" : State;
 
-    /// <summary>待下载时状态词是空串 —— 把整个胶囊收起来，别留一个空的小圆角块。</summary>
     public bool ShowPill => !string.IsNullOrEmpty(StateWord);
 
     public IBrush StatePillBg => Palette.FromHex(State switch
     {
-        "已完成" => "#EAF7EE",
-        "下载中" => "#E8F0FA",
+        "已完成" or "已存在" => "#EAF7EE",
+        "下载中" or "解析中" => "#E8F0FA",
+        "封装中" or "校验中" or "排队中" => "#FDF6E7",
+        "已暂停" => "#FDF1E3",
         "失败" => "#FDEEEE",
         _ => "#EEF2F8",
     });
 
     public IBrush StatePillBorder => Palette.FromHex(State switch
     {
-        "已完成" => "#B8E0C4",
-        "下载中" => "#B9CCE4",
+        "已完成" or "已存在" => "#B8E0C4",
+        "下载中" or "解析中" => "#B9CCE4",
+        "封装中" or "校验中" or "排队中" => "#EBD9A8",
+        "已暂停" => "#E8C79A",
         "失败" => "#F0C2C2",
         _ => "#DCE3EE",
     });
@@ -170,9 +201,26 @@ public sealed class EpisodeRow : NotifyBase
     public string SpeedText => Speed > 0 ? $"{Core.Util.FmtSize((long)Speed)}/s" : "--";
 
     /// <summary>进度条填充：已完成走绿色渐变，其余走蓝色渐变。</summary>
-    public IBrush ProgressFill => State == "已完成"
+    public IBrush ProgressFill => State is "已完成" or "已存在"
         ? Palette.Brush("ProgressFillGreen")
         : Palette.Brush("ProgressFillBlue");
+
+    /// <summary>把兴趣岛任务的最新运行期数据同步到界面（状态机在 XqdQueue 里）。</summary>
+    public void SyncFromXqd()
+    {
+        if (Xqd == null) return;
+        if (State != Xqd.State) State = Xqd.State;
+        if (Down != Xqd.Down) Down = Xqd.Down;
+        if (Total != Xqd.Total) Total = Xqd.Total;
+        if (Math.Abs(Speed - Xqd.Speed) > 0.5) Speed = Xqd.Speed;
+        Error = Xqd.Message;
+        if (Xqd.Size > 0 && PlanSize != Xqd.Size) PlanSize = Xqd.Size;
+        if (Xqd.Duration > 0 && Math.Abs(_duration - Xqd.Duration) > 0.5)
+        {
+            _duration = Xqd.Duration;
+            Raise(nameof(DurationText));
+        }
+    }
 
     /// <summary>
     /// 标题列的宽度。
