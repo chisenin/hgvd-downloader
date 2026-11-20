@@ -27,8 +27,15 @@ internal static class Program
     }
 
     /// <summary>Avalonia 应用构建器（供 XAML 预览器 / 单元测试复用）。</summary>
+    /// <remarks>
+    /// ★ 不用 <c>UsePlatformDetect()</c>：那个会在编译期把 Avalonia.X11 /
+    ///   Avalonia.Native（macOS）/ Avalonia.FreeDesktop / Tmds.DBus 一起拖进产物，
+    ///   而本程序只发行 Windows 版。显式指定 Win32 后端 + Skia 渲染器，
+    ///   产物里就不会有跨平台后端的死重量（约 1.6 MB）。
+    /// </remarks>
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
-            .UsePlatformDetect()
+            .UseWin32()
+            .UseSkia()
             .LogToTrace();
 }

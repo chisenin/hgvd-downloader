@@ -3,7 +3,7 @@
         xmlns:ctl="using:Hgvd.Avalonia.Controls"
         x:Class="Hgvd.Avalonia.Views.MainWindow"
         Title="红果视频下载器  v1.1.1"
-        Width="1180" Height="780" MinWidth="960" MinHeight="620"
+        Width="1180" Height="780" MinWidth="1020" MinHeight="620"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Microsoft YaHei, Segoe UI"
         FontSize="13"
@@ -168,8 +168,14 @@
                 <RowDefinition Height="Auto" />
               </Grid.RowDefinitions>
 
-              <DockPanel Grid.Row="0" LastChildFill="False">
-                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+              <!-- ★★ 用 Grid 而**不是** DockPanel。
+                   DockPanel 是「按子元素顺序依次 dock，后面的拿剩下的」——
+                   窗口一窄，右边这组（画质/下载/停止/提取App缓存）就被挤出可视区，
+                   用户截图里红框标的就是被挤到窗口外的「提取App缓存」。
+                   Auto,*,Auto 的含义：两侧永远按内容所需宽度排布、绝不压缩，
+                   能压缩的只有中间那段空白。 -->
+              <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto">
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                   <TextBlock Text="下载清单 ·" Classes="section" />
                   <!-- ★ 跑马灯要限宽：它有内容时会把右边的
                        画质/下载/停止/提取缓存按钮挤出窗口 -->
@@ -186,7 +192,7 @@
                                  Checked="RbView_Checked" />
                   </StackPanel>
                 </StackPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                   <ComboBox x:Name="CmbQuality" Width="140" Margin="3,0,0,0"
                             VerticalAlignment="Center"
                             SelectionChanged="CmbQuality_SelectionChanged" />
@@ -199,7 +205,7 @@
                           Classes="modern" Click="BtnCache_Click"
                           ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;★ 播放接口返回空 body 时，这条路径不经过 video_model，是唯一还能出片的路。" />
                 </StackPanel>
-              </DockPanel>
+              </Grid>
 
               <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="8"
                       Background="White" BorderBrush="{DynamicResource CardBorderBrush}"
@@ -228,6 +234,8 @@
                            Classes="ep"
                            BorderThickness="0" Background="Transparent"
                            SelectionMode="Multiple"
+                           DoubleTapped="LstEpisodes_DoubleTapped"
+                           ToolTip.Tip="双击某一集 = 只下这一集（不看勾选、不受筛选影响）"
                            ScrollViewer.VerticalScrollBarVisibility="Visible">
                     <ListBox.ItemTemplate>
                       <DataTemplate>

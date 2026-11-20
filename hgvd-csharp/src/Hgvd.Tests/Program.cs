@@ -18,6 +18,9 @@ public static class Program
         fail += NamingTests.Run();
         fail += MumuLocateTests.Run();
         fail += DeviceStoreTests.Run();
+        // ★ DRM 用真实黄金向量守「短剧密钥解包」——多切一字节就解不出 key，
+        //   整条加密内容（短剧）链路全废，见 DrmTests 的注释。
+        fail += DrmTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

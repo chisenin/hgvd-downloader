@@ -12,7 +12,7 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- ★ exe 名带版本号：hgvd-downloader-vX.Y.Z.exe（与 C++/WPF 版同名，方便替换） -->
-    <PkgVersion Condition="'$(PkgVersion)' == ''">1.1.1</PkgVersion>
+    <PkgVersion Condition="'$(PkgVersion)' == ''">1.3.0</PkgVersion>
     <!-- ★ 版本号唯一来源就是 PkgVersion（CI 发版时用标签 vX.Y.Z 传入）：
          Version 同时决定 **程序集版本** —— 界面上的版本号读的就是
          Assembly.GetName().Version（AboutWindow.AppVersion），
@@ -22,10 +22,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- ★ 只发行 Windows 版 ⇒ 不引 Avalonia.Desktop（那个元包会把
+         Avalonia.X11 / Avalonia.Native / Avalonia.FreeDesktop / Tmds.DBus 一起拉进来，
+         约 1.6 MB 的死重量）。只要 Win32 后端 + Skia 渲染器。
+         界面字体全程是 Microsoft YaHei UI / Consolas，从不使用 Inter
+         ⇒ Avalonia.Fonts.Inter（1.9 MB）也不需要。 -->
     <PackageReference Include="Avalonia" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Win32" Version="11.3.23" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.23" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.23" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.23" />
     <PackageReference Include="Avalonia.Diagnostics" Version="11.3.23" Condition="'$(Configuration)' == 'Debug'" />
   </ItemGroup>
 
@@ -46,5 +51,83 @@
                       LogicalName="ffprobe.exe.gz"
                       Condition="'$(Configuration)' == 'Release' And Exists('..\..\..\.cache\ffmpeg\ffprobe.exe.gz')" />
   </ItemGroup>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       ★ 从发布产物里剔除「调试 / 诊断」专用的原生库。
+       这几个文件运行时**按需**才加载，正常使用一次都不会碰：
+         · Microsoft.DiaSymReader.Native.amd64.dll  —— 读 PDB 符号（DebugType=none 后纯多余）
+         · mscordaccore*.dll / mscordbi.dll         —— DAC，给 windbg / dotnet-dump 分析转储用
+         · createdump.exe                           —— 崩溃时生成 dump 的小工具
+       合计约 6.2 MB。放在 ComputeFilesToPublish 之后剔除，
+       对**单文件**和**目录版**同时生效（单文件是把 ResolvedFileToPublish 打包的）。
+       ══════════════════════════════════════════════════════════════ -->
+  <Target Name="StripDiagnosticNatives" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <_HgvdStripNative Include="@(ResolvedFileToPublish)"
+          Condition="'%(Filename)%(Extension)' == 'Microsoft.DiaSymReader.Native.amd64.dll'
+                  Or '%(Filename)%(Extension)' == 'createdump.exe'
+                  Or '%(Filename)%(Extension)' == 'mscordbi.dll'
+                  Or $([System.String]::Copy('%(Filename)').StartsWith('mscordaccore'))" />
+      <ResolvedFileToPublish Remove="@(_HgvdStripNative)" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="[strip] 剔除调试/诊断原生库：@(_HgvdStripNative->'%(Filename)%(Extension)', ', ')" />
+  </Target>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       ★★ B 档：IL 裁剪 —— 只裁 BCL，绝不裁 Avalonia 与自己的程序集。
+
+       为什么必须是 TrimMode=partial：
+         TrimMode=partial 只裁「标了 IsTrimmable 的 assembly」。.NET BCL 全标了，
+         所以 System.Private.Xml / System.Data.Common / DataContractSerialization /
+         VisualBasic.Core 这类没人引用的整块会消失（约 14 MB）。
+         Avalonia 11 也标了 IsTrimmable，实测不开保根会被裁掉 30~60%
+         （Avalonia.Markup.Xaml 86K→40.5K），而本项目用的是**反射绑定**
+         （AvaloniaUseCompiledBindingsByDefault=false）⇒ 属性被裁 = 界面静默失效。
+         所以下面用 TrimmerRootAssembly 把 Avalonia.* 整体保根。
+
+       ★ 三个不能裁的额外项：
+         · Microsoft.CSharp —— MumuAuth 用 dynamic（运行时 binder），裁了必抛
+         · SkiaSharp / HarfBuzzSharp —— P/Invoke 原生互操作
+       关闭开关：-p:HgvdNoTrim=true
+       ══════════════════════════════════════════════════════════════ -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(HgvdNoTrim)' != 'true'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <!-- 保留 ILLink 的分析警告输出，便于发现新的反射隐患 -->
+    <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <!-- ★★ 必须显式打开：.NET 8 在 PublishTrimmed 下默认把
+         System.Text.Json 的反射序列化器关掉（JsonSerializerIsReflectionEnabledByDefault=false），
+         于是 JsonSerializer.Serialize<T>/Deserialize<T> 直接抛
+         "Reflection-based serialization has been disabled for this application"。
+         Hgvd.Core 里的 AppConfig / Shelf 全是反射序列化，且已整程序集保根，
+         所以这里把开关打回去 —— 类型成员不会丢，行为与未裁剪时一致。 -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <!-- 自己的程序集必须整体保根：里面全是反射绑定 / JSON 反射序列化 / dynamic
+       ★ 主程序集的 AssemblyName 是 hgvd-downloader-v$(PkgVersion)（带版本号），
+         不能写成 Hgvd.Avalonia —— 那是 RootNamespace，保根会报 IL1032。 -->
+  <ItemGroup Condition="'$(Configuration)' == 'Release' And '$(HgvdNoTrim)' != 'true'">
+    <TrimmerRootAssembly Include="$(AssemblyName)" />
+    <TrimmerRootAssembly Include="Hgvd.Core" />
+    <TrimmerRootAssembly Include="Microsoft.CSharp" />
+    <TrimmerRootAssembly Include="SkiaSharp" />
+    <TrimmerRootAssembly Include="HarfBuzzSharp" />
+  </ItemGroup>
+
+  <!-- Avalonia.* 逐个列太脆（换版本就漏），从发布清单里按前缀捞 -->
+  <Target Name="HgvdRootAvaloniaAssemblies" BeforeTargets="PrepareForILLink"
+          Condition="'$(Configuration)' == 'Release' And '$(HgvdNoTrim)' != 'true'">
+    <ItemGroup>
+      <_HgvdRootAsm Include="@(ResolvedFileToPublish)"
+          Condition="'%(Extension)' == '.dll'
+                  And $([System.String]::Copy('%(Filename)').StartsWith('Avalonia'))" />
+      <TrimmerRootAssembly Include="@(_HgvdRootAsm->'%(Filename)')" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="[trim] Avalonia 保根 @(_HgvdRootAsm->Count()) 个：@(_HgvdRootAsm->'%(Filename)', ', ')" />
+  </Target>
 
 </Project>

@@ -2,6 +2,9 @@ bin/
 obj/
 dist/
 *.user
-# 框架依赖发布（体积对比实验用）
-dist-fd/
-dist-fd1/
+# 体积对比 / 手动验证用的临时产物
+#   dist-a = 不裁剪（A 档）  dist-b = 裁剪（B 档）  dist-fd* = 框架依赖实验
+dist-*/
+dist-*.zip
+# 目录版发布中间产物（build.cmd/build.sh 会生成，再打成 dist\*-win-x64.zip）
+pkg/

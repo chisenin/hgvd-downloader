@@ -58,12 +58,18 @@ if __name__ == "__main__":
     out = sys.argv[1]
     crop = None
     scale = 1
+    w_ = 1500          # ★ 可用 --w= / --h= 指定窗口尺寸（验证「最小窗口」布局时用）
+    h_ = 860
     for a in sys.argv[2:]:
         if a.startswith("--crop="):
             crop = tuple(int(v) for v in a.split("=", 1)[1].split(","))
         elif a.startswith("--scale="):
             scale = int(a.split("=", 1)[1])
+        elif a.startswith("--w="):
+            w_ = int(a.split("=", 1)[1])
+        elif a.startswith("--h="):
+            h_ = int(a.split("=", 1)[1])
     hwnd = find_main_window()
     print("hwnd=%s" % hwnd)
-    restore(hwnd)
+    restore(hwnd, w_=w_, h_=h_)
     grab(hwnd, out, crop=crop, scale=scale)

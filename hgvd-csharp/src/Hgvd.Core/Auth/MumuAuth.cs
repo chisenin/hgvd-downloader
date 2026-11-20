@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -228,17 +230,35 @@ public static class MumuAuth
     }
 
     /// <summary>用 WScript.Shell 解析 .lnk 的 TargetPath（失败返回空）。</summary>
+    /// <remarks>
+    /// ★ 这里**刻意不用 <c>dynamic</c>**：dynamic 会把 <c>Microsoft.CSharp</c> 的运行时
+    ///   binder 拖进来，而 binder 靠大量反射去找成员 —— IL 裁剪（<c>PublishTrimmed</c>）
+    ///   下是典型盲区，裁掉了要到运行时才抛 <c>MissingMethodException</c>。
+    ///   本方法只需要「调一个方法、读一个属性」，用 <c>InvokeMember</c> 足够，
+    ///   而且整条调用链对 linker 是静态可见的。
+    /// </remarks>
     private static string ResolveShortcut(object shell, string link)
     {
         if (shell == null) return "";
+        object sc = null;
         try
         {
-            dynamic sh = shell;
-            dynamic sc = sh.CreateShortcut(link);
-            string target = (string)sc.TargetPath;
-            return target ?? "";
+            sc = shell.GetType().InvokeMember(
+                "CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { link });
+            if (sc == null) return "";
+            object target = sc.GetType().InvokeMember(
+                "TargetPath", BindingFlags.GetProperty, null, sc, null);
+            return target as string ?? "";
         }
         catch { return ""; }
+        finally
+        {
+            // WScript.Shell 每次 CreateShortcut 都返回一个新的 COM 对象，用完必须放
+            if (sc != null && Marshal.IsComObject(sc))
+            {
+                try { Marshal.ReleaseComObject(sc); } catch { }
+            }
+        }
     }
 
     /// <summary>注册表里的安装位置/图标/卸载命令行清洗成纯路径。</summary>

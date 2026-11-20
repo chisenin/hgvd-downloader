@@ -108,7 +108,16 @@ public static class Drm
         int versionLen = HexDigit((char)buf[0]);
         if (versionLen < 1 || versionLen >= outLen) return "";
         int keyLen = outLen - versionLen;
-        string hexKey = Encoding.Latin1.GetString(buf, 1, keyLen);
+        // ★★ 2026-11-21 修：这里原来写的是 GetString(buf, 1, keyLen)，比 Python 版
+        //    （hgvd/drm.py 的 `buf[1:key_len]`）多取了 1 个字节 ——
+        //    Python 的切片 `buf[1:key_len]` 长度是 key_len-1，C# 的 count 写 keyLen 就是 key_len。
+        //    后果：16 字节 AES key 取成 33 个字符（奇数）⇒ 下面 `% 2 != 0` 直接判失败
+        //    ⇒ ContentKey 恒为空 ⇒ **所有 CENC 加密内容（短剧）都不解密**，
+        //    下完的成品是加密流，ffprobe 读不出时长，最后报「成品无法解析」。
+        //    教学类不加密（spade_a 为空）所以一直没暴露。
+        int hexLen = keyLen - 1;
+        if (hexLen < 1) return "";
+        string hexKey = Encoding.Latin1.GetString(buf, 1, hexLen);
         if (string.IsNullOrEmpty(hexKey) || hexKey.Length % 2 != 0) return "";
         foreach (char ch in hexKey)
             if (HexDigit(ch) < 0) return "";

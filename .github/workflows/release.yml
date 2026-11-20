@@ -53,13 +53,16 @@ jobs:
           pip install -r requirements.txt
           python -m tests.run
 
-      # ── 2. 按标签版本号发布单文件 exe ──
+      # ── 2. 按标签版本号构建两种形态 ──
+      #    ★ 主推 **B 案**：自包含目录版 + zip（启动快、杀软友好、ffmpeg 可换）
+      #    ★ 同时保留单文件 exe（给"我就要一个文件"的人）
+      #    ★ 两者必须分两次 publish —— PublishSingleFile 是 publish 期属性
       - name: 准备内置 ffmpeg / ffprobe
         shell: pwsh
         run: |
           ./hgvd-avalonia/prepare-ffmpeg.ps1
 
-      - name: 发布自包含单文件 exe
+      - name: 发布自包含目录版（B 案主推）
         shell: pwsh
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -67,8 +70,30 @@ jobs:
           $ver = $env:TAG -replace '^v',''
           if (-not $ver) { throw "拿不到版本号（TAG=$env:TAG）" }
           Write-Host ">>> 发布版本: $ver"
-          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj --configfile .github/nuget.ci.config -r win-x64
-          dotnet publish  hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o hgvd-avalonia/dist -p:PkgVersion=$ver
+          $pkg = "hgvd-avalonia/pkg/hgvd-downloader-v$ver"
+          if (Test-Path $pkg) { Remove-Item $pkg -Recurse -Force -Confirm:$false }
+          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -p:Configuration=Release --configfile .github/nuget.ci.config -r win-x64
+          dotnet publish hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o $pkg -p:PublishSingleFile=false -p:PkgVersion=$ver
+          Get-ChildItem $pkg | Measure-Object -Property Length -Sum |
+            ForEach-Object { Write-Host ("    目录版 {0} 个文件，共 {1:N1} MB" -f $_.Count, ($_.Sum / 1MB)) }
+
+      - name: 打成 zip（顶层保留文件夹名 + README.txt）
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $ver = $env:TAG -replace '^v',''
+          python tools/pack_zip.py "hgvd-avalonia/pkg/hgvd-downloader-v$ver" `
+                                   "hgvd-avalonia/dist/hgvd-downloader-v$ver-win-x64.zip" `
+                                   "hgvd-avalonia/PACK-README.txt"
+
+      - name: 发布单文件 exe（备用形态）
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $ver = $env:TAG -replace '^v',''
+          dotnet publish hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o hgvd-avalonia/dist -p:PkgVersion=$ver
           Get-ChildItem hgvd-avalonia/dist | Format-Table Name, Length
 
       # ── 3. 核对产物：文件名 + 文件版本都要跟标签一致 ──
@@ -80,22 +105,43 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           $ver = $env:TAG -replace '^v',''
-          $exe = "hgvd-avalonia/dist/hgvd-downloader-v$ver.exe"
-          if (-not (Test-Path $exe)) { throw "产物不对：$exe 不存在" }
-          $fv = (Get-Item $exe).VersionInfo.FileVersion
-          Write-Host ">>> 产物: $exe   FileVersion=$fv"
+          $exe    = "hgvd-avalonia/dist/hgvd-downloader-v$ver.exe"
+          $zip    = "hgvd-avalonia/dist/hgvd-downloader-v$ver-win-x64.zip"
+          $pkgExe = "hgvd-avalonia/pkg/hgvd-downloader-v$ver/hgvd-downloader-v$ver.exe"
+          foreach ($f in @($exe, $zip, $pkgExe)) {
+            if (-not (Test-Path $f)) { throw "产物不对：$f 不存在" }
+          }
           # FileVersion 形如 "1.0.1.0"，用前缀比较（别用等值）
-          if (-not $fv.StartsWith($ver)) { throw "文件版本($fv) 与标签($ver) 不一致" }
-          $len = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-          Write-Host ">>> 自包含单文件，大小 ${len} MB"
+          foreach ($f in @($exe, $pkgExe)) {
+            $fv = (Get-Item $f).VersionInfo.FileVersion
+            Write-Host ">>> $f   FileVersion=$fv"
+            if (-not $fv.StartsWith($ver)) { throw "文件版本($fv) 与标签($ver) 不一致：$f" }
+          }
+          $zipMb  = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+          $exeMb  = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host ">>> 目录版 zip ${zipMb} MB ／ 单文件 exe ${exeMb} MB"
 
       # ── 4. 建 Release、传附件 ──
-      - name: 创建 Release 并上传 exe
+      #    ★ zip 放前面：下载页第一个附件就是主推形态
+      - name: 创建 Release 并上传附件
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: 红果视频下载器 ${{ github.event.inputs.tag || github.ref_name }}
-          generate_release_notes: true
           draft: false
+          body: |
+            ## 下哪个？
+
+            **推荐：`hgvd-downloader-v*-win-x64.zip`**（目录版）
+            - 解压后双击 exe 就能用，不需要装 .NET
+            - 启动比单文件版快，也不容易被安全软件误判
+            - ⚠️ **必须先「全部解压」再运行**，不要直接在压缩包里双击 exe
+
+            **备选：`hgvd-downloader-v*.exe`**（单文件）
+            - 就一个文件，拷到哪都能跑
+            - 首次启动会慢几秒（要把内置的 ffmpeg 解压到本机缓存）
+
+            两种形态功能完全一样。系统要求：Windows 10/11 64 位。
           files: |
+            hgvd-avalonia/dist/hgvd-downloader-v*-win-x64.zip
             hgvd-avalonia/dist/hgvd-downloader-v*.exe

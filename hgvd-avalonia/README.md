@@ -1,8 +1,23 @@
 # 红果视频下载器 —— C# / Avalonia 界面版（发行版）
 
-用 **C# + Avalonia 11** 写的界面层，产出**自包含单文件** exe：
-`hgvd-downloader-v1.1.1.exe`（约 81 MB，.NET 运行时与 ffmpeg/ffprobe 全部内置，目标机什么都不用装；
-首次启动把 ffmpeg 自解压到 `%LOCALAPPDATA%\hgvd-downloader\runtime\`）。
+用 **C# + Avalonia 11** 写的界面层，发行形态是**自包含目录版 + zip**：
+
+| 形态 | 产物 | 体积 |
+|---|---|---|
+| **目录版（推荐）** | `hgvd-downloader-v1.3.0-win-x64.zip` | 约 53 MB |
+| 单文件（备用） | `hgvd-downloader-v1.3.0.exe` | 约 58 MB |
+
+两种都是自包含的：.NET 运行时与 ffmpeg/ffprobe 全都打包在内，目标机什么都不用装，
+首次启动把 ffmpeg 解压到 `%LOCALAPPDATA%\hgvd-downloader\runtime\`。
+
+> ★ 为什么主推 zip 而不是单文件：单文件把 ffmpeg 嵌进去之后是"假单文件"——
+> 运行时仍要解到 `%LOCALAPPDATA%`（磁盘反而翻倍），而且"exe 解出 exe"
+> 是杀软启发式的典型特征。目录版启动更快、ffmpeg 可替换、出问题能直接看目录。
+
+> 体积是 `PublishTrimmed`（`TrimMode=partial`）裁出来的：不裁约 89 MB，裁完约 41 MB（目录版）。
+> 裁剪有两条必须守住的约束（Avalonia 反射绑定要整程序集保根、`System.Text.Json`
+> 反射序列化要显式打开），改了发布配置先看
+> [`../docs/03-开发要点.md`](../docs/03-开发要点.md) §3.6。
 
 > 本版与 Python 版（[`../hgvd/`](../hgvd/)）**共用同一套核心**
 > （`../hgvd-csharp/src/Hgvd.Core`：签名链、下载器、配置目录），
@@ -31,6 +46,7 @@ Avalonia 是跨平台 UI 框架（Windows / Linux / macOS 同一套 XAML）。
 
 ```bat
 build.cmd                :: 发布 Release（输出到 dist\）
+build.cmd verify         :: ★ 发版用：构建 + 界面自检 + 端到端真下载
 build.cmd selftest       :: 无头跑一遍收藏夹 / 分集 / 播放地址
 ```
 
@@ -38,8 +54,16 @@ Git Bash / MSYS 里用等价脚本：
 
 ```bash
 ./build.sh
+./build.sh verify
 ./build.sh selftest
 ```
+
+> ★★ **发版前必须跑 `verify`。** 发行版开了 IL 裁剪（`PublishTrimmed`），
+>   裁剪的破坏是静默的 —— 编译、启动、开窗、读收藏夹全都正常，
+>   只有点到某个功能才炸。所以"能构建"不算通过，必须界面自检全绿
+>   **并且**真下一集。`tools/publish_release.sh` 会检查这两份日志是否
+>   在 24 小时内且通过，不过就拒绝打标签。
+>   细节见 [`../docs/03-开发要点.md`](../docs/03-开发要点.md) §3.6 与 §6.1。
 
 **依赖**：.NET 8 SDK + NuGet 源（`NuGet.config` 已配好镜像）+ 联网。
 
@@ -68,10 +92,10 @@ Git Bash / MSYS 里用等价脚本：
 ## 三、命令行自检
 
 ```bash
-hgvd-downloader-v1.1.1.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
-hgvd-downloader-v1.1.1.exe --uitest                 # 界面交互自检
-hgvd-downloader-v1.1.1.exe --batchtest [部数]        # 批量下载冒烟测试
-hgvd-downloader-v1.1.1.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
+hgvd-downloader-v1.3.0.exe --selftest [series_id]   # 收藏夹 → 分集 → 播放地址
+hgvd-downloader-v1.3.0.exe --uitest                 # 界面交互自检
+hgvd-downloader-v1.3.0.exe --batchtest [部数]        # 批量下载冒烟测试
+hgvd-downloader-v1.3.0.exe --demo <series_id> [skip] # 加载一部剧并真的开始下载（便于截图）
 ```
 
 > ★ 程序是 `WinExe`（没有控制台），启动时会 `AttachConsole` 挂上父进程的控制台，

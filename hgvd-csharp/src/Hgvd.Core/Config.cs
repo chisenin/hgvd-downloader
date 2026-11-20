@@ -78,16 +78,40 @@ public sealed class AppConfig
     /// <summary>解析下载目录（用户没配就用系统「下载」文件夹）。</summary>
     public string ResolveOutDir()
     {
-        if (!string.IsNullOrWhiteSpace(OutDir))
+        TryResolveOutDir(out string dir, out _);
+        return dir;
+    }
+
+    /// <summary>
+    /// 解析下载目录，并把「配置的目录不可用」**如实报出来**。
+    ///
+    /// ★★ 2026-11-20 修的 bug：以前这里 <c>catch { }</c> 之后就静默回落到系统「下载」，
+    ///    于是 <c>Z:\movies\hgvd\</c> 这个盘拔掉之后，文件被悄悄下到
+    ///    <c>C:\Users\xxx\Downloads\</c>，界面和 <c>--batchtest</c> 还报「成功」——
+    ///    用户完全不知道文件去了哪。
+    ///    现在由调用方自己决定：界面用它显示提示，下载入口用它**失败**（别假装成功）。
+    /// </summary>
+    /// <returns>配置目录可用（或本来就没配）返回 true；配置了但不可用返回 false。</returns>
+    public bool TryResolveOutDir(out string dir, out string error)
+    {
+        error = "";
+        if (string.IsNullOrWhiteSpace(OutDir))
         {
-            try
-            {
-                Directory.CreateDirectory(OutDir);
-                return OutDir;
-            }
-            catch { /* 落到默认 */ }
+            dir = DefaultDownloadDir();
+            return true;
         }
-        return DefaultDownloadDir();
+        try
+        {
+            Directory.CreateDirectory(OutDir);
+            dir = OutDir;
+            return true;
+        }
+        catch (Exception e)
+        {
+            dir = DefaultDownloadDir();
+            error = $"配置的下载目录不可用（{OutDir}）：{e.Message}";
+            return false;
+        }
     }
 
     public static string DefaultDownloadDir()

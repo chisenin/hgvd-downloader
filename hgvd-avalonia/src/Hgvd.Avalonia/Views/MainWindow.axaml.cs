@@ -75,11 +75,26 @@ public partial class MainWindow : Window
     /// <summary>画质下拉框初始化中（避免初始化时误存配置）。</summary>
     private bool _qualityInit;
 
+    /// <summary>
+    /// 配置的下载目录不可用时的错误（空 = 正常）。
+    /// ★ 2026-11-20：以前目录不可用会静默回落到系统「下载」，文件下到用户
+    ///   完全不知道的地方还报「成功」（实测 Z: 盘拔掉后的表现）。
+    ///   现在一律如实报出来，绝不再偷偷改存。
+    /// </summary>
+    private string _outDirError = "";
+
     public MainWindow()
     {
         InitializeComponent();
 
-        EdOut.Text = _svc.Config.ResolveOutDir();
+        // ★ 目录不可用时**显示用户配置的原值**，别把回退后的路径填进文本框骗人
+        if (_svc.Config.TryResolveOutDir(out string outDir, out string outDirErr))
+            EdOut.Text = outDir;
+        else
+        {
+            EdOut.Text = _svc.Config.OutDir;
+            _outDirError = outDirErr;
+        }
         // ★ 状态栏右下角显示版本号（取程序集版本，和 exe 名里的一致）
         LblVersion.Text = "v" + AboutWindow.AppVersion;
         Title = $"红果视频下载器  v{AboutWindow.AppVersion}";
@@ -184,6 +199,17 @@ public partial class MainWindow : Window
         }
         LblAuth.Text = "授权：已就绪";
         Log("已登录（复用本机保存的授权）");
+
+        // ★ 下载目录不可用 → 启动就说清楚（别等用户下完 30 集才发现文件不见了）
+        if (!string.IsNullOrEmpty(_outDirError))
+        {
+            Diag(_outDirError);
+            ShowBanner(_outDirError
+                     + "\n★ 下载会直接报错，不会偷偷改存到别处。"
+                     + "点右上角改下载目录，或插回对应磁盘。", BannerKind.Err);
+            Log("！" + _outDirError);
+        }
+
         Diag("开始读收藏夹");
         await RefreshShelfAsync();
         Diag("收藏夹读完");
@@ -591,6 +617,74 @@ public partial class MainWindow : Window
         Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
     }
 
+    /// <summary>
+    /// 双击清单里的某一集 → **只下这一集**（不看勾选、不受筛选影响）。
+    ///
+    /// ★ 与点「下载」的区别：点「下载」是批量语义（有选中行下选中的，没选中下所有待下载），
+    ///   双击是「明确指定这一集」。所以双击**不做短剧过滤** ——
+    ///   用户已经点到具体某一集了，再替他把短剧剔掉只会让人困惑。
+    /// </summary>
+    private async void LstEpisodes_DoubleTapped(object sender, TappedEventArgs e)
+    {
+        var row = EpisodeRowFromEvent(e);
+        if (row != null) await DownloadOneAsync(row);
+    }
+
+    /// <summary>单集下载的实体（双击走这里；抽出来也方便 --uitest 直接调）。</summary>
+    internal async Task DownloadOneAsync(EpisodeRow row)
+    {
+        if (row == null) return;
+        if (_downloading)
+        {
+            Log("！正在下载中，双击已忽略（要换一集请先点「停止」）");
+            return;
+        }
+        if (row.IsGroupHeader)
+        {
+            Log("！这是分组标题行，双击无效 —— 请双击具体分集");
+            return;
+        }
+        if (!_epCache.ContainsKey(row.Vid))
+        {
+            Log($"！「{row.Title}」还没拿到播放信息，双击无效");
+            return;
+        }
+
+        ApplyOutDir();      // 与点「下载」一致：文本框里改的目录立即生效
+        _stopRequested = false;
+        _downloading = true;
+        BtnRun.IsEnabled = false;
+        BtnStop.IsEnabled = true;
+        LblStatus.Text = $"单独下载第 {row.Index} 集…";
+        Log($"▶ 双击单集：第 {row.Index} 集");
+        try
+        {
+            var (ok, _, _) = await DownloadRowsAsync(new List<EpisodeRow> { row });
+            LblStatus.Text = ok > 0 ? $"第 {row.Index} 集完成" : $"第 {row.Index} 集失败";
+        }
+        catch (Exception ex)
+        {
+            Log("✗ 单集下载异常：" + ex.Message);
+        }
+        finally
+        {
+            _downloading = false;
+            BtnRun.IsEnabled = true;
+            BtnStop.IsEnabled = false;
+            UpdateQueueSummary();
+        }
+    }
+
+    /// <summary>从双击事件回溯到清单行（点在行内 TextBlock 上也能找到）。</summary>
+    private static EpisodeRow EpisodeRowFromEvent(TappedEventArgs e)
+    {
+        if (e.Source is ListBoxItem direct) return direct.DataContext as EpisodeRow;
+        if (e.Source is Visual v)
+            foreach (var p in v.GetVisualAncestors())
+                if (p is ListBoxItem li) return li.DataContext as EpisodeRow;
+        return null;
+    }
+
     /// <summary>批量下载的结果。</summary>
     public readonly record struct BatchResult(int Ok, int Fail, int DoneSeries, bool Aborted);
 
@@ -659,6 +753,28 @@ public partial class MainWindow : Window
         List<EpisodeRow> targets)
     {
         int ok = 0, fail = 0, addrFail = 0;
+
+        // ★★ 开下之前先确认下载目录真的可写。
+        //    否则每一集都会在 BuildOutPath 里抛一次同样的错、刷满日志，
+        //    而且用户很难看出「全失败」的根因是路径。
+        //    ★ 绝不再静默回落到系统「下载」——那会让用户以为下成功了却找不到文件。
+        //    ★ 走 DownloadHook（--uitest 的模拟下载）时不检查：那条路径根本不落盘，
+        //      检查了会让界面自检依赖「本机下载目录可用」这个无关条件。
+        if (DownloadHook == null && !_svc.Config.TryResolveOutDir(out _, out string dirErr))
+        {
+            ShowBanner(dirErr + "\n★ 已中止本次下载，不会改存到别处。", BannerKind.Err);
+            Log($"✗ {dirErr}");
+            _downloadErrors.Add(dirErr);
+            foreach (var row in targets)
+            {
+                if (row.IsGroupHeader) continue;
+                row.State = "失败";
+                row.Error = dirErr;
+                fail++;
+            }
+            return (0, fail, false);
+        }
+
         foreach (var row in targets)
         {
             if (_stopRequested) break;

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
@@ -280,6 +281,43 @@ public partial class MainWindow
         }
         finally { DownloadHook = null; }
 
+        // ⑦★ 双击单集：只下这一集，不碰清单里的其它行
+        //    ★ 用户 2026-11-21 要求：双击清单里的某一项 = 单独下载那一集。
+        //      这里直接调 DownloadOneAsync（双击事件处理器的实体），
+        //      事件绑定本身由 XAML 编译保证（写错名字编译就过不去）。
+        int oneCalls = 0;
+        string oneVid = "";
+        DownloadHook = async (ep, q, cb, ct) =>
+        {
+            oneCalls++;
+            oneVid = ep.Vid;
+            cb.OnPhase?.Invoke("下载中");
+            return new DownloadResult
+            {
+                Ok = true, OutPath = "(假)", Size = 1024, Duration = ep.Duration,
+            };
+        };
+        try
+        {
+            var one = EpisodeRows.FirstOrDefault(r => r.IsEpisode);
+            Check("清单里有可双击的分集", one != null);
+            if (one != null)
+            {
+                int doneBefore = EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成");
+                one.State = "待下载";            // 模拟「重下这一集」
+                await DownloadOneAsync(one);
+                Check("双击只下载这一集（不是整个清单）", oneCalls == 1,
+                    $"实际调用 {oneCalls} 次");
+                Check("下载的正是双击的那一行", oneVid == one.Vid,
+                    $"第 {one.Index} 集");
+                Check("双击后该集状态变为已完成", one.State == "已完成", one.State);
+                Check("清单其它行没被顺带重下",
+                    EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成") == doneBefore,
+                    $"已完成 {doneBefore} → {EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成")}");
+            }
+        }
+        finally { DownloadHook = null; }
+
         // ⑧ 状态栏的统计要跟清单一致
         int qTotal = EpisodeRows.Count(r => r.IsEpisode);
         int qDone = EpisodeRows.Count(r => r.IsEpisode && r.State == "已完成");
@@ -310,6 +348,40 @@ public partial class MainWindow
         Check("logo 区单击打开「关于」", AboutInstance != null && before == 0,
             AboutInstance == null ? "窗口没打开" : "已打开");
         AboutInstance?.Close();
+
+        // ⑪ ★ 工具栏在最小宽度下不能被挤出窗口
+        //    ★★ 这条守的是用户 2026-11-21 报的问题：窗口拖窄后
+        //       「提取App缓存」被挤出窗口右边缘（截图上红框标出的就是它）。
+        //       根因是工具栏用了 DockPanel —— 它按「先左后右」依次分配，
+        //       后面的拿剩下的，空间不够就被裁掉。已改成 Grid Auto,*,Auto，
+        //       中间那段空白才是可压缩的。
+        //    ★ 断言不写死数字：从 900 往上试，找出「四个按钮都在框内」的最小窗口宽，
+        //      再要求它 ≤ MinWidth。这样既守住回归，又能直接打印出真实需求。
+        //    ★★ 探测期间必须把 MinWidth 临时清 0 —— 否则 Width=900 会被 MinWidth
+        //       顶回去（窗口根本缩不到 900），第一轮就「通过」，探测形同虚设。
+        double oldW = Width, oldMin = MinWidth;
+        MinWidth = 0;
+        double need = 0;
+        for (double w = 900; w <= 1250; w += 10)
+        {
+            Width = w;
+            await Task.Delay(140);           // 等布局跑完
+            bool fits = true;
+            foreach (var c in new Control[] { CmbQuality, BtnRun, BtnStop, BtnCache })
+            {
+                var p = c.TranslatePoint(new Point(c.Bounds.Width, 0), this);
+                if (p is null || p.Value.X > Bounds.Width + 1) { fits = false; break; }
+            }
+            if (fits) { need = w; break; }
+        }
+        MinWidth = oldMin;
+        Width = oldW;
+        await Task.Delay(200);
+        Check($"MinWidth {MinWidth:0} 能容纳工具栏（实测需要 {need:0}）",
+            need > 0 && need <= MinWidth,
+            need <= 0 ? "1250 宽都还挤"
+                      : need > MinWidth ? $"MinWidth 至少要比 {need:0} 大"
+                                        : "有余量");
 
         Log(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");
         Console.WriteLine(fail == 0 ? "═══ 全部通过 ═══" : $"═══ {fail} 项未通过 ═══");

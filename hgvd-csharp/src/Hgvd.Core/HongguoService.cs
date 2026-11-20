@@ -575,9 +575,15 @@ public sealed class HongguoService
     }
 
     /// <summary>构造成品路径：<c>下载目录\剧名\剧名.001.标题.mp4</c>。</summary>
+    /// <exception cref="IOException">
+    /// 配置的下载目录不可用（磁盘拔了 / 网络盘断了 / 无写权限）。
+    /// ★ 这里**必须抛**：以前静默回落到系统「下载」，文件下到用户不知道的地方还报成功。
+    ///   抛出去以后，界面会把这集标成「失败」并在日志里写清原因。
+    /// </exception>
     public string BuildOutPath(Episode ep)
     {
-        string root = _cfg.ResolveOutDir();
+        if (!_cfg.TryResolveOutDir(out string root, out string dirErr))
+            throw new IOException(dirErr + "。请改成可写的目录，或插回对应磁盘后再下。");
         string rawSeries = string.IsNullOrEmpty(ep.SeriesTitle) ? ep.SeriesId : ep.SeriesTitle;
         string series = Util.SafeName(rawSeries, 60);
         // ★ 去掉标题里与剧名重复的前缀 ——

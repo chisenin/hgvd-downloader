@@ -50,6 +50,6 @@ jobs:
       - name: 发行版能构建出单文件 exe
         shell: pwsh
         run: |
-          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj --configfile .github/nuget.ci.config -r win-x64
+          dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -p:Configuration=Release --configfile .github/nuget.ci.config -r win-x64
           dotnet publish  hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o hgvd-avalonia/dist -p:PkgVersion=0.0.0-ci
           Get-ChildItem hgvd-avalonia/dist | Format-Table Name, Length

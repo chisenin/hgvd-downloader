@@ -675,7 +675,9 @@ public sealed class PlaybackModel
             };
             if (enc is not null && enc.Value.ValueKind == JsonValueKind.Object)
             {
-                st.Encrypted = J.Str(enc.Value, "encrypt") is "true" or "1";
+                // ★ JSON 的 true 经 J.Str 变成 "True"（bool.ToString()），
+                //   所以 "true" / "True" / "1" 都要认；只写 "true" 会恒判成未加密。
+                st.Encrypted = J.Str(enc.Value, "encrypt") is "true" or "True" or "1";
                 st.SpadeA = J.Str(enc.Value, "spade_a");
                 st.Kid = J.Str(enc.Value, "kid");
                 if (!string.IsNullOrEmpty(st.SpadeA)) spade = st.SpadeA;

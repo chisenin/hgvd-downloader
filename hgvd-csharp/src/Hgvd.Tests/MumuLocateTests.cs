@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using Hgvd.Core.Auth;
 
 namespace Hgvd.Tests;
@@ -30,6 +31,10 @@ public static class MumuLocateTests
     }
 
     /// <summary>用 WScript.Shell 造一个真实 .lnk（本机没有 WScript.Shell 时返回 false）。</summary>
+    /// <remarks>
+    /// ★ 与 MumuAuth.ResolveShortcut 保持一致：**不用 dynamic**。
+    ///   测试项目虽然不参与发布裁剪，但同一套 COM 调用留两种写法容易抄错。
+    /// </remarks>
     private static bool MakeShortcut(string lnkPath, string target)
     {
         try
@@ -37,10 +42,12 @@ public static class MumuLocateTests
             Type t = Type.GetTypeFromProgID("WScript.Shell");
             if (t == null) return false;
             object shell = Activator.CreateInstance(t);
-            dynamic sh = shell;
-            dynamic sc = sh.CreateShortcut(lnkPath);
-            sc.TargetPath = target;
-            sc.Save();
+            object sc = shell.GetType().InvokeMember(
+                "CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
+            if (sc == null) return false;
+            sc.GetType().InvokeMember(
+                "TargetPath", BindingFlags.SetProperty, null, sc, new object[] { target });
+            sc.GetType().InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
             return File.Exists(lnkPath);
         }
         catch { return false; }
