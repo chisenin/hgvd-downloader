@@ -40,6 +40,29 @@ public static class J
         };
     }
 
+    /// <summary>
+    /// 取一个「对象」字段，并容忍它被序列化成**单引号伪 JSON 字符串**。
+    /// ★ 红果的 ``video_meta`` / ``encrypt_info`` 就是这种形状：
+    ///   ``"{'definition': '360p', 'quality': 'normal'}"`` —— 它是 string 而不是 object，
+    ///   直接当对象读会静默拿到空串（清晰度/加密标记全丢，画质选择失效）。
+    ///   这里把单引号换成双引号再解析一次；解析不了就当没有。
+    /// </summary>
+    public static JsonElement? ObjectOrString(JsonElement el, string name)
+    {
+        var v = Get(el, name);
+        if (v is null) return null;
+        if (v.Value.ValueKind == JsonValueKind.Object) return v;
+        if (v.Value.ValueKind != JsonValueKind.String) return null;
+        string text = v.Value.GetString() ?? "";
+        if (text.Length == 0) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(text.Replace('\'', '"'));
+            return doc.RootElement.Clone();
+        }
+        catch { return null; }
+    }
+
     public static double Dbl(JsonElement el, string name)
     {
         var v = Get(el, name);

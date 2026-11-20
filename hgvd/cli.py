@@ -269,7 +269,8 @@ def cmd_grab(args) -> int:
     out = args.out or str(Path.home() / "hgvd_grab")
     say(f"实例 {idx}，输出到 {out}")
 
-    grabber = Grabber(out, quality=args.quality, log=say)
+    grabber = Grabber(out, quality=args.quality,
+                      include_all=args.all, log=say)
     grabber.start()
     proxy = CaptureProxy(args.port, grabber.feed_model, grabber.feed_detail, say)
     proxy.start()
@@ -696,6 +697,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="不重启 App（App 已经带着代理启动过时才用）")
     pg.add_argument("--keep-proxy", action="store_true",
                     help="退出时保留模拟器的 http_proxy 设置")
+    pg.add_argument("--all", action="store_true",
+                    help="连推荐流/短剧也下；默认只收教学合集（key 1001/1000）")
     pg.set_defaults(func=cmd_grab)
 
     pl = sub.add_parser("list", help="列出某部剧的分集")

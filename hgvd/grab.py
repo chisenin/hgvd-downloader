@@ -253,7 +253,26 @@ class CaptureProxy(threading.Thread):
         if DETAIL_HINT in target:
             self.on_detail(body)
         else:
-            self.on_clip(body)
+            self.on_clip(body, _map_keys(req))
+
+
+def _map_keys(req: bytes) -> tuple:
+    """从请求体里取 mixed_video_id_map 的键（决定内容类型）。"""
+    import gzip as _gzip
+
+    head, _, body = req.partition(b"\r\n\r\n")
+    if not body:
+        return ("",)
+    if b"content-encoding: gzip" in head.lower():
+        try:
+            body = _gzip.decompress(body)
+        except Exception:                   # noqa: BLE001
+            return ("",)
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        return tuple((payload.get("mixed_video_id_map") or {}).keys()) or ("",)
+    except Exception:                       # noqa: BLE001
+        return ("",)
 
 
 def _read_head(sock: socket.socket) -> bytes:
@@ -369,24 +388,28 @@ def _dechunk(data: bytes) -> bytes:
 class Grabber:
     """把抓到的 video_model 变成磁盘上的成品。"""
 
-    def __init__(self, out_dir: str, quality: str = "", log=print):
+    def __init__(self, out_dir: str, quality: str = "", include_all: bool = False,
+                 log=print):
         self.out_dir = Path(out_dir)
         self.quality = quality
+        self.include_all = include_all
         self.log = log
         self._lock = threading.Lock()
         self._seen: set[str] = set()
         self._titles: dict[str, tuple[str, int, str]] = {}   # vid -> (剧名, 序号, 集名)
+        self._book_type: dict[str, int] = {}                 # vid -> book_type（3=教学合集）
         self._series_name: dict[str, str] = {}
         self._q: queue.Queue[Clip] = queue.Queue()
         self._done = 0
         self._fail = 0
+        self._skipped_feed = 0
         self._worker = threading.Thread(target=self._loop, daemon=True)
 
     def start(self):
         self._worker.start()
 
     # -- 抓到的两个来源
-    def feed_model(self, payload: dict):
+    def feed_model(self, payload: dict, map_keys=("1004",)):
         data = payload.get("data")
         if not isinstance(data, dict):
             return
@@ -449,6 +472,10 @@ class Grabber:
             name = info.get("book_name") or ""
             if name:
                 self._series_name[str(series_id)] = name
+            try:
+                bt = int(info.get("book_type") or 0)
+            except Exception:               # noqa: BLE001
+                bt = 0
             vd = book.get("video_data") or {}
             for item in (vd.get("video_list") or []):
                 if not isinstance(item, dict):
@@ -456,6 +483,7 @@ class Grabber:
                 vid = str(item.get("vid") or "")
                 if not vid:
                     continue
+                self._book_type[vid] = bt
                 self._titles[vid] = (
                     name,
                     int(item.get("vid_index") or 0) + 1,
@@ -487,7 +515,30 @@ class Grabber:
                 self._fail += 1
                 self.log(f"✗ {clip.vid} 失败：{exc}")
 
+    def _wait_book_type(self, vid: str, timeout: float = 5.0):
+        """等详情响应把这一集的 book_type 带回来（详情往往比 preload 晚一点）。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            bt = self._book_type.get(vid)
+            if bt is not None:
+                return bt
+            time.sleep(0.25)
+        return None
+
     def _save(self, clip: Clip):
+        # ★★ 判据是「内容类型」，不是「加不加密」——
+        #   很多短剧本来就不加密，按加密筛会全放进来。
+        #   book_type：3 = 教学合集（收藏夹里的课程），0/2 = 短剧/推荐流。
+        #   类型要靠详情响应带回来，所以这里给 5 秒。
+        bt = self._wait_book_type(clip.vid)
+        if not self.include_all:
+            if bt is None:
+                self.log(f"· 跳过 {clip.vid}（拿不到内容类型，当作非教学）")
+                return
+            if bt != 3:
+                self.log(f"· 跳过 {clip.vid}（book_type={bt}，非教学合集）")
+                return
+
         # 标题可能晚到（detail 响应比 model 慢一点），给它 5 秒
         book, idx, title = self._titles.get(clip.vid, ("", 0, ""))
         if not title:

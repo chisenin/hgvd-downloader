@@ -657,8 +657,10 @@ public sealed class PlaybackModel
             if (string.IsNullOrEmpty(url)) url = J.Str(item, "backup_url");
             if (string.IsNullOrEmpty(url)) continue;
 
-            var meta = J.Get(item, "video_meta");
-            var enc = J.Get(item, "encrypt_info");
+            // ★ video_meta / encrypt_info 可能是**单引号伪 JSON 字符串**，
+            //   用 ObjectOrString 容忍（否则 definition/height 恒空，画质筛选失效）。
+            var meta = J.ObjectOrString(item, "video_meta");
+            var enc = J.ObjectOrString(item, "encrypt_info");
 
             var st = new Stream
             {
