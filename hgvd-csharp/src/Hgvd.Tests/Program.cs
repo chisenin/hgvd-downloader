@@ -6,6 +6,9 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        // ★ 实机验证入口（不属于离线回归）：起 MITM 代理看安卓能否握手
+        if (args.Length > 0 && args[0] == "--mitmtest") return MitmTest.Run(args);
+
         Console.WriteLine("═══ 红果下载器 C# 版 · 离线回归 ═══");
         int fail = 0;
         fail += SignTests.Run();
