@@ -289,7 +289,7 @@ public sealed class HongguoService
             });
         using var doc = await Client.PostAsync(
             SignedClient.PathDetailBatch, body, ct: ct,
-            // ★ 批量详情不是播放接口，风控轻；但也别用播放那套 3.2s 起步的退避，
+            // ★ 批量详情不是播放接口；别用播放那套 3.2s 起步的重试节奏，
             //   否则一批失败要拖 40s+。这里 3 次 / 2s 起步。
             retries: 3, basePause: 2.0, maxPause: 6.0);
         if (doc is null) return outMap;
@@ -318,7 +318,7 @@ public sealed class HongguoService
     ///   1. <c>multi_video_detail/preload/v1</c> —— **一次 20 个**就能拿到
     ///      所有条目的标题（合集也返回 <c>series_title</c>），但 <c>episode_cnt</c> 是 0。
     ///   2. <c>album_detail/v1/</c> —— 逐个查，**才有真实的集数**，
-    ///      但 222 个合集要 222 次请求，慢且容易被限流。
+    ///      但 222 个合集要 222 次请求，慢且容易撞上端点丢包。
     ///   所以：**先用第 1 路把标题全补齐**（并发 4 路），第 2 路只查前
     ///   <c>albumLimit</c> 个。
     /// </summary>
@@ -387,9 +387,9 @@ public sealed class HongguoService
     /// <summary>
     /// 播放地址缓存。
     ///
-    /// ★★ 服务端对 <c>video_model</c> 的风控是**账号级**的（文档 X6）：
-    ///   密集请求会持续返回 HTTP 200 + 空 body，退避 60~120s 也未必恢复。
-    ///   ⇒ 同一集**只打一次**播放接口，之后从缓存取。
+    /// ★★ `video_model` 的空 body 是**服务端/网关丢弃请求**，与请求频率无关
+    ///   （docs/03-开发要点.md §1.0：7 轮退避 19 分钟未恢复、隔 6 天第一发照旧空）。
+    ///   ⇒ 同一集**只打一次**播放接口，之后从缓存取（省请求，也省排错干扰）。
     ///   缓存键：<c>videoId</c> + <c>videoIdType</c> + <c>quality</c>。
     /// </summary>
     private static readonly Dictionary<string, (string Url, long Size, string Key, string Codec, string Backup)>
@@ -404,19 +404,19 @@ public sealed class HongguoService
     /// ★ 播放接口熔断：连续 <see cref="PlaybackEmptyLimit"/> 次拿到空 body
     ///   就**短路**掉后续所有播放请求。
     ///
-    /// ★★ 为什么需要：被风控后，一次 <c>video_model</c> 请求要退避重试 5 次
+    /// ★★ 为什么需要：空 body 时一次 <c>video_model</c> 要重试 5 次
     ///   （3.2+6.4+9.6+12+12 ≈ 43s），一集还要试两个 <c>video_id_type</c>。
-    ///   批量下载几百部剧时，会在退避里空转几十分钟 —— 用户看到的是「卡住了」。
+    ///   批量下载几百部剧时会在重试里空转几十分钟 —— 用户看到的是「卡住了」。
     ///   熔断后**立刻**失败并提示改用 App 缓存路径。
     ///
     /// ★ 阈值取 2：一次下载会依次试两个 video_id_type，
-    ///   两个都空 = 不是参数错，是风控。
+    ///   两个都空 = 播放端点这条路当下走不通（**不是**限流，等也不会好）。
     /// </summary>
     private const int PlaybackEmptyLimit = 2;
     private static int _playbackEmptyStreak;
     private static bool _playbackBlocked;
 
-    /// <summary>播放接口是否已被熔断（服务端在风控）。</summary>
+    /// <summary>播放接口是否已被熔断（连续空 body，端点当下不可用）。</summary>
     public static bool PlaybackBlocked
     {
         get { lock (PlaybackCache) return _playbackBlocked; }
@@ -451,7 +451,7 @@ public sealed class HongguoService
     /// </summary>
     /// <returns>
     /// (地址, 大小, 内容密钥, 编码, 失败原因)。<paramref name="failure"/> 非空说明没拿到地址，
-    /// 且里面写的是**真实原因**（限流 / 参数错 / 网络错），不再是笼统的「风控」。
+    /// 且里面写的是**真实原因**（空 body / 参数错 / 网络错），不再是笼统的「风控」。
     /// </returns>
     public async Task<(string Url, long Size, string Key, string Codec, string Failure, string Backup)>
         ResolveFullUrlAsync(string videoId, int videoIdType = 0, string quality = "720p",
@@ -459,8 +459,9 @@ public sealed class HongguoService
     {
         if (!LoggedIn) return ("", 0, "", "", "未登录：请先执行 hgvd login", "");
         if (PlaybackBlocked)
-            return ("", 0, "", "", "播放接口已被服务端限流并熔断（连续多次空 body）。" +
-                "等待几分钟后重试，或改用「提取App缓存」", "");
+            return ("", 0, "", "", "播放接口连续多次返回空 body，已熔断本批。" +
+                "★ 这不是限流，等再久也不会自己恢复；" +
+                "先看日志里的判据（同刻其它带签名端点是否也空），或改用「提取App缓存」", "");
 
         string ck = $"{videoId}|{videoIdType}|{quality}";
         lock (PlaybackCache)
@@ -474,7 +475,7 @@ public sealed class HongguoService
             {
                 // 拿到了 JSON 但没有流 —— 说明签名是通的，是**参数/内容**问题
                 // （例如 video_id_type 不对、或该集没有可播的清晰度）。
-                // ★ 这种**不是风控**，不计入限流熔断。
+                // ★ 拿到了 JSON，**不是**空 body，不计入熔断。
                 NotePlaybackOk();
                 return ("", 0, "", "", "服务端返回了数据但没有可用的清晰度" +
                     "（多半是 video_id_type 与内容类型不匹配）", "");
@@ -490,7 +491,7 @@ public sealed class HongguoService
         }
         catch (ApiException e)
         {
-            // ★ 只有**空 body** 才是限流（服务端把请求丢弃了）
+            // ★ 只有**空 body** 才计入熔断（服务端/网关丢弃了请求）
             if (e.Kind == ApiFailure.EmptyBody) NotePlaybackEmpty();
             else NotePlaybackOk();
             if (Environment.GetEnvironmentVariable("HGVD_DEBUG") == "1")
@@ -546,7 +547,7 @@ public sealed class HongguoService
                 if (size > 0) cb?.OnResolvedSize?.Invoke(size);
                 break;
             }
-            // ★ 已被限流熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
+            // ★ 已熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
             if (PlaybackBlocked) break;
         }
 
@@ -557,7 +558,7 @@ public sealed class HongguoService
                 Error = $"无法解析播放地址（vid={ep.Vid}）"
                     + (LoggedIn ? "" : "（未登录：请先执行 hgvd login）")
                     + (string.IsNullOrEmpty(failure) ? "" : $"：{failure}")
-                    + "。★ 「提取App缓存」（hgvd cache）是完全绕开服务端限流的另一条出片路径。",
+                    + "。★ 「提取App缓存」（hgvd cache）完全不经过 video_model，是另一条出片路径。",
             };
 
         var req = new DownloadRequest

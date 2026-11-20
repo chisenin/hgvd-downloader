@@ -7,8 +7,8 @@
   - ``book_type=3``（番茄小说的「书」）：``video_list`` 为空、
     ``episode_cnt=0`` —— 服务端**确实没有视频分集**（不是接口没给全）
 
-★ 接口会**间歇性限流**（连续请求时返回 HTTP 200 + 空 body），
-  所以必须有重试 + 间隔。
+★ 空 body 表示服务端/网关把这个请求丢弃了 —— **不是限流**，等不会恢复
+  （判据见 docs/03-开发要点.md §1.0）。所以先重试/换网关，别做长退避。
 """
 
 from __future__ import annotations
@@ -86,8 +86,8 @@ def signed_post(
       真实的 ``x-argus`` / ``x-ladon``，并且**去掉 ``x-medusa``**。
       带 medusa 时网关会直接返回空 body（2026-11-10 与 11-13 两次实测）。
 
-    ★ 服务端对密集请求会返回 **HTTP 200 + 空 body**（风控），
-      或 ``code=101000 服务异常``。所以必须有指数退避重试。
+    ★ 空 body = 服务端/网关丢弃了这个请求（**不是限流**）；
+      ``code=101000`` 是业务异常，换参数才有用。重试只是为了跨过偶发丢包。
     """
     raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
     last = "未知"
@@ -161,7 +161,7 @@ def fetch_details(
 ) -> dict:
     """批量取详情。返回 ``{series_id: {title, episode_cnt, episodes:[...], ...}}``。
 
-    ★ 每批之间有 ``pause`` —— 实测连续请求会被限流（空 body）。
+    ★ 每批之间有 ``pause`` —— 降低请求密度，减少撞上网关丢包。
     """
     out: dict[str, dict] = {}
     for i in range(0, len(series_ids), chunk_size):
@@ -230,7 +230,7 @@ def fetch_albums(
     """批量取合集详情（含完整分集列表）。
 
     ★ 这是拿到 ``book_type=3`` 那批「教学合集」分集的**唯一可用端点**。
-    ★ 每个合集一个请求，服务端限流较严，所以 ``pause`` 别设太小。
+    ★ 每个合集一个请求，``pause`` 别设太小（密度高时更容易丢包）。
     """
     from .album import parse_album
 

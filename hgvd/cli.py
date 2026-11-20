@@ -471,7 +471,7 @@ def cmd_cache(args) -> int:
     """提取 MuMu 里红果 App 的视频缓存。
 
     ★ App 播放过的视频会缓存成**标准 MP4**（HEVC/AAC），
-      这条路完全绕过服务端限流。
+      这条路完全不经过 ``video_model``（因此不受空 body 影响）。
     """
     from .auth.cache_extract import extract_all, list_cache
 
@@ -544,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="清除登录态").set_defaults(func=cmd_logout)
     sub.add_parser("gui", help="打开图形界面").set_defaults(func=cmd_gui)
 
-    pc = sub.add_parser("cache", help="提取 App 视频缓存（绕过服务端限流）")
+    pc = sub.add_parser("cache", help="提取 App 视频缓存（不经过 video_model）")
     pc.add_argument("--list", action="store_true", help="只列出缓存，不提取")
     pc.add_argument("--instance", type=int, default=1, help="MuMu 实例号")
     pc.add_argument("--out", help="输出目录")

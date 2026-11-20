@@ -12,7 +12,8 @@ namespace Hgvd.Core.Auth;
 /// <summary>
 /// 从 MuMu 模拟器里提取红果 App 的**视频缓存**。
 ///
-/// ★ 这是绕过服务端限流的可靠路径（2026-11-13 实测）：
+/// ★ 这条路径**完全不经过** <c>video_model</c>，因此不受空 body 影响
+///   （2026-11-13 实测）：
 ///   App 播放过的视频会被 MediaDataLoader 缓存成**标准 MP4**：
 ///     /sdcard/Android/data/com.phoenix.read/cache/short/&lt;md5&gt;.mdl
 ///     /sdcard/Android/data/com.phoenix.read/cache/dataloader/&lt;md5&gt;.mdl

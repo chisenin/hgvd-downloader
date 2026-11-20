@@ -15,8 +15,11 @@ namespace Hgvd.Core.Api;
 ///
 /// ★★ 为什么要分这么细：
 ///   过去所有失败都被笼统报成「服务端风控」，但它们其实是三件完全不同的事：
-///     <see cref="EmptyBody"/>  —— HTTP 200 + 零字节响应。服务端把请求**丢弃**了
-///                              （真限流 / 请求不被接受）。**只有这一种**才算限流。
+///     <see cref="EmptyBody"/>  —— HTTP 200 + 零字节响应。服务端（或网关）把
+///                              **这一个请求**丢弃了。**不是限流**：
+///                              真正的限流必然随间隔恢复，而本项目实测 7 轮退避
+///                              (累计 19 分钟) 未恢复、隔几天不打第一发照旧空 body
+///                              （见 docs/03-开发要点.md §1.0）。
 ///     <see cref="ErrorCode"/>  —— 服务端回了 JSON，但 code != 0。
 ///                              code=101000 通常是 **video_id_type 用错**（参数问题），
 ///                              重试无用，换参数才是正解。
@@ -25,7 +28,7 @@ namespace Hgvd.Core.Api;
 /// </summary>
 public enum ApiFailure
 {
-    /// <summary>空 body（服务端丢弃）—— 这才是限流。</summary>
+    /// <summary>空 body：服务端/网关丢弃了这个请求（**不是限流**）。</summary>
     EmptyBody,
     /// <summary>服务端回了错误码。</summary>
     ErrorCode,
@@ -58,8 +61,9 @@ public sealed class ApiException : Exception
         return kind switch
         {
             ApiFailure.EmptyBody =>
-                "空 body（HTTP 200 但零字节）—— 服务端把请求丢弃了，" +
-                "通常是**请求节奏过快被限流**。过几分钟再试即可恢复",
+                "空 body（HTTP 200 但零字节）—— 服务端/网关把这个请求丢弃了。" +
+                "**不是限流**：先看同刻其它带签名端点是否也空（全空 = 签名整体没被接受），" +
+                "再核对网关与请求参数；干等不会恢复",
             ApiFailure.ErrorCode => code == 101000
                 ? $"服务端返回 code=101000 服务异常 —— " +
                   $"**多半是 video_id_type 用错了**（教学类内容要用 1、短剧用 0），" +
@@ -78,7 +82,9 @@ public sealed class ApiException : Exception
 ///   - <c>/novel/player/video_detail/v1/</c>       单集 vid
 ///   - <c>/novel/player/multi_video_detail/preload/v1</c>  短剧分集
 ///   - <c>/novel/player/video_model/v1/</c>        播放地址
-/// ★ 服务端对密集请求会返回 **HTTP 200 + 空 body**（风控），必须有指数退避重试。
+/// ★ 空 body 的处理：**不是限流**，是服务端/网关丢弃了这个请求
+///   （见 docs/03-开发要点.md §1.0）。播放接口先换网关；
+///   全网关都空时别退避干等 —— 那是签名参数或端点变了。
 /// </summary>
 public sealed class SignedClient
 {
@@ -182,6 +188,10 @@ public sealed class SignedClient
     {
         byte[] raw = Encoding.UTF8.GetBytes(jsonBody);
         string last = "未知";
+        // ★★ 失败种类必须**如实**传递：旧实现最后一律抛 EmptyBody，
+        //    于是 502 / 404 / 非 JSON / 网络错全被上游当成「空 body」→
+        //    计入熔断 → 用户看到「被限流」。这正是「反复归因为限流」的代码根源。
+        ApiFailure lastKind = ApiFailure.Network;
         bool paramError = false;
 
         // ★ 播放接口：多网关故障转移（见 PlaybackHosts 的说明）。
@@ -225,6 +235,7 @@ public sealed class SignedClient
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         last = $"空 body (HTTP {(int)resp.StatusCode}) @ {baseUrl}";
+                        lastKind = ApiFailure.EmptyBody;
                         // ★★ 空 body = 这个网关把请求丢了 ——
                         //   立刻换下一个网关（不退避），全挂了才退避重试。
                         continue;
@@ -242,26 +253,26 @@ public sealed class SignedClient
                     // 100001 = 参数错，重试没用
                     if (code == 100001) { paramError = true; break; }
                     // ★★ 播放接口：拿到 **JSON**（哪怕 code != 0）说明签名是通的 ——
-                    //   空 body 才是「被服务端丢弃/限流」的信号。
+                    //   空 body 才是「服务端/网关丢弃了这个请求」的信号（**不是限流**）。
                     //   code=101000 多半是 **video_id_type 用错了**（教学类内容要用 1），
-                    //   这时重试 5 次纯属浪费（3.2+6.4+9.6+12+12 ≈ 43 秒），
-                    //   而且会把请求密度推高、反而更容易触发限流。
+                    //   这时重试 5 次纯属浪费（3.2+6.4+9.6+12+12 ≈ 43 秒）。
                     //   ⇒ 直接把 doc 交回调用方，由它换另一种 video_id_type 再试。
                     if (playback)
                     {
                         throw new ApiException(path, ApiFailure.ErrorCode, code,
                             J.Str(doc.RootElement, "message"));
                     }
-                    // ★ 服务端对 video_model 的限流是「全局节奏」——
-                    //   实测约每 3 秒才放行一次，同一 id 连续请求时
-                    //   前 3 次空 body、第 4 次才成功。
-                    //   所以这里固定 3.2s 起步，不要太短。
+                    // ★ 历史包袱说明：这里曾写「服务端每 3 秒才放行一次，前 3 次空 body、
+                    //   第 4 次才成功」——那是**把重试序列误读成服务端节奏**。
+                    //   空 body 与请求频率无关（docs/03-开发要点.md §1.0），
+                    //   3.2s 只是保守默认值，不代表服务端有这个节流。
                     break;
                 }
                 catch (ApiException) { throw; }
                 catch (Exception e)
                 {
                     last = $"{e.Message} @ {baseUrl}";
+                    lastKind = ApiFailure.Network;   // 网络错 / 非 JSON —— 不是空 body
                     break;
                 }
             }
@@ -269,7 +280,7 @@ public sealed class SignedClient
             await Task.Delay(TimeSpan.FromSeconds(
                 Math.Min(basePause * (attempt + 1), maxPause)), ct);
         }
-        throw new ApiException(path, ApiFailure.EmptyBody, 0, last);
+        throw new ApiException(path, lastKind, 0, last);
     }
 
     /// <summary>播放接口要试的网关地址（含 scheme）。</summary>

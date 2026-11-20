@@ -121,7 +121,7 @@ public partial class MainWindow
         _downloading = false;
 
         Line($"结果：处理 {res.DoneSeries} 部 · 成功 {res.Ok} 集 · 失败 {res.Fail} 集"
-             + (res.Aborted ? " · **被限流中止**" : ""));
+             + (res.Aborted ? " · **空 body 中止**" : ""));
         foreach (var e in _downloadErrors) Line("  错误：" + e);
         try
         {
@@ -246,7 +246,7 @@ public partial class MainWindow
                 $"标题行 {EpisodeRows.Count(r => r.IsGroupHeader)} 个 / {_queueBySeries.Count} 部");
         }
 
-        // ⑦ ★ 清单整体下载（注入假下载器，绕开服务端风控）
+        // ⑦ ★ 清单整体下载（注入假下载器，不打网络）
         //    ★ 关键断言：清单里两部剧的集号各自从 1 起，下载日志/文件名不会串号
         int fakeCalls = 0;
         var seen = new List<string>();

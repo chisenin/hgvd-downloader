@@ -114,7 +114,7 @@ def fetch_album(
     body = {"album_id": album_id, "book_type": book_type}
     raw = signed_post("/novel/player/album_detail/v1/", body)
     if not isinstance(raw, dict):
-        raise RuntimeError("album_detail 无响应（可能被限流）")
+        raise RuntimeError("album_detail 无响应（空 body 或非 JSON，见日志）")
     if raw.get("code") != 0:
         raise RuntimeError(
             f"album_detail 失败：code={raw.get('code')} "

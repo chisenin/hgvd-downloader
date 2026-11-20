@@ -1,4 +1,11 @@
-"""换 device_id 试：限流可能是按设备指纹分桶的。"""
+"""换 device_id 试：限流可能是按设备指纹分桶的。
+⚠ 结论修正（2026-11-20）：本脚本是按「服务端限流」这个假设写的，
+  **该假设已被证伪** —— 空 body 是服务端/网关丢弃请求，与请求频率无关
+  （判据与实测见 docs/03-开发要点.md §1.0）。
+  保留此脚本仅为复现历史实验；**不要**再照抄「限流窗口」「退避等待」这类做法，
+  那个方向历史上白花过 19 分钟（7 轮退避全部未恢复）。
+
+"""
 from __future__ import annotations
 import html, binascii, json, pathlib, re, sys, time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))

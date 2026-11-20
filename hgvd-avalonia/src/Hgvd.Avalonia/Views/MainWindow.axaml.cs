@@ -585,8 +585,9 @@ public partial class MainWindow : Window
         LblStatus.Text = "就绪";
         UpdateQueueSummary();
         if (res.Aborted)
-            ShowBanner("播放接口被服务端限流（连续多次返回空 body），已停止。"
-                     + "\n等待几分钟后重试即可恢复；急用可改用「提取App缓存」。", BannerKind.Err);
+            ShowBanner("播放接口连续多次返回空 body，已停止本批。"
+                     + "\n★ 这不是限流，等再久也不会自己恢复；先看日志里的判据，"
+                     + "急用可改用「提取App缓存」。", BannerKind.Err);
         Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
     }
 
@@ -636,8 +637,9 @@ public partial class MainWindow : Window
 
             if (r.Aborted)
             {
-                ShowBanner("播放接口被服务端限流（连续多次返回空 body），已停止。"
-                         + "\n等待几分钟后重试即可恢复；急用可改用「提取App缓存」出片。", BannerKind.Err);
+                ShowBanner("播放接口连续多次返回空 body，已停止本批。"
+                         + "\n★ 这不是限流，等再久也不会自己恢复；先看日志里的判据，"
+                         + "急用可改用「提取App缓存」出片。", BannerKind.Err);
                 break;
             }
         }
@@ -648,7 +650,7 @@ public partial class MainWindow : Window
     private readonly List<string> _downloadErrors = new();
 
     /// <summary>
-    /// ★ 测试钩子：替换掉真正的下载（服务端被风控时，用它验证批量逻辑本身）。
+    /// ★ 测试钩子：替换掉真正的下载（不打网络，用它验证批量逻辑本身）。
     /// </summary>
     internal Func<Core.Api.Episode, string, DownloadCallbacks, CancellationToken,
         Task<DownloadResult>>? DownloadHook;
@@ -713,18 +715,18 @@ public partial class MainWindow : Window
                 else
                 {
                     fail++;
-                    // ★★ 只有「空 body」才说明服务端真的在限流；
-                    //   其余（code=101000 参数错 / 网络错）不是限流，不该触发中止。
+                    // ★★ 只有「空 body」才计入熔断；
+                    //   其余（code=101000 参数错 / 网络错 / 502）不该触发中止。
                     bool rateLimited = res.Error?.Contains("空 body") == true;
                     if (res.Error?.Contains("无法解析播放地址") == true && rateLimited) addrFail++;
                     RunOnUi(() => { row.State = "失败"; row.Error = res.Error; });
                     Log($"✗ {series} [{row.Index}] {res.Error}");
                     _downloadErrors.Add($"「{series}」[{row.Index}] {res.Error}");
-                    // ★ 连续空 body → 服务端限流（Core 里已熔断），立刻停
+                    // ★ 连续空 body → Core 里已置熔断位，立刻停
                     if (addrFail >= 3 || HongguoService.PlaybackBlocked)
                     {
-                        Log("！播放接口被服务端限流（连续空 body），停止本批。"
-                            + "等待几分钟后重试，或改用「提取App缓存」出片。");
+                        Log("！播放接口连续空 body，停止本批（不是限流，等待无效）。"
+                            + "先看日志判据，急用可改用「提取App缓存」出片。");
                         return (ok, fail, true);
                     }
                 }

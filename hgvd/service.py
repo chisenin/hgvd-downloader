@@ -443,7 +443,7 @@ class HongguoService:
 
         ★ 走 App 网关的 ``video_model``，需要登录 + 播放专用签名。
         ★ 返回 ``(url, size, content_key, reason)``；拿不到时 ``url`` 为空，
-          ``reason`` 里写的是**真实原因**（限流 / 参数错 / 网络错）。
+          ``reason`` 里写的是**真实原因**（空 body / 参数错 / 网络错）。
           ``content_key`` 非空表示该集是 CENC 加密的，下载后需要
           ``ffmpeg -decryption_key`` 解密。
 
@@ -465,7 +465,7 @@ class HongguoService:
         code = payload.get("code")
         if code not in (0, None):
             # ★ code=101000 = 参数/类型不符（多半是 video_id_type 用错），
-            #   **不是风控** —— 别把它当成限流。
+            #   **不是空 body** —— 别把它当成服务端丢弃请求。
             return "", None, None, (
                 f"服务端返回 code={code} {payload.get('message') or ''}".strip()
                 + "（多半是 video_id_type 与内容类型不匹配：短剧用 0、教学用 1）"
@@ -643,7 +643,7 @@ class HongguoService:
                 ok=False, out_path=str(out),
                 error=f"无法解析播放地址（vid={ep.vid}）"
                 + (f"：{reason}" if reason else "")
-                + "。★ 「提取App缓存」（python -m hgvd cache）是完全绕开服务端限流的另一条出片路径。",
+                + "。★ 「提取App缓存」（python -m hgvd cache）完全不经过 video_model，是另一条出片路径。",
             )
 
         req = DownloadRequest(

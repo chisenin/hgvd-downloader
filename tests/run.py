@@ -366,9 +366,61 @@ def test_g_drm():
     eq("G4 随机字节", derive_content_key(base64.b64encode(bytes(40)).decode()), None)
 
 
+# ---------------------------------------------------------------- H 组
+
+
+# 产品代码里**禁止**出现的说法：把「HTTP 200 + 空 body」归因成服务端限流/风控。
+#
+# ★★ 为什么要有这条回归：这个推断已经被推翻过三次
+#    （docs/03-开发要点.md §1.0：sign_request 用错 / x-argus 移植 bug /
+#     网关丢请求），每次都以「再加一次退避」收场，白烧 19 分钟。
+#    代码里的措辞会直接塑造下一次排查的方向 —— 文案留着，第四次就一定还会发生。
+_BANNED = (
+    "被服务端限流",
+    "服务端限流并熔断",
+    "请求节奏过快",
+    "等待几分钟后重试",
+    "账号级风控",
+    "被限流中止",
+)
+# 出现在**否定句/历史复盘**里是允许的（同一行命中任一即可）
+_ALLOW = ("不是", "证伪", "误判", "不要", "绝不", "禁止", "历史上",
+          "别把", "三次", "推翻")
+
+_SRC_ROOTS = ("hgvd", "hgvd-csharp/src", "hgvd-avalonia/src")
+_SRC_SUFFIX = (".py", ".cs", ".axaml")
+
+
+def test_h_attribution_guard():
+    root = Path(__file__).resolve().parent.parent
+    hits: list[str] = []
+    for sub in _SRC_ROOTS:
+        for p in (root / sub).rglob("*"):
+            if not p.is_file() or p.suffix not in _SRC_SUFFIX:
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                if any(b in line for b in _BANNED) and not any(
+                        a in line for a in _ALLOW):
+                    hits.append(f"{p.relative_to(root)}:{i}: {line.strip()[:64]}")
+    check("H1 源码里不再把空 body 归因为限流", not hits,
+          "\n    " + "\n    ".join(hits[:6]))
+
+    # 结论本身要留在文档里，且判据要可复现（两个探针缺一不可）
+    doc = (root / "docs" / "03-开发要点.md").read_text(encoding="utf-8")
+    check("H2 开发要点保留「限流已被证伪」章节",
+          "已被证伪" in doc and "rate_probe" in doc and "emptybody_probe" in doc)
+    check("H3 两个判据探针都在",
+          (root / "tools" / "rate_probe.py").is_file()
+          and (root / "tools" / "emptybody_probe.py").is_file())
+
+
 def main() -> int:
     for fn in (test_a_utils, test_b_config, test_c_history, test_d_sign,
-               test_e_web, test_f_shelf, test_g_drm):
+               test_e_web, test_f_shelf, test_g_drm, test_h_attribution_guard):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

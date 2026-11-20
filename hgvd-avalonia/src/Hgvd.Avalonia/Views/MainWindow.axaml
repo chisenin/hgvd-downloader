@@ -197,7 +197,7 @@
                           Classes="modern danger" Click="BtnStop_Click" IsEnabled="False" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
                           Classes="modern" Click="BtnCache_Click"
-                          ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;★ 服务端播放接口限流时，这是唯一还能出片的路径。" />
+                          ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;★ 播放接口返回空 body 时，这条路径不经过 video_model，是唯一还能出片的路。" />
                 </StackPanel>
               </DockPanel>
 
