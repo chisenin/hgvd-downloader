@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -786,4 +787,185 @@ public partial class MainWindow
     ///   验证的是**「关于」窗口能不能被打开**这个结果。
     /// </summary>
     private void SimulateBrandClick() => OnBrandClicked();
+
+    // ──────────────────────────────────────────────────────────── 发版门禁探针
+    // ★ 播放接口加固后，无人值守拿不到有效直链（直链带 100 秒时间戳），
+    //   所以端到端下载门禁拆成两段本地可控的验证：
+    //     TlsProbeAsync     —— MITM 证书链（原 _ref/csharp 少换行那个坑）
+    //     DownloadProbeAsync —— 下载引擎 + 命名 + ffprobe 校验
+    //   真实点播抓流（需人在 App 里点）保留为手工验证。
+
+    private static void ProbeLog(string report, string line)
+    {
+        try
+        {
+            File.AppendAllText(report, line + "\n", Encoding.UTF8);
+        }
+        catch { }
+    }
+
+    /// <summary>本地 TLS 握手探针：验证证书链能发到客户端（Verification: OK 的等价检查）。</summary>
+    public async Task TlsProbeAsync(int seconds = 12)
+    {
+        string report = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".hgv_tool", "tlsprobe.log");
+        try { Directory.CreateDirectory(Path.GetDirectoryName(report)!); File.Delete(report); } catch { }
+
+        int port = 18443;
+        ProbeLog(report, "═══ TLS 证书链门禁 ═══");
+        try
+        {
+            var ctx = Hgvd.Core.Grab.MitmCa.ContextFor("hgvd-selftest.local");
+            if (ctx == null) { ProbeLog(report, "✗ 证书上下文为空"); return; }
+
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.Start();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
+
+            var server = Task.Run(async () =>
+            {
+                try
+                {
+                    using var client = await listener.AcceptTcpClientAsync(cts.Token);
+                    using var tls = new System.Net.Security.SslStream(client.GetStream(), false);
+                    await tls.AuthenticateAsServerAsync(
+                        new System.Net.Security.SslServerAuthenticationOptions
+                        {
+                            ServerCertificateContext = ctx,
+                            ClientCertificateRequired = false,
+                            CertificateRevocationCheckMode =
+                                System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck,
+                            ApplicationProtocols = new List<System.Net.Security.SslApplicationProtocol>
+                            {
+                                System.Net.Security.SslApplicationProtocol.Http11,
+                            },
+                        }, cts.Token);
+                    ProbeLog(report, $"✓ 握手成功 {tls.SslProtocol}");
+                }
+                catch (Exception ex) { ProbeLog(report, "✗ " + ex.GetType().Name + ": " + ex.Message); }
+            });
+
+            // 客户端：不校验证书（我们验的是「服务端能否发出完整链」，链本身用 openssl 单独验）
+            using (var client = new System.Net.Sockets.TcpClient())
+            {
+                await client.ConnectAsync(System.Net.IPAddress.Loopback, port, cts.Token);
+                using var tls = new System.Net.Security.SslStream(client.GetStream(), false,
+                    (_, _, _, _) => true);
+                await tls.AuthenticateAsClientAsync("hgvd-selftest.local");
+                ProbeLog(report, "✓ 客户端握手完成");
+            }
+            await server;
+            listener.Stop();
+            ProbeLog(report, "=== ok=1 fail=0 ===");
+        }
+        catch (Exception ex)
+        {
+            ProbeLog(report, "✗ 探针异常：" + ex.Message);
+            ProbeLog(report, "=== ok=0 fail=1 ===");
+        }
+    }
+
+    /// <summary>下载链路门禁：本地 http 小文件 → Downloader → ffprobe 校验时长。</summary>
+    public async Task DownloadProbeAsync()
+    {
+        string report = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".hgv_tool", "dlprobe.log");
+        try { Directory.CreateDirectory(Path.GetDirectoryName(report)!); File.Delete(report); } catch { }
+        ProbeLog(report, "═══ 下载链路门禁 ═══");
+
+        string tmp = Path.Combine(Path.GetTempPath(), "hgvd_dlprobe_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        int ok = 0, fail = 0;
+        try
+        {
+            // 用内置 ffmpeg 造一个 2 秒的小 mp4（比 http 服务更简单可靠）
+            string ffmpeg = ResolveProbeFfmpeg();
+            string src = Path.Combine(tmp, "src.mp4");
+            var gen = Process.Start(new ProcessStartInfo(ffmpeg)
+            {
+                ArgumentList =
+                {
+                    "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src,
+                },
+                UseShellExecute = false, CreateNoWindow = true,
+            });
+            gen!.WaitForExit(30000);
+            if (!File.Exists(src)) throw new IOException("本地测试 mp4 生成失败");
+
+            // 起一个本地 http 服务（只服务这一个文件）
+            using var http = new System.Net.HttpListener();
+            http.Prefixes.Add("http://127.0.0.1:18444/");
+            http.Start();
+            var serving = Task.Run(async () =>
+            {
+                try
+                {
+                    var ctx = await http.GetContextAsync();
+                    var bytes = File.ReadAllBytes(src);
+                    ctx.Response.ContentLength64 = bytes.Length;
+                    ctx.Response.ContentType = "video/mp4";
+                    await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                }
+                catch { }
+            });
+
+            string outPath = Path.Combine(tmp, "抓流门禁样本.001.本地测试.mp4");
+            var req = new DownloadRequest
+            {
+                Url = "http://127.0.0.1:18444/probe.mp4",
+                OutPath = outPath,
+                ExpectDuration = 2.0,
+                ContentKey = "",           // 教学类不解密
+            };
+            var res = await Downloader.DownloadAsync(req, null, CancellationToken.None);
+            if (!res.Ok)
+            {
+                fail++;
+                ProbeLog(report, "✗ 下载失败：" + res.Error);
+            }
+            else
+            {
+                double d = Util.ProbeDuration(outPath);
+                if (d > 1.5 && d < 2.5)
+                {
+                    ok++;
+                    ProbeLog(report, $"✓ 下载+命名+ffprobe 校验通过：{Path.GetFileName(outPath)} {d:0.0}s {res.Size} 字节");
+                }
+                else { fail++; ProbeLog(report, $"✗ 时长不符：{d:0.0}s（期望 2s）"); }
+            }
+            http.Stop();
+            await serving;
+        }
+        catch (Exception ex)
+        {
+            fail++;
+            ProbeLog(report, "✗ 异常：" + ex.GetType().Name + ": " + ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch { }
+        }
+        ProbeLog(report, $"=== ok={ok} fail={fail} ===");
+    }
+
+    /// <summary>找内置 ffmpeg（发行版解包在 ToolPaths，源码期在仓库 .cache）。</summary>
+    private static string ResolveProbeFfmpeg()
+    {
+        string local = Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe");
+        if (File.Exists(local)) return local;
+        // 源码期：向上找仓库根 .cache/ffmpeg
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            string p = Path.Combine(dir.FullName, ".cache", "ffmpeg", "ffmpeg.exe");
+            if (File.Exists(p)) return p;
+            dir = dir.Parent;
+        }
+        return "ffmpeg";   // 最后的兜底：PATH
+    }
 }

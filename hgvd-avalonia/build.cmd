@@ -93,18 +93,19 @@ set "HGVD_VERIFY=1"
 goto build
 
 rem ══════════════════════════════════════════════════════════════
-rem  发版门禁：界面自检 + 端到端真下载
+rem  发版门禁：界面自检 + 证书链 + 下载链路（本地可控，不依赖 App 点播）
 rem  ★ 验的是**目录版**（B 案主推的那个），不是单文件 ——
 rem    两者是两次独立 publish，验主推形态才有意义。
 rem  ★ 两个开关都**不靠退出码**（程序是 WinExe，--uitest/--batchtest 恒返回 0），
 rem    只能解析它们写出来的日志：
 rem      %USERPROFILE%\.hgv_tool\uitest.log    末尾 === fail=N ===
-rem      %USERPROFILE%\.hgv_tool\batchtest.log 末尾 === ok=N fail=M ===
+rem      %USERPROFILE%\.hgv_tool\tlsprobe.log  末尾 === ok=1 fail=0 ===
+rem      %USERPROFILE%\.hgv_tool\dlprobe.log   末尾 === ok=1 fail=0 ===
 rem    所以先删旧日志，跑完再确认日志存在 —— 否则会拿上一次的结果冒充通过。
 rem ══════════════════════════════════════════════════════════════
 :check
 echo.
-echo [验证 1/2] 界面自检
+echo [验证 1/3] 界面自检
 if exist "%LOGDIR%\uitest.log" del /q "%LOGDIR%\uitest.log"
 "%PKG%\%APP%.exe" --uitest
 if not exist "%LOGDIR%\uitest.log" (
@@ -120,25 +121,41 @@ if errorlevel 1 (
 )
 
 echo.
-echo [验证 2/2] 端到端真下载（1 部 · 最多 2 集）
-if exist "%LOGDIR%\batchtest.log" del /q "%LOGDIR%\batchtest.log"
-"%PKG%\%APP%.exe" --batchtest 1
-if not exist "%LOGDIR%\batchtest.log" (
-    echo [失败] 批量测试没写出日志 —— 程序没起来，或启动就崩了。
+echo [验证 2/3] MITM 证书链（本地 TLS 握手）
+if exist "%LOGDIR%\tlsprobe.log" del /q "%LOGDIR%\tlsprobe.log"
+"%PKG%\%APP%.exe" --tlsprobe 12
+if not exist "%LOGDIR%\tlsprobe.log" (
+    echo [失败] 证书链探针没写出日志 —— 程序没起来，或启动就崩了。
     exit /b 1
 )
-rem ★ 注意这里的方向：找到 "=== ok=0" 才是**失败**
-findstr /C:"=== ok=0" "%LOGDIR%\batchtest.log" >nul
-if not errorlevel 1 (
+findstr /C:"=== ok=1 fail=0 ===" "%LOGDIR%\tlsprobe.log" >nul
+if errorlevel 1 (
     echo.
-    echo [失败] 一集都没下下来，详见 %LOGDIR%\batchtest.log
-    type "%LOGDIR%\batchtest.log"
+    echo [失败] 证书链门禁没过，详见 %LOGDIR%\tlsprobe.log
+    type "%LOGDIR%\tlsprobe.log"
     exit /b 1
 )
-type "%LOGDIR%\batchtest.log"
+type "%LOGDIR%\tlsprobe.log"
 
 echo.
-echo ═══ 验证通过：界面自检全绿 + 端到端下载成功 ═══
+echo [验证 3/3] 下载链路（本地小文件 → 下载 → ffprobe）
+if exist "%LOGDIR%\dlprobe.log" del /q "%LOGDIR%\dlprobe.log"
+"%PKG%\%APP%.exe" --dlprobe
+if not exist "%LOGDIR%\dlprobe.log" (
+    echo [失败] 下载链路探针没写出日志 —— 程序没起来，或启动就崩了。
+    exit /b 1
+)
+findstr /C:"=== ok=1 fail=0 ===" "%LOGDIR%\dlprobe.log" >nul
+if errorlevel 1 (
+    echo.
+    echo [失败] 下载链路门禁没过，详见 %LOGDIR%\dlprobe.log
+    type "%LOGDIR%\dlprobe.log"
+    exit /b 1
+)
+type "%LOGDIR%\dlprobe.log"
+
+echo.
+echo ═══ 验证通过：界面自检 + 证书链 + 下载链路全绿 ═══
 echo     目录版：%~dp0%PKG%\
 echo     压缩包：%~dp0%ZIP%
 echo     可以发版了（bash tools/publish_release.sh v%VER%）

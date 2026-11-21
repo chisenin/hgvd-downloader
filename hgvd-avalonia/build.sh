@@ -93,13 +93,21 @@ if [ "$VERIFY" = "1" ]; then
     # ── 发版门禁：界面自检 + 端到端真下载 ──
     # ★ 验的是**目录版**（B 案主推的那个），不是单文件 ——
     #   两者是两次独立 publish，验主推形态才有意义。
-    # ★ 两个开关都**不靠退出码**（WinExe 的 --uitest / --batchtest 恒返回 0），
-    #   只能解析它们写出来的日志。先删旧日志，跑完再确认存在 ——
-    #   否则会拿上一次的结果冒充通过。
+    # ★ 自检开关都**不靠退出码**（WinExe 恒返回 0），只能解析它们写出来的日志。
+    #   先删旧日志，跑完再确认存在 —— 否则会拿上一次的结果冒充通过。
+    #
+    # ★★ 2026-11-21 门禁改造：播放接口加固后，无人值守拿不到有效直链
+    #    （直链带 100 秒时间戳，且必须有人在 App 里点播才产生 preload）。
+    #    原 --batchtest 走老直连路径必然失败，已不适合作门禁。
+    #    拆成三道本地可控的验证：
+    #      1. --uitest    界面交互
+    #      2. --tlsprobe  MITM 证书链（守「PEM 少换行只发叶证书」那个坑）
+    #      3. --dlprobe   下载引擎 + 命名 + ffprobe 校验（本地 http 小文件）
+    #    真实点播抓流保留为手工验证（docs/07 §8 有 31 集实测记录）。
     EXE="$PKG/$APP.exe"
 
     echo
-    echo "[验证 1/2] 界面自检"
+    echo "[验证 1/3] 界面自检"
     rm -f "$LOGDIR/uitest.log"
     "$EXE" --uitest
     if [ ! -f "$LOGDIR/uitest.log" ]; then
@@ -113,22 +121,29 @@ if [ "$VERIFY" = "1" ]; then
     fi
 
     echo
-    echo "[验证 2/2] 端到端真下载（1 部 · 最多 2 集）"
-    rm -f "$LOGDIR/batchtest.log"
-    "$EXE" --batchtest 1
-    if [ ! -f "$LOGDIR/batchtest.log" ]; then
-        echo "[失败] 批量测试没写出日志 —— 程序没起来，或启动就崩了。" >&2
+    echo "[验证 2/3] MITM 证书链（本地 TLS 握手）"
+    rm -f "$LOGDIR/tlsprobe.log"
+    "$EXE" --tlsprobe 12
+    if [ ! -f "$LOGDIR/tlsprobe.log" ] || ! grep -q "=== ok=1 fail=0 ===" "$LOGDIR/tlsprobe.log"; then
+        echo "[失败] 证书链门禁没过（或没写日志）：" >&2
+        cat "$LOGDIR/tlsprobe.log" >&2
         exit 1
     fi
-    if grep -q "=== ok=0" "$LOGDIR/batchtest.log"; then
-        echo "[失败] 一集都没下下来：" >&2
-        cat "$LOGDIR/batchtest.log" >&2
-        exit 1
-    fi
-    cat "$LOGDIR/batchtest.log"
+    cat "$LOGDIR/tlsprobe.log"
 
     echo
-    echo "═══ 验证通过：界面自检全绿 + 端到端下载成功 ═══"
+    echo "[验证 3/3] 下载链路（本地小文件 → 下载 → ffprobe）"
+    rm -f "$LOGDIR/dlprobe.log"
+    "$EXE" --dlprobe
+    if [ ! -f "$LOGDIR/dlprobe.log" ] || ! grep -q "=== ok=1 fail=0 ===" "$LOGDIR/dlprobe.log"; then
+        echo "[失败] 下载链路门禁没过（或没写日志）：" >&2
+        cat "$LOGDIR/dlprobe.log" >&2
+        exit 1
+    fi
+    cat "$LOGDIR/dlprobe.log"
+
+    echo
+    echo "═══ 验证通过：界面自检 + 证书链 + 下载链路全绿 ═══"
     echo "    目录版：$PWD/$PKG/"
     echo "    压缩包：$PWD/$ZIP"
     echo "    可以发版了（bash tools/publish_release.sh v$VER）"
