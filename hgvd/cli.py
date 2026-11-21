@@ -272,8 +272,7 @@ def cmd_grab(args) -> int:
     out = args.out or str(Path.home() / "hgvd_grab")
     say(f"实例 {idx}，输出到 {out}")
 
-    grabber = Grabber(out, quality=args.quality,
-                      include_all=args.all, take_unknown=args.take_unknown, log=say)
+    grabber = Grabber(out, quality=args.quality, log=say)
     grabber.start()
     proxy = CaptureProxy(args.port, grabber.feed_model, grabber.feed_detail, say)
     proxy.start()
@@ -381,16 +380,16 @@ def cmd_download(args) -> int:
         if not items:
             print("收藏夹为空，没有可下载内容。")
             return 0
-        # ★ 短剧默认跳过 —— 用户明确说它们只是消遣、没下载价值。
-        #   真要下就加 --include-dramas。
+        # ★ 短剧一律跳过 —— 目标口径是「只下载收藏夹里的教材/合集类视频」，
+        #   短剧既不是教材，编码又是字节私有 bytevc（解不出画面）。
+        #   ★ 2026-11-21 删除 --include-dramas：那是个绕过口径的开关。
         skipped = [i for i in items if i.is_short_drama]
-        if not args.include_dramas:
-            items = [i for i in items if not i.is_short_drama]
-            if skipped:
-                print(f"\n跳过 {len(skipped)} 部短剧（bytevc 加密，仅供消遣）：")
-                for i in skipped:
-                    print(f"  · {i.title}  ({i.episode_cnt} 集)  id={i.series_id}")
-                print("  需要的话加 --include-dramas\n")
+        items = [i for i in items if not i.is_short_drama]
+        if skipped:
+            print(f"\n跳过 {len(skipped)} 部短剧（不是教材/合集类，且是 bytevc 加密）：")
+            for i in skipped:
+                print(f"  · {i.title}  ({i.episode_cnt} 集)  id={i.series_id}")
+            print()
         targets = items
         album_eps = {}
     else:
@@ -705,10 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="不重启 App（App 已经带着代理启动过时才用）")
     pg.add_argument("--keep-proxy", action="store_true",
                     help="退出时保留模拟器的 http_proxy 设置")
-    pg.add_argument("--all", action="store_true",
-                    help="连推荐流/短剧也下；默认只收教学合集（key 1001/1000）")
-    pg.add_argument("--take-unknown", action="store_true",
-                    help="类型拿不到时，按「长且未加密」的教学特征先收下（验证期用）")
+    # ★ 2026-11-21 删除 --all / --take-unknown：这两个开关会绕过白名单，
+    #   把推荐流与短剧一起收下，与「只下载收藏夹里的教材/合集类视频」冲突。
     pg.set_defaults(func=cmd_grab)
 
     pl = sub.add_parser("list", help="列出某部剧的分集")
@@ -727,8 +724,6 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--quality", choices=["360p", "720p", "1080p"])
     pd.add_argument("--workers", type=int, default=0,
                     help="集级并发数（默认取配置）")
-    pd.add_argument("--include-dramas", action="store_true",
-                    help="--all 时也下载短剧（默认跳过：bytevc 加密，仅供消遣）")
     pd.add_argument("--all-album", action="store_true",
                     help="--all 时展开全部合集（慢，默认只展开 30 个）")
     pd.set_defaults(func=cmd_download)

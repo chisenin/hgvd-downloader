@@ -536,11 +536,29 @@ def test_j_grab() -> None:
               g._titles.get("111", ("", 0, ""))[2] == "第一集")
 
         # 形态二：data 本身就是一条（video_detail/v1），教学类的 video_list 是空的
+        # ★ 2026-11-21 复核定案：白名单准入要**同时**满足「是教学类」与「在收藏夹里」。
+        #   收藏夹外的教学内容（App 里能看到但用户没收藏的）不得入队。
+        g._shelf_series = {"7709"}          # 模拟收藏夹里有这一部
         g.feed_detail({"code": 0, "data": {
             "video_data": {"content_type": 1003, "series_id": "7709",
                            "series_title": "奇趣百科", "video_list": []}}})
         check("J14 单条详情能认出教学合集并入队",
               g._content_type.get("7709") == 1003 and "7709" in g._album_seen)
+
+        # ★ 收藏夹外的教学合集：认得出类型，但**不入队**（不许下）。
+        g.feed_detail({"code": 0, "data": {
+            "video_data": {"content_type": 1003, "series_id": "8888",
+                           "series_title": "收藏夹外的课", "video_list": []}}})
+        check("J14b 收藏夹外的教学合集不入队（只下收藏夹里的）",
+              g._content_type.get("8888") == 1003 and "8888" not in g._album_seen)
+
+        # ★ 收藏夹里的短剧：content_type=1004，类型认得出，但白名单不收。
+        g._shelf_series = {"7709", "6666"}
+        g.feed_detail({"code": 0, "data": {
+            "video_data": {"content_type": 1004, "series_id": "6666",
+                           "series_title": "收藏夹里的短剧", "video_list": []}}})
+        check("J14c 短剧不入队（content_type=1004）",
+              g._content_type.get("6666") == 1004 and "6666" not in g._album_seen)
 
         g._album["222"] = ("课", 3, "第三节", 100.0)
         check("J15 白名单命中直接返回", g._wait_album("222", timeout=0.1)[1] == 3)
@@ -576,10 +594,18 @@ def test_j_grab() -> None:
             check("J21 直链仍会继续下载并排空队列", g.wait_idle(5) and dl.call_count == 1)
 
         g2 = grab.Grabber(str(tmp), log=lambda m: None)
-        with mock.patch.object(grab, "download", return_value=DownloadResult(ok=True)):
+        with mock.patch.object(grab, "download", return_value=DownloadResult(ok=True)) as dl2:
             g2.start()
             g2.feed_model({"code": 0, "data": {"999": {"video_model": vm}}})
             check("J22 非白名单直链不触发自动停止", not g2.captured.wait(0.5))
+            check("J22b 非白名单直链**不会**被下载（白名单是唯一准入条件）",
+                  dl2.call_count == 0)
+
+    # ★★ 2026-11-21 复核：目标口径 = 只下载收藏夹里的教材/合集类视频。
+    #   护栏：抓流**不得**再留任何绕过白名单的开关。
+    check("J23 抓流没有 include_all / take_unknown 旁路开关",
+          not hasattr(grab.Grabber(str(tmp)), "include_all")
+          and not hasattr(grab.Grabber(str(tmp)), "take_unknown"))
 
     check("J18 文档记录了 content_type=1003 判据与白名单",
           "content_type" in doc and "1003" in doc and "白名单" in doc)

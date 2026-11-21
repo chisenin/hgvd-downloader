@@ -15,14 +15,6 @@ public sealed class QueueEpisode
     public string Title { get; set; } = "";
     public double Duration { get; set; }
     public int VideoIdType { get; set; } = -1;
-
-    /// <summary>
-    /// ★ 自动抓剧注入的预置直链（重启后仍可下载，不必重新 hook）。
-    /// 普通收藏夹分集为空，走签名链路。
-    /// </summary>
-    public string DirectUrl { get; set; } = "";
-    public string DirectBackupUrl { get; set; } = "";
-    public string DirectContentKey { get; set; } = "";
 }
 
 /// <summary>清单里的一组（一部剧）。</summary>

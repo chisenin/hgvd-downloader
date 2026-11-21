@@ -520,8 +520,6 @@ public partial class MainWindow : Window
             };
             foreach (var r in rows)
             {
-                // 自动抓剧的预置直链要随清单持久化（重启后仍可下，不必重新 hook）
-                _epCache.TryGetValue(r.Vid, out var src);
                 g.Episodes.Add(new QueueEpisode
                 {
                     Vid = r.Vid,
@@ -529,9 +527,6 @@ public partial class MainWindow : Window
                     Title = r.Title,
                     Duration = r.Duration,
                     VideoIdType = r.VideoIdType,
-                    DirectUrl = src?.DirectUrl ?? "",
-                    DirectBackupUrl = src?.DirectBackupUrl ?? "",
-                    DirectContentKey = src?.DirectContentKey ?? "",
                 });
             }
             groups.Add(g);
@@ -567,9 +562,6 @@ public partial class MainWindow : Window
                     SeriesId = g.SeriesId,
                     SeriesTitle = title,
                     VideoIdType = e.VideoIdType,
-                    DirectUrl = e.DirectUrl ?? "",
-                    DirectBackupUrl = e.DirectBackupUrl ?? "",
-                    DirectContentKey = e.DirectContentKey ?? "",
                 };
                 _epCache[ep.Vid] = ep;
                 var r = new EpisodeRow(ep) { TitleWidth = _titleWidth };
@@ -1557,165 +1549,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // ───────────────────────── 自动抓剧（frida hook 雷电） ─────────────────────────
-    // 路线2集成：调用 tools/metasec/hook_grab.py（Python + frida 从雷电红果 App hook 直链），
-    // 只出清单（--dry），下载交给本机 Downloader（复用进度/断点/历史链路）。
-    // 与「抓流」（MuMu + MITM 代理）并存，互不替换。
-
-    private CancellationTokenSource _autoGrabCts;
-
-    private async void BtnAutoGrab_Click(object sender, RoutedEventArgs e)
-    {
-        // 抓剧中再点 = 停止（与「抓流」两态按钮一致）
-        if (_autoGrabCts != null)
-        {
-            try { _autoGrabCts.Cancel(); } catch { }
-            Log("· 正在停止抓剧（进程树将在后台终止）…");
-            return;
-        }
-
-        // 输入剧 ID / 深链
-        var dlg = new AutoGrabDialog(this);
-        await dlg.ShowDialog(this);
-        if (!dlg.Confirmed) return;
-
-        string series = AutoGrabDialog.NormalizeSeries(dlg.SeriesId);
-        if (series.Length == 0)
-        {
-            ShowBanner("剧 ID 无效：请填纯数字 series_id 或 dragon8662://detail?series_id=… 深链。", BannerKind.Err);
-            return;
-        }
-        string title = dlg.DramaTitle;
-
-        // 环境检查
-        var runner = new HookGrabRunner(_svc.Config);
-        string miss = runner.Check();
-        if (!string.IsNullOrEmpty(miss))
-        {
-            ShowBanner(miss, BannerKind.Err);
-            Log("✗ " + miss.Replace("\n", " "));
-            return;
-        }
-
-        _autoGrabCts = new CancellationTokenSource();
-        // ★ 抓剧期间按钮**保持可用**并变成「停止抓剧」——它就是取消入口
-        BtnAutoGrab.Content = "停止抓剧";
-        ApplyOutDir();  // 确保下载目录已同步
-
-        try
-        {
-            ShowBanner("正在抓剧：自动上滑采集直链，采集完成后加入下载清单…", BannerKind.Info);
-            Log($"── 自动抓剧开始：series={series} 剧名={title ?? "(待定)"} ──");
-
-            string manifest = await runner.RunAsync(
-                series, title, _svc.Config.MaxEpisodes > 0 ? _svc.Config.MaxEpisodes : 200,
-                msg => RunOnUi(() => Log("  " + msg)), _autoGrabCts.Token);
-
-            // 解析清单 → 注入共用清单
-            string book = title;
-            if (string.IsNullOrEmpty(book))
-                book = InferTitleFromManifest(manifest, series);
-
-            var parsed = GrabManifest.Load(manifest, series, book, GetQuality());
-            if (parsed.Error.Length > 0)
-            {
-                Log("✗ " + parsed.Error);
-                ShowBanner(parsed.Error, BannerKind.Err);
-                return;
-            }
-            if (parsed.Episodes.Count == 0)
-            {
-                ShowBanner("清单里没有可下载的分集。", BannerKind.Err);
-                return;
-            }
-
-            int added = InjectGrabbedEpisodes(parsed.Episodes, book);
-            Log($"✓ 抓剧完成：解析 {parsed.Episodes.Count} 集，新加入 {added} 集（跳过 {parsed.Skipped}）");
-            ShowBanner($"抓剧完成：加入 {added} 集到下载清单。点「下载」开始下载。", BannerKind.Ok);
-        }
-        catch (OperationCanceledException)
-        {
-            Log("· 自动抓剧已取消");
-            ShowBanner("自动抓剧已取消。", BannerKind.Info);
-        }
-        catch (Exception ex)
-        {
-            Log("✗ 抓剧失败：" + ex.Message);
-            ShowBanner("抓剧失败：" + ex.Message, BannerKind.Err);
-        }
-        finally
-        {
-            _autoGrabCts?.Dispose();
-            _autoGrabCts = null;
-            BtnAutoGrab.IsEnabled = true;
-            BtnAutoGrab.Content = "自动抓剧";
-        }
-    }
-
-    /// <summary>清单没带剧名时，从任一集的 vm 里猜一个；没有就用「短剧_&lt;series&gt;」。</summary>
-    private static string InferTitleFromManifest(string manifest, string series)
-    {
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-                if (!prop.Value.TryGetProperty("vm", out var vm)) continue;
-                if (vm.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-                foreach (var k in new[] { "series_name", "book_name", "title" })
-                    if (vm.TryGetProperty(k, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
-                    {
-                        string s = v.GetString() ?? "";
-                        if (s.Length > 0) return s.Length > 60 ? s.Substring(0, 60) : s;
-                    }
-            }
-        }
-        catch { }
-        return "短剧_" + series;
-    }
-
-    /// <summary>
-    /// 把抓到的分集（含预置直链）加入两源共用清单，按 series_id 分组。
-    /// 已在清单里的 vid 跳过；加入后立即落盘（直链随 QueueStore 持久化，重启可续下）。
-    /// </summary>
-    private int InjectGrabbedEpisodes(List<Episode> eps, string book)
-    {
-        // 与收藏夹共用同一 series_id 分组（同一部剧只会出现一组）
-        string key = eps[0].SeriesId;
-        if (!_queueBySeries.TryGetValue(key, out var rows))
-        {
-            rows = new List<EpisodeRow>();
-            var header = EpisodeRow.Header(key, book, 0);
-            header.TitleWidth = _titleWidth;
-            _queueHeaders[key] = header;
-            EpisodeRows.Add(header);
-            EpisodeView.Add(header);
-            _queueBySeries[key] = rows;
-        }
-
-        int added = 0;
-        var existing = rows.Select(r => r.Vid).ToHashSet(StringComparer.Ordinal);
-        foreach (var ep in eps)
-        {
-            if (existing.Contains(ep.Vid)) continue;
-            ep.SeriesTitle = book;
-            _epCache[ep.Vid] = ep;
-            var r = new EpisodeRow(ep) { TitleWidth = _titleWidth };
-            r.PropertyChanged += EpisodeRow_PropertyChanged;
-            rows.Add(r);
-            EpisodeRows.Add(r);
-            EpisodeView.Add(r);
-            added++;
-        }
-
-        RefreshGroupHeader(key, book, rows.Count);
-        PersistHongguoQueue();
-        ApplyEpView();
-        UpdateQueueSummary();
-        return added;
-    }
-
     private async void BtnCache_Click(object sender, RoutedEventArgs e)
     {
         BtnCache.IsEnabled = false;
@@ -1783,14 +1616,14 @@ public partial class MainWindow : Window
         }
 
         // ★ 短剧默认跳过（bytevc 加密，解不出画面）—— 只针对红果的行。
-        //   ★ 自动抓剧的行有预置直链（App 自己 hook 到的，单集实测能解出可播 MP4），
-        //     不受此限制：它们走 DirectUrl 分支，不碰失效的 bytevc 直连解析。
+        //   ★ 目标口径：只下收藏夹里的教材/合集类视频，短剧一律不下，
+        //     没有任何「有预置直链就放行短剧」的例外口子。
         int dramas = targets.Count(t => !t.IsXqd && t.State == "待下载"
-                                     && IsDramaRow(t) && !HasGrabbedUrl(t));
+                                     && IsDramaRow(t));
         if (dramas > 0)
             ShowBanner($"已跳过 {dramas} 部短剧 —— 它的编码是字节私有 bytevc，下载后无法正常播放。",
                        BannerKind.Info);
-        targets = targets.Where(t => t.IsXqd || !IsDramaRow(t) || HasGrabbedUrl(t)).ToList();
+        targets = targets.Where(t => t.IsXqd || !IsDramaRow(t)).ToList();
         if (targets.Count == 0)
         {
             ShowBanner("没有可下载的分集（短剧会自动跳过）。", BannerKind.Info);
@@ -2207,10 +2040,6 @@ public partial class MainWindow : Window
         var shelf = ShelfRows.FirstOrDefault(s => s.SeriesId == row.SeriesId);
         return shelf?.IsShortDrama ?? false;
     }
-
-    /// <summary>是否为自动抓剧注入的行（有预置直链，可下短剧）。</summary>
-    private bool HasGrabbedUrl(EpisodeRow row)
-        => _epCache.TryGetValue(row.Vid, out var ep) && ep.HasDirectUrl;
 
     private bool _stopRequested;
 

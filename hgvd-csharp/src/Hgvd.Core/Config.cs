@@ -48,14 +48,6 @@ public sealed class AppConfig
     public bool SkipExisting { get; set; } = true;
 
     /// <summary>
-    /// 自动抓剧（frida hook）用到的 Python 解释器与脚本路径。
-    /// 留空 = 自动探测（PATH 里的 python + 目录上溯找 tools/metasec/hook_grab.py）。
-    /// 发行版单 exe 场景下用户可手动指定这两个路径。
-    /// </summary>
-    public string HookPython { get; set; } = "";
-    public string HookScript { get; set; } = "";
-
-    /// <summary>
     /// adb.exe 路径。留空 = **自动探测**（雷电优先：注册表 / 运行中进程 / 各盘常见目录，
     /// 其次其他模拟器，最后 PATH）。装到非常规目录时可在设置里手动指定。
     /// </summary>
@@ -66,12 +58,6 @@ public sealed class AppConfig
     /// 多开模拟器、或同时接着真机时才需要填。
     /// </summary>
     public string AdbSerial { get; set; } = "";
-
-    /// <summary>
-    /// 自动抓剧用的 frida-server 地址。留空 = <c>127.0.0.1:27042</c>（脚本会自动 adb forward）。
-    /// ★ 只有「frida 直接跑在设备网络里」时才需要填 <c>ip:27042</c>。
-    /// </summary>
-    public string HookFridaHost { get; set; } = "";
 
     /// <summary>JSON 选项。</summary>
     /// ★ PropertyNameCaseInsensitive —— Python 版写的键是**全小写**

@@ -455,12 +455,9 @@ def _dechunk(data: bytes) -> bytes:
 class Grabber:
     """把抓到的 video_model 变成磁盘上的成品。"""
 
-    def __init__(self, out_dir: str, quality: str = "", include_all: bool = False,
-                 take_unknown: bool = False, log=print):
+    def __init__(self, out_dir: str, quality: str = "", log=print):
         self.out_dir = Path(out_dir)
         self.quality = quality
-        self.include_all = include_all
-        self.take_unknown = take_unknown
         self.log = log
         self._lock = threading.Lock()
         self._seen: set[str] = set()
@@ -476,6 +473,10 @@ class Grabber:
         self._album_seen: set[str] = set()
         self._album_busy = 0
         self._album_q: queue.Queue = queue.Queue()
+        # ★ 收藏夹里的教学合集 series_id 集合（_shelf_loop 填充）。
+        #   白名单准入要同时满足「是教学类」与「在收藏夹里」——
+        #   只有前者会把 App 里能看到的教学内容也收进来，越过「收藏夹」这条线。
+        self._shelf_series: set[str] = set()
         self._svc = None
         cached, self._whitelist_ts = load_whitelist()
         if cached:
@@ -535,19 +536,32 @@ class Grabber:
           没有白名单就只能靠「用户先打开课程页」碰运气。
           收藏夹接口与 album_detail 都免签名，一次拉全最省事，
           结果落盘缓存，重启秒开（12 小时内不重拉）。
+        ★★ 判据（2026-11-21 复核定案）：**收藏夹里的教学合集**
+          （book_type==3 且不是短剧）—— 短剧一律排除。
         """
-        if self._album and time.time() - self._whitelist_ts < WHITELIST_TTL:
-            return
         try:
             svc = self._service()
             items = svc.list_shelf(with_albums=False, album_limit=0)
         except Exception as exc:            # noqa: BLE001
             self.log(f"· 读收藏夹失败（不影响抓流）：{exc}")
             return
-        albums = [it for it in items if getattr(it, "book_type", 0) == 3]
+        albums = [it for it in items
+                  if getattr(it, "book_type", 0) == 3
+                  and not getattr(it, "is_short_drama", False)]
         if not albums:
             return
+        # ★ 记下收藏夹教学合集的 series_id —— 白名单的另一条来源（详情响应认出
+        #   content_type=1003）要靠它做「在不在收藏夹里」的准入判断。
+        self._shelf_series = {str(it.series_id) for it in albums}
+        if self._album and time.time() - self._whitelist_ts < WHITELIST_TTL:
+            self.log(f"· 收藏夹 {len(items)} 部（教学合集 {len(albums)} 部），白名单缓存复用")
+            return
         self.log(f"· 收藏夹 {len(items)} 部，其中教学合集 {len(albums)} 部，开始建白名单…")
+        # ★★ 重建必须**整表替换**，不能增量 update：
+        #   旧实现用 update 合并，于是历史上「收藏夹外教学内容」进白名单后
+        #   永远清不掉（实测缓存里有 24 部 / 1624 集不在收藏夹）。
+        #   口径是「只下收藏夹里的」⇒ 白名单只能是收藏夹教学合集的投影。
+        fresh: dict[str, tuple[str, int, str, float]] = {}
         for n, it in enumerate(albums, 1):
             try:
                 eps = svc.list_album_episodes(it.series_id)
@@ -557,10 +571,13 @@ class Grabber:
                 continue
             add = {str(e.vid): (e.series_title or it.title, int(e.index or 0),
                                 e.title or "", float(e.duration or 0)) for e in eps}
-            with self._album_lock:
-                self._album.update(add)
+            fresh.update(add)
             if n % 20 == 0 or n == len(albums):
-                self.log(f"· 白名单 {n}/{len(albums)} 部，累计 {len(self._album)} 集")
+                self.log(f"· 白名单 {n}/{len(albums)} 部，累计 {len(fresh)} 集")
+        if not fresh:
+            return
+        with self._album_lock:
+            self._album = fresh
         save_whitelist(self._album)
         self.log(f"＋ 收藏夹白名单就绪：{len(self._album)} 集（已缓存，下次秒开）")
 
@@ -678,10 +695,16 @@ class Grabber:
                     ct = None
             if ct is not None and sid:
                 self._content_type[sid] = ct
-                if ct in TEACHING_CONTENT_TYPES and sid not in self._album_seen:
+                # ★★ 白名单准入：**必须同时在收藏夹里**。
+                #   只认 content_type=1003 会把「App 里能看到的教学内容」也收进来 ——
+                #   那可能不在用户收藏夹里，与「只下载收藏夹里的教材/合集类」冲突。
+                #   `_shelf_series` 是收藏夹教学合集的 series_id 集合（_shelf_loop 建）。
+                if (ct in TEACHING_CONTENT_TYPES
+                        and sid not in self._album_seen
+                        and sid in self._shelf_series):
                     self._album_seen.add(sid)
                     self._album_q.put(sid)
-                    self.log(f"· 认出教学合集《{name or sid}》，拉白名单…")
+                    self.log(f"· 认出收藏夹里的教学合集《{name or sid}》，拉白名单…")
             # ★★ 关键：拿不到就不要写。原来「缺字段 → 0」把未知一律当短剧，
             #     教学合集整批被误判跳过（2026-11-21 抓流实测）。
             bt = None
@@ -753,27 +776,20 @@ class Grabber:
         return None
 
     def _save(self, clip: Clip):
-        # ★★ 判据（2026-11-21 抓流实测定案）：
-        #   ① 白名单：详情响应认出 content_type=1003 的教学系列，再用 album_detail
-        #      把该系列的分集 vid 拉下来。命中才是教学课 —— preload 响应里
-        #      既没有 series_id 也没有类型，这是唯一能把 vid 归类的路；
-        #   ② book_type=3 也算（部分合集走 multi_video_detail）；
-        #   ③ 都没有 = 未知，**不当短剧**（原来写死 0，整批误杀）。
+        # ★★ 判据（2026-11-21 复核定案）：
+        #   **白名单命中 = 唯一准入条件**。
+        #   白名单 = 收藏夹里的教学合集（book_type=3 且不是短剧）经 album_detail
+        #   展开出的分集 vid 表 —— 即「用户收藏夹里的教材/合集类视频」。
         #   ⚠ mixed_video_id_map 的 1001 不能当判据：它只表示「这是合集 ID」，
         #     推荐流里的宣发短片同样是 1001。
+        #   ⚠ 「类型拿不到」**不是**准入理由：那是未知，不是教材。
+        #     （旧实现有 --all / --take-unknown 两个旁路开关，会收进推荐流与短剧，
+        #       与本工具的目标口径冲突，2026-11-21 已删除。）
         album_ep = self._wait_album(clip.vid, timeout=8.0)
-        teaching = album_ep is not None
-        if not teaching and not self.include_all:
-            if self._wait_book_type(clip.vid, timeout=0.5) == 3:
-                teaching = True
-        if not teaching and not self.include_all:
-            if self.take_unknown and not clip.content_key and clip.duration >= 100:
-                self.log(f"· 白名单未命中，按教学特征收下（key={clip.key or '?'} "
-                         f"{clip.duration:.0f}s 未加密）")
-            else:
-                self.log(f"· 跳过 {clip.vid}（不在教学白名单 key={clip.key or '?'} "
-                         f"{clip.duration:.0f}s{' 加密' if clip.content_key else ''}）")
-                return
+        if album_ep is None:
+            self.log(f"· 跳过 {clip.vid}（不在收藏夹教学白名单 key={clip.key or '?'} "
+                     f"{clip.duration:.0f}s{' 加密' if clip.content_key else ''}）")
+            return
 
         # ★ 直链到手且确认是我们要下的内容 → 置「已抓到」信号（供自检/进度提示）。
         #   注意：抓流是常驻循环，抓到直链**不会**停代理、不会收网；

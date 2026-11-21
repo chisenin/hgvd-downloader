@@ -278,9 +278,15 @@
                   <Button x:Name="BtnGrab" Content="抓流" Margin="6,0,0,0"
                           Classes="modern" Click="BtnGrab_Click"
                           ToolTip.Tip="抓流：让 App 自己取播放地址，本机拦下直链并下载。&#10;先用收藏夹+album_detail 建好教学合集白名单，只下白名单里的集；教学类不解密。&#10;★ 会临时把模拟器代理指向本机并重启红果，点「停止抓流」时自动清除代理。" />
-                  <Button x:Name="BtnAutoGrab" Content="自动抓剧" Margin="6,0,0,0"
-                          Classes="modern" Click="BtnAutoGrab_Click"
-                          ToolTip.Tip="自动抓剧（新）：输入剧 ID，用雷电里的红果 App + frida hook 自动上滑抓全剧直链，&#10;再交给本机下载（不走失效的播放签名）。&#10;★ 需要雷电 14 已开 root、frida-server 已启动、Python(frida 模块)+adb 可用。" />
+                  <!-- ★ 「自动抓剧」入口已**删除**（2026-11-21 复核后裁掉）。
+                       理由：它按用户输入的剧 ID 取流，**不查收藏夹、不查内容类型**，
+                       默认剧名还是「短剧_<id>」，下载环节还专门放行短剧 ——
+                       与本工具的目标口径（只下收藏夹里的教材/合集类视频）直接冲突。
+                       相关代码（AutoGrabDialog / HookGrabRunner / GrabManifest /
+                       Episode.DirectUrl 预置直链通道 / tools/metasec/hook_grab.py）
+                       已一并删除，不留「恢复入口」的路。
+                       保留「抓流」：它有白名单（收藏夹教学合集），符合目标口径。 -->
+
                 </StackPanel>
               </Grid>
 

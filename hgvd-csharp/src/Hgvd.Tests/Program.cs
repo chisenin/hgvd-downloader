@@ -30,8 +30,8 @@ public static class Program
         fail += DrmTests.Run();
         // ★ 抓流自动停止：一次性 / 并发安全 / 停抓流不取消下载
         fail += GrabLoopTests.Run();
-        // ★ 自动抓剧清单解析：预置直链 / 码率选择 / 容错
-        fail += GrabManifestTests.Run();
+        // ★ 抓流准入：白名单命中是唯一条件（只下收藏夹里的教材/合集类）
+        fail += GrabWhitelistTests.Run();
         // ★ 兴趣岛内核（2026-11-21 合并）：链接解析 / 清单 / 命名 / 队列
         fail += XqdTests.Run();
         // ★ 2026-11-21 补齐：红果清单落盘 / 下载历史 / 去重口径 / 5 档筛选 / 剩余时间

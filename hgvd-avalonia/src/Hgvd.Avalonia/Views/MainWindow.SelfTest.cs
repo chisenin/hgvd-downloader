@@ -478,6 +478,15 @@ public partial class MainWindow
         await Task.Delay(300);
         Check("切回红果 → 收藏夹恢复", LstShelf.IsVisible && !LstCamps.IsVisible);
         Check("切回红果 → 抓流按钮恢复", BtnGrab.IsVisible && BtnCache.IsVisible);
+        // ★ 护栏：「自动抓剧」能力必须**不存在**（2026-11-21 复核后裁掉）。
+        //   它按用户输入的剧 ID 取流，不查收藏夹、不查内容类型，默认剧名还是「短剧_<id>」，
+        //   与目标口径（只下收藏夹里的教材/合集类视频）直接冲突。
+        //   ⇒ 入口、对话框、HookGrabRunner、GrabManifest、Episode.DirectUrl 通道全部删除。
+        //   ★ 若将来要重新引入「按剧取直链」，必须先让它走**白名单**（收藏夹教学合集），
+        //     否则就是把这个越界口子重新打开。
+        Check("自动抓剧能力已裁掉（界面里没有这个入口）",
+            !this.GetVisualDescendants().OfType<Button>()
+                .Any(b => b.Name == "BtnAutoGrab"));
         Check("切回红果 → 兴趣岛的条目仍在同一张清单里",
             EpisodeRows.Count(r => r.IsXqd && r.IsEpisode) == xqdRows,
             $"{EpisodeRows.Count(r => r.IsXqd && r.IsEpisode)} 行");

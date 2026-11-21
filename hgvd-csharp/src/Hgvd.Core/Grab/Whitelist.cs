@@ -97,21 +97,33 @@ public static class Whitelist
     }
 
     /// <summary>把收藏夹里所有教学合集展开成白名单（album_detail 免强校验，能跑通）。</summary>
+    /// <remarks>
+    /// ★ 目标口径：白名单 = **收藏夹里的教材/合集类视频**。
+    ///   判据用 <c>BookType == 3</c>（教学合集）**并且**排除
+    ///   <see cref="ShelfItem.IsShortDrama"/>（<c>book_type==2 || content_type==1004</c>）。
+    ///   ★ 两个条件都要：只判 book_type==3 时，个别 <c>content_type==1004</c> 的短剧
+    ///     会被混进白名单 —— 短剧是 bytevc 加密，下载下来解不出画面。
+    /// ★★ 重建必须**整表替换**：历史实现是增量合并，于是「收藏夹外教学内容」
+    ///   （旧版「详情响应认出 content_type=1003」那条来源带进来的）永远清不掉。
+    ///   口径是「只下收藏夹里的」⇒ 白名单只能是收藏夹教学合集的投影。
+    /// </remarks>
     public static async Task<int> BuildAsync(HongguoService svc, Action<string> log,
                                             CancellationToken ct = default)
     {
         log ??= _ => { };
-        var (map, _) = Load();
 
         var items = await svc.ListShelfAsync(withDetails: true, albumLimit: 0, ct: ct);
-        var albums = items.Where(i => i.BookType == 3).ToList();
+        var albums = items.Where(i => i.BookType == 3 && !i.IsShortDrama).ToList();
+        int dramas = items.Count - items.Count(i => !i.IsShortDrama);
         if (albums.Count == 0)
         {
             log("· 收藏夹里没有教学合集");
-            return map.Count;
+            return 0;
         }
 
-        log($"· 收藏夹 {items.Count} 部，其中教学合集 {albums.Count} 部，开始建白名单…");
+        log($"· 收藏夹 {items.Count} 部，其中教学合集 {albums.Count} 部"
+            + (dramas > 0 ? $"（短剧 {dramas} 部已排除）" : "") + "，开始建白名单…");
+        var fresh = new Dictionary<string, WhitelistEntry>();
         int done = 0;
         foreach (var it in albums)
         {
@@ -128,7 +140,7 @@ public static class Whitelist
             foreach (var e in eps)
             {
                 if (string.IsNullOrEmpty(e.Vid)) continue;
-                map[e.Vid] = new WhitelistEntry
+                fresh[e.Vid] = new WhitelistEntry
                 {
                     Book = string.IsNullOrEmpty(e.SeriesTitle) ? it.Title : e.SeriesTitle,
                     Index = e.Index,
@@ -137,11 +149,11 @@ public static class Whitelist
                 };
             }
             done++;
-            if (done % 20 == 0) log($"· 白名单 {done}/{albums.Count} 部，累计 {map.Count} 集");
+            if (done % 20 == 0) log($"· 白名单 {done}/{albums.Count} 部，累计 {fresh.Count} 集");
         }
 
-        Save(map);
-        log($"＋ 白名单就绪：{map.Count} 集（{CachePath}）");
-        return map.Count;
+        Save(fresh);
+        log($"＋ 白名单就绪：{fresh.Count} 集（{CachePath}）");
+        return fresh.Count;
     }
 }

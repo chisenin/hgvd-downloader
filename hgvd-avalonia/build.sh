@@ -2,16 +2,21 @@
 # ══════════════════════════════════════════════════════════════
 #  红果视频下载器 —— C# / Avalonia UI 版 构建脚本（Git Bash / MSYS）
 #
-#  用法：./build.sh            构建 Release（输出到 ./dist 与 ./pkg）
+#  用法：./build.sh            构建 Release（输出到 ./pkg 目录版）
 #        ./build.sh verify     ★ 发版用：构建 + 界面自检 + 端到端真下载
 #        ./build.sh selftest   只跑接口自检（Debug，不打包）
 #
-#  ★★ 发版形态：**B 案 —— 自包含目录版 + zip**（主推）
-#      dist/hgvd-downloader-vX.Y.Z-win-x64.zip
+#  ★★ 发版形态（2026-11-21 用户拍板）：**本地只出目录版**
+#      pkg/hgvd-downloader-vX.Y.Z/
 #      解开就是一个文件夹：exe + 运行时 dll + ffmpeg/ + README.txt
-#      同时仍产出单文件 exe 作备用（dist/hgvd-downloader-vX.Y.Z.exe）。
-#      为什么主推 zip：单文件塞进 ffmpeg 后是"假单文件"（仍要解到
-#      LOCALAPPDATA），且"exe 解出 exe"容易被杀软误判。
+#
+#      ★ **本地不再打 zip、不再出单文件 exe**（用户 2026-11-21 决定）：
+#        目录版启动快、ffmpeg 可替换、出问题能直接看目录里有什么；
+#        单文件塞进 ffmpeg 后是"假单文件"（首次运行仍要解到 LOCALAPPDATA），
+#        且"exe 解出 exe"容易被杀软误判。
+#      ⇒ 本地自用直接跑 pkg/ 里的 exe 即可，不必再打包。
+#      ★ **GitHub Release 的产物不受此影响**：CI 的 release.yml 仍照旧产出
+#        zip + 单文件 exe（远端给公众下载的形态不变）。
 #
 #  ★★ 发版前必须跑 verify。IL 裁剪（PublishTrimmed）的破坏是**静默**的 ——
 #     编译、启动、开窗、读收藏夹全都正常，只有点到某个功能才炸。
@@ -33,19 +38,13 @@ if [ -z "$DOTNET" ]; then
     echo "[失败] 找不到 dotnet —— 请安装 .NET 8 SDK，或设置 DOTNET_ROOT 后重试。" >&2
     exit 1
 fi
-if ! command -v python >/dev/null 2>&1; then
-    echo "[失败] 找不到 python —— 打 zip 需要它（tools/pack_zip.py）。" >&2
-    exit 1
-fi
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
-OUT="dist"
-VER="1.5.0"
+VER="1.6.0"
 APP="hgvd-downloader-v$VER"
 PKG="pkg/$APP"
-ZIP="$OUT/$APP-win-x64.zip"
 LOGDIR="$HOME/.hgv_tool"
 
 MODE="${1:-build}"
@@ -61,38 +60,33 @@ case "$MODE" in
     *) echo "用法: ./build.sh [verify|selftest]" >&2; exit 2 ;;
 esac
 
-echo "[1/5] 准备内置 ffmpeg / ffprobe（已备好则秒过）"
+echo "[1/3] 准备内置 ffmpeg / ffprobe（已备好则秒过）"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "./prepare-ffmpeg.ps1"
 
-echo "[2/5] 还原依赖（走 nuget.azure.cn 镜像）"
+echo "[2/3] 还原依赖（走 nuget.azure.cn 镜像）"
 # ★ 必须带 -p:Configuration=Release —— PublishTrimmed 只在 Release 下开，
 #   而 ILLink.Tasks 是 restore 阶段按 PublishTrimmed 决定下不下的。
 #   restore 默认按 Debug 评估 ⇒ 漏了这个参数，publish 会静默不裁剪（89 MB vs 41 MB）。
 "$DOTNET" restore "$PROJ" -p:Configuration=Release --configfile "./NuGet.config" -r win-x64
 
-echo "[3/5] 发布目录版（B 案主推，输出到 $PKG）"
-# ★ 目录版和单文件**必须分两次 publish**：PublishSingleFile 是 publish 期属性。
-# ★ 先清空，否则上一次的残留文件会混进 zip（用 Python 删，绕开 bash 的 rm 钩子）。
+echo "[3/3] 发布目录版（本地唯一产物形态，输出到 $PKG）"
+# ★ 目录版用 PublishSingleFile=false —— 运行时 dll 与 ffmpeg 都摊在目录里，
+#   启动快、可单独替换 ffmpeg、出问题能直接看目录里有什么。
+# ★ 先清空，否则上一次的残留文件会混进产物（用 Python 删，绕开 bash 的 rm 钩子）。
 python -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$PKG" 2>/dev/null || true
 "$DOTNET" publish "$PROJ" -c Release --no-restore -o "$PKG" -p:PublishSingleFile=false -p:PkgVersion="$VER"
 
-echo "[4/5] 打 zip（顶层保留文件夹名 + 放入 README / LICENSE / NOTICE）"
-python ../tools/pack_zip.py "$PKG" "$ZIP" "./PACK-README.txt"
-
-echo "[5/5] 发布单文件（备用形态，输出到 $OUT）"
-"$DOTNET" publish "$PROJ" -c Release --no-restore -o "$OUT" -p:PkgVersion="$VER"
-
 echo
-echo "产物："
-ls -la "$OUT"
+echo "产物（本地唯一形态：目录版）："
+echo "  $PWD/$PKG/"
 echo
-echo "  目录版：$PWD/$PKG/  （已打包成 $ZIP）"
-echo "  单文件：$PWD/$OUT/$APP.exe"
+echo "  ★ 本地不再打 zip、不再出单文件 exe（2026-11-21 起）。"
+echo "    直接跑上面目录里的 exe 即可。"
+echo "    GitHub Release 仍照旧提供 zip + 单文件 exe（CI 构建，不受本地影响）。"
 
 if [ "$VERIFY" = "1" ]; then
     # ── 发版门禁：界面自检 + 端到端真下载 ──
-    # ★ 验的是**目录版**（B 案主推的那个），不是单文件 ——
-    #   两者是两次独立 publish，验主推形态才有意义。
+    # ★ 验的是**目录版**（本地唯一产物形态）。
     # ★ 自检开关都**不靠退出码**（WinExe 恒返回 0），只能解析它们写出来的日志。
     #   先删旧日志，跑完再确认存在 —— 否则会拿上一次的结果冒充通过。
     #
@@ -145,6 +139,5 @@ if [ "$VERIFY" = "1" ]; then
     echo
     echo "═══ 验证通过：界面自检 + 证书链 + 下载链路全绿 ═══"
     echo "    目录版：$PWD/$PKG/"
-    echo "    压缩包：$PWD/$ZIP"
     echo "    可以发版了（bash tools/publish_release.sh v$VER）"
 fi

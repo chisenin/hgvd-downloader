@@ -59,7 +59,7 @@
 ## 二、构建
 
 ```bat
-build.cmd                :: 发布 Release（输出到 dist\）
+build.cmd                :: 发布 Release 目录版（输出到 pkg\）
 build.cmd verify         :: ★ 发版用：构建 + 界面自检 + 端到端真下载
 build.cmd selftest       :: 无头跑一遍收藏夹 / 分集 / 播放地址
 ```
@@ -71,6 +71,10 @@ Git Bash / MSYS 里用等价脚本：
 ./build.sh verify
 ./build.sh selftest
 ```
+
+> ★ **本地只出目录版**（2026-11-21 起）：产物在 `pkg\hgvd-downloader-vX.Y.Z\`，
+>   直接双击里面的 exe 即可。**本地不再打 zip、不再出单文件 exe**。
+>   GitHub Release 上的 zip + 单文件 exe 照旧提供（CI 构建，与本地无关）。
 
 > ★★ **发版前必须跑 `verify`。** 发行版开了 IL 裁剪（`PublishTrimmed`），
 >   裁剪的破坏是静默的 —— 编译、启动、开窗、读收藏夹全都正常，
