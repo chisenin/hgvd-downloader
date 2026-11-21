@@ -47,7 +47,7 @@
                    Foreground="{DynamicResource SectionTitleBrush}"
                    Margin="0,16,0,6" />
         <TextBlock Classes="muted" TextWrapping="Wrap" LineHeight="21"
-                   Text="1. 左上角切到要用的内容源；&#10;2. 点「获取授权」（只在这一步读模拟器，启动不读）；&#10;3. 左栏勾选剧目 / 营，条目依次追加到右栏，可累计多组；&#10;4. 点「下载」跑清单，运行中同按钮变「暂停」（两源都生效），再点「继续」；双击某一行只下这一条。" />
+                   Text="1. 左上角切到要用的内容源；&#10;2. 点「获取授权」（只在这一步读模拟器，启动不读）；&#10;3. 左栏勾选剧目 / 营，条目依次追加到右栏，可累计多组；&#10;4. 点「下载」跑清单，运行中同按钮变「暂停」（两源都生效），再点「继续」；双击某一行只下这一条。&#10;5. 红果教学合集还可用「抓流」：点按钮后在 App 里点播，直链自动下载（只收收藏夹；教学类不加密）；再点一次停止并清代理。" />
 
         <TextBlock Text="清单操作" FontSize="14" FontWeight="SemiBold"
                    Foreground="{DynamicResource SectionTitleBrush}"
