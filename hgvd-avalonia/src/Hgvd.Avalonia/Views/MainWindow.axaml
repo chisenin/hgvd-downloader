@@ -274,7 +274,10 @@
                           ToolTip.Tip="查看两源的下载历史（最近 500 条，同一成品只留一条）" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
                           Classes="modern" Click="BtnCache_Click"
-                          ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;★ 播放接口返回空 body 时，这条路径不经过 video_model，是唯一还能出片的路。" />
+                          ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;只覆盖已缓存的内容；没缓存或刚清过缓存时请用「抓流」。" />
+                  <Button x:Name="BtnGrab" Content="抓流" Margin="6,0,0,0"
+                          Classes="modern" Click="BtnGrab_Click"
+                          ToolTip.Tip="抓流：让 App 自己取播放地址，本机拦下直链并下载。&#10;先用收藏夹+album_detail 建好教学合集白名单，只下白名单里的集；教学类不解密。&#10;★ 会临时把模拟器代理指向本机并重启红果，点「停止抓流」时自动清除代理。" />
                 </StackPanel>
               </Grid>
 

@@ -407,6 +407,7 @@ public partial class MainWindow
         Check("切到兴趣岛 → 左栏换成营列表", LstCamps.IsVisible && !LstShelf.IsVisible,
             $"营列表={LstCamps.IsVisible} 收藏夹={LstShelf.IsVisible}");
         Check("切到兴趣岛 → 隐藏红果专属的「提取App缓存」", !BtnCache.IsVisible);
+        Check("切到兴趣岛 → 隐藏红果专属的「抓流」", !BtnGrab.IsVisible);
         Check("切到兴趣岛 → 授权状态切到兴趣岛",
             (LblAuth.Text ?? "").StartsWith("兴趣岛", StringComparison.Ordinal),
             LblAuth.Text ?? "");
@@ -475,6 +476,7 @@ public partial class MainWindow
         TabHongguo.IsChecked = true;
         await Task.Delay(300);
         Check("切回红果 → 收藏夹恢复", LstShelf.IsVisible && !LstCamps.IsVisible);
+        Check("切回红果 → 抓流按钮恢复", BtnGrab.IsVisible && BtnCache.IsVisible);
         Check("切回红果 → 兴趣岛的条目仍在同一张清单里",
             EpisodeRows.Count(r => r.IsXqd && r.IsEpisode) == xqdRows,
             $"{EpisodeRows.Count(r => r.IsXqd && r.IsEpisode)} 行");

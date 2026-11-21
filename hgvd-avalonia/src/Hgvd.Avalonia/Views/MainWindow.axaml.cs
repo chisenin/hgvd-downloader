@@ -21,6 +21,7 @@ using Hgvd.Avalonia.ViewModels;
 using Hgvd.Core;
 using Hgvd.Core.Api;
 using Hgvd.Core.Engine;
+using Hgvd.Core.Grab;
 using Hgvd.Xqd;
 using Hgvd.Xqd.Api;
 
@@ -176,6 +177,7 @@ public partial class MainWindow : Window
         BtnRescanCamps.IsVisible = xqd;
         BtnManualToggle.IsVisible = xqd;
         BtnCache.IsVisible = !xqd;      // 提取 App 缓存只对红果有意义
+        BtnGrab.IsVisible = !xqd;       // 抓流同理：走红果的播放接口
         UpdateQueueSummary();
         LblHint.IsVisible = !xqd;
 
@@ -1446,6 +1448,50 @@ public partial class MainWindow : Window
             });
         }
         catch { }
+    }
+
+    /// <summary>抓流两态按钮：启动 MITM 代理拦直链下载；再点一次停止并清代理。</summary>
+    /// <remarks>
+    /// ★ 与「提取App缓存」互补：缓存只覆盖播过的内容；抓流能在 App 点播时
+    ///   顺带拿到相邻几集，且清过缓存照样能用。
+    /// ★ 教学类不加密，GrabRunner 的下载不会走 DRM 分支。
+    /// </remarks>
+    private GrabRunner _grab;
+
+    private void BtnGrab_Click(object sender, RoutedEventArgs e)
+    {
+        if (_grab != null)
+        {
+            _grab.Stop();
+            _grab = null;
+            BtnGrab.Content = "抓流";
+            ShowBanner("抓流已停止，模拟器代理已清除", BannerKind.Info);
+            Log("✓ 抓流已停止，代理已清除");
+            return;
+        }
+
+        try
+        {
+            var runner = new GrabRunner(_svc, Log, (job, res) =>
+            {
+                // 成品记入两源共用的历史窗口
+                RecordHistory("红果", job.Book, job.Index.ToString("000"), "",
+                              job.Vid, res.OutPath, res.Size, job.Duration,
+                              res.Ok ? "done" : "failed");
+                Dispatcher.UIThread.Post(UpdateQueueSummary);
+            });
+            _grab = runner;
+            BtnGrab.Content = "停止抓流";
+            ShowBanner("正在启动抓流（会重启红果，请稍候）…", BannerKind.Info);
+            _ = runner.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            _grab = null;
+            BtnGrab.Content = "抓流";
+            Log("✗ 抓流启动失败：" + ex.Message);
+            ShowBanner("抓流启动失败：" + ex.Message, BannerKind.Err);
+        }
     }
 
     private async void BtnCache_Click(object sender, RoutedEventArgs e)
