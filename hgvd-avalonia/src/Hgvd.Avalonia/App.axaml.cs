@@ -95,8 +95,9 @@ public partial class App : Application
                         Console.WriteLine("═══ MuMu 授权自检 ═══");
                         try
                         {
-                            string mumu = Hgvd.Core.Auth.MumuAuth.FindMumu();
-                            Console.WriteLine("MuMuManager: " + mumu);
+                            string mumu = Hgvd.Core.Auth.MumuAuth.TryFindMumu();
+                            Console.WriteLine("模拟器通道: "
+                                + (mumu.Length > 0 ? "MuMu " + mumu : "无 MuMu → 走 adb 设备（雷电）"));
                             foreach (var inst in Hgvd.Core.Auth.MumuAuth.ListInstances(mumu))
                                 Console.WriteLine($"  实例 {inst.Index}: 启动={inst.Started} {inst.Name}");
 

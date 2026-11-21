@@ -14,7 +14,8 @@
 前提：
   1. MuMu 正在运行、红果已登录；
   2. 模拟器里装过本工具的 CA（``tools/metasec/mitm.py`` 的流程，见 docs/05 §2.1）；
-  3. 本工具会把 ``http_proxy`` 指到宿主机并重启红果，**退出时自动清掉**。
+  3. 本工具会把 ``http_proxy`` 指到宿主机并重启红果，**拿到直链后自动清掉并关 MITM**
+     （下载继续跑完，命令行不用手动 Ctrl-C）。
 
 ★ 抓到的 ``video_model`` 与线上接口同构，所以下载/解密直接复用
   ``engine.downloader`` + ``api.playback.extract_content_key``，
@@ -481,6 +482,9 @@ class Grabber:
             self._album.update(cached)
             self.log(f"· 白名单缓存 {len(cached)} 集")
         self._q: queue.Queue[Clip] = queue.Queue()
+        # ★ 抓流的目的就是拿直链：第一条「白名单命中、可下载」的直链到手即置位，
+        #   命令行据此停代理/关 MITM；下载线程继续把它和同批抓到的其余集下完。
+        self.captured = threading.Event()
         self._done = 0
         self._fail = 0
         self._skipped_feed = 0
@@ -722,6 +726,21 @@ class Grabber:
             except Exception as exc:        # noqa: BLE001
                 self._fail += 1
                 self.log(f"✗ {clip.vid} 失败：{exc}")
+            finally:
+                self._q.task_done()
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """等下载队列清空（命令行 Ctrl-C 收尾时用）。
+
+        返回 True 表示队列已空；超时返回 False。代理停掉后不会再有新任务，
+        但同一批 preload 可能还在往队列里塞，所以这里看的是未完成数而不是瞬时 qsize。
+        """
+        deadline = None if timeout is None else time.time() + timeout
+        while self._q.unfinished_tasks:
+            if deadline is not None and time.time() >= deadline:
+                return False
+            time.sleep(0.2)
+        return True
 
     def _wait_book_type(self, vid: str, timeout: float = 5.0):
         """等详情响应把这一集的 book_type 带回来（详情往往比 preload 晚一点）。"""
@@ -755,6 +774,12 @@ class Grabber:
                 self.log(f"· 跳过 {clip.vid}（不在教学白名单 key={clip.key or '?'} "
                          f"{clip.duration:.0f}s{' 加密' if clip.content_key else ''}）")
                 return
+
+        # ★ 直链到手且确认是我们要下的内容 → 置「已抓到」信号（供自检/进度提示）。
+        #   注意：抓流是常驻循环，抓到直链**不会**停代理、不会收网；
+        #   相邻几集 / 换集还要靠同一个 MITM 继续探测，只有 Ctrl-C 才结束。
+        #   放在白名单判定之后，避免推荐流的直链误置信号。
+        self.captured.set()
 
         # 标题：白名单最准（真正的剧名 + 集序号 + 集名），其次详情响应
         if album_ep is not None:

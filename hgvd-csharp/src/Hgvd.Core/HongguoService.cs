@@ -529,26 +529,38 @@ public sealed class HongguoService
             }
         }
 
-        // ★ video_id_type：短剧 0（vid），教学内容 1（series_id）。失败自动回退。
-        int[] types = ep.VideoIdType >= 0
-            ? new[] { ep.VideoIdType, 1 - ep.VideoIdType }
-            : new[] { 0, 1 };
-
         string url = "", key = "", codec = "", failure = "", backupUrl = "";
         long size = 0;
-        foreach (int t in types)
+
+        if (ep.HasDirectUrl)
         {
-            (url, size, key, codec, failure, backupUrl) =
-                await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
-            if (!string.IsNullOrEmpty(url))
+            // ★ 自动抓剧注入的预置直链：签名解析已失效（服务端强校验 X-Helios/Medusa），
+            //   直链由 App 自己 hook 拿到，这里直接用，跳过 video_model 解析。
+            url = ep.DirectUrl;
+            backupUrl = ep.DirectBackupUrl;
+            key = ep.DirectContentKey;
+        }
+        else
+        {
+            // ★ video_id_type：短剧 0（vid），教学内容 1（series_id）。失败自动回退。
+            int[] types = ep.VideoIdType >= 0
+                ? new[] { ep.VideoIdType, 1 - ep.VideoIdType }
+                : new[] { 0, 1 };
+
+            foreach (int t in types)
             {
-                ep.VideoIdType = t;
-                // ★ 已知总大小 → 通知界面（下载前就能显示「≈ 29.1 MB」）
-                if (size > 0) cb?.OnResolvedSize?.Invoke(size);
-                break;
+                (url, size, key, codec, failure, backupUrl) =
+                    await ResolveFullUrlAsync(ep.Vid, t, quality, ct);
+                if (!string.IsNullOrEmpty(url))
+                {
+                    ep.VideoIdType = t;
+                    // ★ 已知总大小 → 通知界面（下载前就能显示「≈ 29.1 MB」）
+                    if (size > 0) cb?.OnResolvedSize?.Invoke(size);
+                    break;
+                }
+                // ★ 已熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
+                if (PlaybackBlocked) break;
             }
-            // ★ 已熔断 → 第二个 video_id_type 同样打不通，别再空转 43s
-            if (PlaybackBlocked) break;
         }
 
         if (string.IsNullOrEmpty(url))

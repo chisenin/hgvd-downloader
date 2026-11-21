@@ -42,7 +42,7 @@ export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
 OUT="dist"
-VER="1.4.0"
+VER="1.5.0"
 APP="hgvd-downloader-v$VER"
 PKG="pkg/$APP"
 ZIP="$OUT/$APP-win-x64.zip"

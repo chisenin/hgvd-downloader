@@ -12,7 +12,7 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- ★ exe 名带版本号：hgvd-downloader-vX.Y.Z.exe（与 C++/WPF 版同名，方便替换） -->
-    <PkgVersion Condition="'$(PkgVersion)' == ''">1.4.0</PkgVersion>
+    <PkgVersion Condition="'$(PkgVersion)' == ''">1.5.0</PkgVersion>
     <!-- ★ 版本号唯一来源就是 PkgVersion（CI 发版时用标签 vX.Y.Z 传入）：
          Version 同时决定 **程序集版本** —— 界面上的版本号读的就是
          Assembly.GetName().Version（AboutWindow.AppVersion），

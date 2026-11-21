@@ -54,6 +54,21 @@ public static class CacheExtract
     /// <summary>在模拟器里执行 shell 命令，返回 stdout。</summary>
     private static string Sh(string mumu, int index, string cmd, int timeoutMs = 300000)
     {
+        // ★ 2026-11-21：MuMu 不在（已改用雷电）→ 同样的命令走 adb root。
+        if (string.IsNullOrWhiteSpace(mumu) || !File.Exists(mumu))
+        {
+            AppConfig cfg = AppConfig.Load();
+            string adb = AdbDevices.FindAdb(cfg.AdbPath);
+            AdbDevice dev = AdbDevices.Pick(AdbDevices.List(adb, cfg.AdbPath), cfg.AdbSerial)
+                ?? throw new InvalidOperationException("没有可用的 adb 设备（请先启动雷电模拟器）");
+
+            ShellResult r = AdbDevices.Shell(dev.Serial, cmd, root: true,
+                                             timeoutMs: timeoutMs, adb: adb);
+            if (r.Out.Trim().Length == 0 && r.Err.Trim().Length > 0)
+                throw new InvalidOperationException(r.Err.Trim());
+            return r.Out;
+        }
+
         var psi = new ProcessStartInfo(mumu)
         {
             RedirectStandardOutput = true,

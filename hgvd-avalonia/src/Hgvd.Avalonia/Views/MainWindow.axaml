@@ -278,6 +278,9 @@
                   <Button x:Name="BtnGrab" Content="抓流" Margin="6,0,0,0"
                           Classes="modern" Click="BtnGrab_Click"
                           ToolTip.Tip="抓流：让 App 自己取播放地址，本机拦下直链并下载。&#10;先用收藏夹+album_detail 建好教学合集白名单，只下白名单里的集；教学类不解密。&#10;★ 会临时把模拟器代理指向本机并重启红果，点「停止抓流」时自动清除代理。" />
+                  <Button x:Name="BtnAutoGrab" Content="自动抓剧" Margin="6,0,0,0"
+                          Classes="modern" Click="BtnAutoGrab_Click"
+                          ToolTip.Tip="自动抓剧（新）：输入剧 ID，用雷电里的红果 App + frida hook 自动上滑抓全剧直链，&#10;再交给本机下载（不走失效的播放签名）。&#10;★ 需要雷电 14 已开 root、frida-server 已启动、Python(frida 模块)+adb 可用。" />
                 </StackPanel>
               </Grid>
 

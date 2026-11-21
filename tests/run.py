@@ -557,6 +557,30 @@ def test_j_grab() -> None:
         check("J17 白名单缓存往返",
               _back.get("444", ("", 0, "", 0))[2] == "第五节" and _ts > 0)
 
+        # ---- 拿到直链就自动收网：Grabber 发信号，下载线程继续把队列排空
+        from hgvd.engine.downloader import DownloadResult
+
+        vm = _json.dumps({
+            "video_duration": 120.0,
+            "video_list": [{"main_url": "http://127.0.0.1/test.mp4",
+                            "video_meta": {"definition": "720p", "vheight": 720}}],
+        })
+        payload = {"code": 0, "data": {"555": {"video_model": vm}}}
+        g._album["555"] = ("课", 3, "第三节", 120.0)
+        with mock.patch.object(grab, "download", return_value=DownloadResult(
+                ok=True, size=1024)) as dl:
+            check("J19 抓流初始未拿到直链", not g.captured.is_set())
+            g.start()
+            g.feed_model(payload)
+            check("J20 首条白名单直链触发自动停止信号", g.captured.wait(5))
+            check("J21 直链仍会继续下载并排空队列", g.wait_idle(5) and dl.call_count == 1)
+
+        g2 = grab.Grabber(str(tmp), log=lambda m: None)
+        with mock.patch.object(grab, "download", return_value=DownloadResult(ok=True)):
+            g2.start()
+            g2.feed_model({"code": 0, "data": {"999": {"video_model": vm}}})
+            check("J22 非白名单直链不触发自动停止", not g2.captured.wait(0.5))
+
     check("J18 文档记录了 content_type=1003 判据与白名单",
           "content_type" in doc and "1003" in doc and "白名单" in doc)
 

@@ -433,7 +433,28 @@ public static class MumuAuth
     public static string RunShell(string mumu, int index, string cmd, int timeoutMs = 60000)
         => Sh(mumu, index, cmd, timeoutMs);
 
-    private static string Sh(string mumu, int index, string cmd, int timeoutMs = 30000)    {
+    /// <summary>
+    /// 试找 MuMu；找不到返回空串（不抛）。
+    /// ★ 2026-11-21 起本项目**正式模拟器是雷电**，MuMu 只是兜底，
+    ///   调用方不该再因为「没装 MuMu」直接失败。
+    /// </summary>
+    public static string TryFindMumu()
+    {
+        try { return FindMumu(); } catch { return ""; }
+    }
+
+    /// <summary>MuMu 路径是否可用（空串/文件不存在都算不可用）。</summary>
+    private static bool Usable(string mumu)
+    {
+        try { return !string.IsNullOrWhiteSpace(mumu) && File.Exists(mumu); }
+        catch { return false; }
+    }
+
+    private static string Sh(string mumu, int index, string cmd, int timeoutMs = 30000)
+    {
+        // ★ 兼容层：MuMu 不在（已改用雷电）→ 同样的 shell 命令走 adb。
+        if (!Usable(mumu)) return ShViaAdb(cmd, timeoutMs);
+
         var psi = new ProcessStartInfo(mumu)
         {
             RedirectStandardOutput = true,
@@ -454,9 +475,46 @@ public static class MumuAuth
         return sb.ToString();
     }
 
+    /// <summary>
+    /// adb 兼容执行（雷电）：命令与 MuMu 那条完全一样（cat prefs / am start / settings put），
+    /// 所以上层的登录态读取、抓流开关机、代理设置都能原样跑。
+    /// ★ 先试 root（读 <c>/data/data/&lt;pkg&gt;</c> 必须 root），失败再退回普通 shell。
+    /// </summary>
+    private static string ShViaAdb(string cmd, int timeoutMs)
+    {
+        try
+        {
+            AppConfig cfg = AppConfig.Load();
+            string adb = AdbDevices.FindAdb(cfg.AdbPath);
+            AdbDevice dev = AdbDevices.Pick(AdbDevices.List(adb, cfg.AdbPath), cfg.AdbSerial);
+            if (dev == null) return "";
+
+            ShellResult r = AdbDevices.Shell(dev.Serial, cmd, root: true, timeoutMs: timeoutMs, adb: adb);
+            if (r.Out.Trim().Length == 0)
+                r = AdbDevices.Shell(dev.Serial, cmd, root: false, timeoutMs: timeoutMs, adb: adb);
+            return r.Out;
+        }
+        catch { return ""; }
+    }
+
     public static List<Instance> ListInstances(string mumu)
     {
         var list = new List<Instance>();
+
+        // ★ 兼容层：没有 MuMu → 用 adb 设备（雷电）造一个虚拟实例。
+        //   实例号只用来拼 RunShell 的命令，adb 分支会忽略它，所以固定 0 即可。
+        if (!Usable(mumu))
+        {
+            try
+            {
+                AppConfig cfg = AppConfig.Load();
+                AdbDevice dev = AdbDevices.Pick(AdbDevices.List("", cfg.AdbPath), cfg.AdbSerial);
+                if (dev != null)
+                    list.Add(new Instance { Index = 0, Started = true, Name = dev.Serial });
+            }
+            catch { }
+            return list;
+        }
 
         // MuMuManager 的 info 命令返回 JSON
         // ★ 0~7 全探一遍，不能「前面没启动就收工」—— 用户可能只开了实例 2。
@@ -870,7 +928,7 @@ public static class MumuAuth
     /// <summary>完整登录：读登录态（多台时挑真正有效的那台）→ 保存凭据与设备档案。</summary>
     public static Account Login(int index = -1, bool save = true)
     {
-        string mumu = FindMumu();
+        string mumu = TryFindMumu();   // ★ 没有 MuMu 时走 adb（雷电），不再直接抛
         var candidates = CollectCandidates(mumu, verify: index < 0);
 
         Candidate pick = null;

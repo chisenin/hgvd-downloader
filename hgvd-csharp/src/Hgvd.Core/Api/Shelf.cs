@@ -104,6 +104,18 @@ public sealed class Episode
     public string SeriesTitle = "";
     /// <summary>0 = 用 vid 查播放地址（短剧），1 = 用 series_id 查（教学内容）。</summary>
     public int VideoIdType = -1;
+
+    /// <summary>
+    /// ★ 预置直链（自动抓剧 / hook 抓到后由外部注入）。
+    /// 非空时 DownloadEpisodeAsync 跳过失效的签名解析，直接用它下载。
+    /// 普通收藏夹分集这些字段留空，仍走原来的 video_model 签名链路。
+    /// </summary>
+    public string DirectUrl = "";
+    public string DirectBackupUrl = "";
+    /// <summary>预置直链配套的 CENC 内容密钥（hex），由 spade_a 解出。</summary>
+    public string DirectContentKey = "";
+
+    public bool HasDirectUrl => !string.IsNullOrEmpty(DirectUrl);
 }
 
 /// <summary>收藏夹接口（**免签名**，只要 Cookie）。</summary>

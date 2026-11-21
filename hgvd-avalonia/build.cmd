@@ -45,7 +45,7 @@ if not defined PY (
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
 set "OUT=dist"
-set "VER=1.4.0"
+set "VER=1.5.0"
 set "APP=hgvd-downloader-v%VER%"
 set "PKG=pkg\%APP%"
 set "ZIP=%OUT%\%APP%-win-x64.zip"

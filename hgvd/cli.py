@@ -246,6 +246,9 @@ def cmd_grab(args) -> int:
 
     ★ 2026-11-21 起播放接口校验 X-Helios / X-Medusa（docs/05 §1.3），
       宿主机算不出来；App 能算，所以改成「App 取地址、我们下载」。
+    ★ 抓流是常驻的直链探测器：抓到直链就下、同时继续探测下一集，
+      循环推进，只有 Ctrl-C 才清代理、关 MITM、等下载排空后退出。
+      （2026-11-21 用户定的流程；「首条即停」会把相邻几集 / 换集全漏掉。）
     """
     from .auth import mumu as mumu_auth
     from .grab import (CaptureProxy, Grabber, ca_ok, clear_proxy,
@@ -287,9 +290,10 @@ def cmd_grab(args) -> int:
     set_proxy(mumu, idx, f"{host}:{args.port}")
 
     def restore():
+        if args.keep_proxy:
+            return
         clear_proxy(mumu, idx)
-        if not args.keep_proxy:
-            say("已清除模拟器代理")
+        say("已清除模拟器代理")
 
     if not args.no_restart:
         say("重启红果（ttnet 只在启动时读代理）…")
@@ -307,18 +311,22 @@ def cmd_grab(args) -> int:
         print("  装好后 App 需要重启一次（装 CA 的动作本身就要重启 App）。")
         return 3
 
-    say("就绪：在 App 里点播一集，抓到就自动下载。Ctrl-C 结束。")
+    say("就绪：在 App 里连续点播，抓到即下、边抓边下、循环推进；Ctrl-C 结束。")
     try:
+        # ★ 常驻循环：代理一直开着，抓到直链只投递下载、不停 MITM，
+        #   相邻几集 / 换集都能继续抓。只有 Ctrl-C 才收网。
         while True:
             time.sleep(3)
             done, fail, pending = grabber.stats
-            if done or fail:
+            if done or fail or pending:
                 say(f"进度：成功 {done} · 失败 {fail} · 待下 {pending}")
     except KeyboardInterrupt:
         print()
     finally:
         restore()
         proxy.stop()
+        if not grabber.wait_idle(600):
+            say("⚠ 下载队列 10 分钟内未清空，强制结束（半截文件不会成为成品）")
         done, fail, _ = grabber.stats
         say(f"结束：成功 {done} · 失败 {fail}")
     return 0

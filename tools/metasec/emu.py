@@ -43,6 +43,37 @@ VM_PTR = 0x3121_0000
 SENTINEL = 0x3FFF_0000
 
 # JNI 函数表里我们关心的索引（JNINativeInterface 顺序）
+# ★★ 实测标定（2026-11-21）：**这个 so 的 JNIEnv 表布局与标准 jni.h 不一致**，
+#   JNI_INDEX 里靠猜的后半段（143+、183+、215+…）全部错位，
+#   判据必须靠「索引 + 参数语义」。下表是**实证标定**结果，优先级高于 JNI_INDEX。
+#   · 167: a[1] 是 char*（内容 "utf-8"）⇒ NewStringUTF
+#   · 171: a[1] 是 byte[] jobject ⇒ GetByteArrayElements
+# ★★ 稳定的 Class 地址：native 会拿 Class 指针做**相等比较**
+#   （判断「这个对象是不是 byte[]/String」），若每次 FindClass/GetObjectClass
+#   都返回新地址 ⇒ 比较永远失败 ⇒ native 直接退出。
+CLASS_ADDR = {
+    'java/lang/String': 0x1100,
+    'java/lang/Object': 0x1110,
+    '[B': 0x1120,
+    'java/lang/Long': 0x1130,
+    'java/lang/Integer': 0x1140,
+    'java/util/HashMap': 0x1150,
+    'java/util/Map': 0x1160,
+    'java/lang/Class': 0x1170,
+}
+
+JNI_INDEX_OVERRIDE = {
+    113: 'GetStaticMethodID',      # a2=方法名 a3=签名
+    115: 'GetStaticObjectField',   # a2=fieldID
+    232: 'GetStaticFieldID',       # a2=字段名(可为NULL) a3=签名
+    228: 'ExceptionOccurred',      # ★ 反汇编实证：被调两次、非0=有异常⇒紧跟 ExceptionClear(表[17])
+    53:  'CallLongMethodV',       # ★★ JNI_OnLoad 里取 longValue() ⇒ 该值就是**解密密钥**
+                                   #    （桩返回 0 ⇒ 解密失败 ⇒ 解释器拿到空表 ⇒ 直接退出）
+    167: 'NewStringUTF',           # a1=char*
+    171: 'GetArrayLength',         # ★ a1=byte[] jobject，**返回长度**（native 拿它当 w0 判 >0）
+                                   #   ★ 曾误标成 GetByteArrayElements（返回指针）⇒ native 把指针当长度用 ⇒ 失败
+}
+
 JNI_INDEX = {
     # JNINativeInterface 真实顺序（0~3 是 4 个 reserved 槽）
     4: 'GetVersion', 5: 'DefineClass', 6: 'FindClass', 7: 'FromReflectedMethod',
@@ -125,6 +156,47 @@ class Emu:
         self.stub_cursor = STUB[0]
         self.heap_cursor = HEAP[0]
         self.jni_return_override: dict[int, int] = {}
+        # ★ 假 jobject → 字符串内容。NewStringUTF 登记、GetStringUTFChars 回读，
+        #   探针脚本用它看清 native 到底吐了什么（x-helios / x-medusa 就在里面）。
+        self.jstr: dict[int, bytes] = {}
+        # 假 jobject（数组）→ 元素列表（元素是 jstr 里的内容）
+        self.jarr: dict[int, list] = {}
+        # native 通过反射想调的 Java 方法（(GetStaticMethodID, 名字, 签名)）
+        self.jmethods: list = []
+        # 假 byte[] jobject → 其内容（NewByteArray / SetByteArrayRegion 维护）
+        self.jbytes: dict[int, bytearray] = {}
+        # methodID → 方法名（GetMethodID 时登记）
+        self.jmethod_names: dict[int, str] = {}
+        # (原始索引, 名字, 参数, 返回值)
+        self.jni_calls: list = []
+        # Get*Field 系列的返回值（可调；0 会让 native 以为「配置为空」而放弃）
+        self.field_value = 0
+        # 假 Long 对象 jobject → 其 8 字节值；long_field_value 是「静态 Long 字段」的值
+        self.jlongs: dict[int, bytes] = {}
+        # 假 Integer 对象 → 其 int 值（GetStaticObjectField 用）
+        self.jint_obj: dict[int, int] = {}
+        # 未映射访问时自动补一张零页（native 会算出 emu 没有的地址）
+        self.auto_map_faults = True
+        self.mapped_faults: set = set()
+        # 类名 → 稳定 Class 地址（FindClass 缓存；native 靠指针相等判断类型）
+        self.class_cache: dict[str, int] = {}
+        # ★ 固定时间源（None = 用真实时间）。native 的运行时解密多半用时间做种子，
+        #   不固定就没法做「同条件对比」。
+        self.fixed_time: float | None = None
+        # VM 调用记录（原始索引）
+        self.vm_calls: list = []
+        # native 往 Map 里 put 的 (key, value) —— ★ 签名头就在这里
+        self.map_puts: list = []
+        # 数组 jobject → 元素个数 / 元素字节宽度
+        self.jarr_len: dict[int, int] = {}
+        self.jarr_esz: dict[int, int] = {}
+        # native 请求创建的线程 (入口地址, 参数)
+        self.threads: list = []
+        # native 调到但未实现的 JNI（原始索引+参数）
+        self.jni_unimpl: list = []
+        self.long_field_value = 1
+        # GetStatic/GetBooleanField 的返回值（可调：置 1 模拟「开关已打开」）
+        self.bool_field_value = 0
         self._map_all()
         self._apply_relocs()
         self._setup_jni()
@@ -163,6 +235,18 @@ class Emu:
 
     def _hook_faults(self):
         def on_unmapped(uc, access, address, size, value, ud):
+            # ★★ 自动映射该页并继续：native 会算出一些「它自己那边的」地址
+            #   （例：GetStaticFieldID 的 sig 指针 0x2fa40560），
+            #   emu 里没这块内存 ⇒ 读失败被吞掉 ⇒ 表现为「静默退出」。
+            #   映射一张零页让它继续，比直接停掉有用得多。
+            if self.auto_map_faults:
+                page = address & ~(PAGE - 1)
+                try:
+                    uc.mem_map(page, PAGE, UC_PROT_ALL)
+                    self.mapped_faults.add(page)
+                    return True          # 继续执行
+                except Exception:
+                    pass
             pc = uc.reg_read(a64.UC_ARM64_REG_PC)
             lr = uc.reg_read(a64.UC_ARM64_REG_LR)
             sp = uc.reg_read(a64.UC_ARM64_REG_SP)
@@ -208,13 +292,15 @@ class Emu:
         uc = self.uc
         self.new_stub()   # 0 号占位
         env_table = ENV_TABLE[0]
-        for idx in range(240):
+        # ★ 512 而不是 240：这个 so 实际用到 idx=232+，表太短会越界读到垃圾地址
+        for idx in range(512):
             stub = self.new_stub()
             self.jni_stub_index[stub] = idx
             uc.mem_write(env_table + idx * 8, struct.pack('<Q', stub))
         uc.mem_write(ENV_PTR, struct.pack('<Q', env_table))
         vm_table = VM_TABLE[0]
-        for idx in range(8):
+        # ★ 64 项（原来只有 8）—— native 可能调 vm 表的高索引槽
+        for idx in range(64):
             stub = self.new_stub()
             self.vm_stub_index[stub] = idx
             uc.mem_write(vm_table + idx * 8, struct.pack('<Q', stub))
@@ -228,7 +314,7 @@ class Emu:
                 self.on_import(self.import_names[address])
             elif address in self.jni_stub_index:
                 idx = self.jni_stub_index[address]
-                self.on_jni(idx, JNI_INDEX.get(idx, f'#{idx}'))
+                self.on_jni(idx, JNI_INDEX_OVERRIDE.get(idx) or JNI_INDEX.get(idx, f'#{idx}'))
             elif address in self.vm_stub_index:
                 idx = self.vm_stub_index[address]
                 self.on_vm(idx, VM_INDEX.get(idx, f'#{idx}'))
@@ -341,6 +427,9 @@ class Emu:
         return ret
 
     # ---------------------------------------------------------------- 处理器
+    def now(self) -> float:
+        return time.time() if self.fixed_time is None else self.fixed_time
+
     def on_import(self, name):
         a = self.args(4)
         ret = 0
@@ -430,11 +519,11 @@ class Emu:
         elif name in ('__system_property_find', '__system_property_read'):
             ret = 0
         elif name == 'clock_gettime':
-            now = time.time()
+            now = self.now()
             self.uc.mem_write(a[1], struct.pack('<qq', int(now), int((now % 1) * 1e9)))
             ret = 0
         elif name in ('time',):
-            ret = int(time.time())
+            ret = int(self.now())
             if a[0]:
                 self.uc.mem_write(a[0], struct.pack('<q', ret))
         elif name in ('getpid', 'gettid'):
@@ -511,7 +600,11 @@ class Emu:
         elif name in ('openlog', 'syslog'):
             ret = 0
         elif name == 'pthread_create':
+            # ★★ 记录线程入口：**Unicorn 是单线程模拟，native 起的「初始化线程」
+            #   （负责运行时解密）永远不会跑 ⇒ 解释器拿到全 0 的表 ⇒ 直接退出。
+            #   记下来，由 run_threads() 手动 tail_call 执行。
             self.emit(f'    [pthread_create] start={a[2]:#x} arg={a[3]:#x}')
+            self.threads.append((a[2], a[3]))
             ret = 0
         elif name in ('sigaction', 'fork', 'kill', 'prctl'):
             ret = 0
@@ -563,18 +656,151 @@ class Emu:
         elif name in ('GetMethodID', 'GetStaticMethodID', 'GetFieldID', 'GetStaticFieldID'):
             cls, n, sig = a[1], self.cstr(a[2], 128), self.cstr(a[3], 128)
             self.emit(f'    [JNI] {name} cls={cls:#x} {n}{sig}')
+            # ★ 记下「方法名」，探针脚本靠它看 native 到底想调哪个 Java 方法
+            self.jmethods.append((name, n, sig))
             ret = 0x2000 + len(self.log)
+            self.jmethod_names[ret] = n
+            # ★ 记下 methodID → 方法名：后面 CallObjectMethod 时才能按名字造返回值
+            self.jmethod_names[ret] = n
         elif name in ('NewStringUTF',):
             s = self.cstr(a[1], 512)
             self.emit(f'    [JNI] NewStringUTF({s!r})')
             ret = 0x3000 + len(self.log)
+            # ★ 记录「假 jobject → 字符串内容」：之后 GetStringUTFChars 读它能拿回真内容，
+            #   探针脚本据此看 native 到底吐了什么（签名头就在这些字符串里）。
+            self.jstr[ret] = s.encode()
         elif name in ('GetStringUTFChars',):
-            ret = self.write_cstr('DUMMY')
-        elif name in ('GetStringUTFLength', 'GetStringLength', 'GetArrayLength'):
+            # ★ 若这个 jobject 是我们自己造/记录的，返回它的真内容；
+            #   否则仍回 DUMMY（保持老行为不变）。
+            raw = self.jstr.get(a[1])
+            ret = self.write_cstr(raw.decode('utf-8', 'replace') if raw else 'DUMMY')
+        elif name in ('NewString',):
+            # ★ UTF-16 版 NewString：jchar* + 长度。native 返回的签名串
+            #   （String[] / 各种头）多半走这个，而不是 NewStringUTF ——
+            #   不 hook 它就等于把结果全丢了。
+            n = a[2]
+            raw = self.rd(a[1], n * 2) if n else b''
+            s = raw.decode('utf-16-le', 'replace')
+            self.emit(f'    [JNI] NewString({s!r})')
+            ret = 0x5000 + len(self.jstr)
+            self.jstr[ret] = s.encode('utf-8')
+        elif name in ('CallLongMethod', 'CallLongMethodV', 'CallLongMethodA'):
+            # ★ longValue() —— native 从假 Long 对象里取回 handle
+            obj, mid = a[1], a[2]
+            mname = self.jmethod_names.get(mid, '')
+            raw = self.jlongs.get(obj)
+            ret = struct.unpack('<Q', raw)[0] if (mname == 'longValue' and raw) else 0
+            self.emit(f'    [JNI] {name}(obj={obj:#x} [{mname}]) -> {ret}')
+        elif name in ('CallObjectMethod', 'CallObjectMethodV', 'CallObjectMethodA',
+                      'CallStaticObjectMethod', 'CallStaticObjectMethodV',
+                      'CallStaticObjectMethodA'):
+            # ★★★ native 通过反射调 Java 方法拿数据。桩返回 0 ⇒ native 拿到 null
+            #   ⇒ 整条链断掉。按方法名造一个「合理」的返回值：
+            #   getBytes(...) → 真的 byte[]（内容 = 我们传进去的字符串字节）
+            obj, mid = a[1], a[2]
+            mname = self.jmethod_names.get(mid, '')
+            ret = self.invoke_java(mname, obj, is_static=True)
+            # ★★ Map.put / Map.get：va_list 在 a[3]，逐个取参数（每个 8 字节）
+            if mname in ('put', 'get', 'putString', 'containsKey'):
+                try:
+                    va = a[3]
+                    args = [struct.unpack('<Q', self.rd(va + i * 8, 8))[0] for i in range(2)]
+                    if mname == 'put':
+                        k = self.jstr.get(args[0], b'').decode('utf-8', 'replace')
+                        v = self.jstr.get(args[1], b'').decode('utf-8', 'replace')
+                        self.map_puts.append((k, v))
+                        self.emit(f'    [JNI] Map.put({k!r} = {v[:120]!r})')
+                    elif mname == 'get':
+                        self.emit(f'    [JNI] Map.get(key={self.jstr.get(args[0], b"")!r})')
+                except Exception as e:
+                    self.emit(f'    [JNI] {mname} va_list 解析失败: {e}')
+            else:
+                self.emit(f'    [JNI] {name}(obj={obj:#x}, mid={mid:#x} [{mname}]) -> {ret:#x}')
+        elif name in ('NewByteArray', 'NewLongArray', 'NewIntArray',
+                      'NewShortArray', 'NewCharArray', 'NewBooleanArray'):
+            # ★ 造一个真正的数组。**NewLongArray 必须实现** ——
+            #   native 要一个 32768 长度的 long[] 工作区，返回 NULL 它就直接放弃。
+            n = a[1]
+            esz = 8 if 'Long' in name else (4 if 'Int' in name else 1)
+            self.emit(f'    [JNI] {name}(len={n})')
+            ret = 0x8000 + len(self.jbytes)
+            self.jbytes[ret] = bytearray(n * esz)
+            self.jstr[ret] = b''
+            self.jarr_len[ret] = n
+            self.jarr_esz[ret] = esz
+        elif name in ('SetLongArrayRegion', 'SetIntArrayRegion', 'SetByteArrayRegion',
+                      'SetShortArrayRegion', 'SetCharArrayRegion', 'SetBooleanArrayRegion'):
+            # ★ 捕获 native 写进数组的值 —— 签名材料就落在这里
+            arr, st, ln, buf = a[1], a[2], a[3], a[4]
+            tgt = self.jbytes.get(arr)
+            if tgt is not None and ln and buf:
+                esz = self.jarr_esz.get(arr, 1)
+                data = self.rd(buf, ln * esz)
+                tgt[st*esz:(st+ln)*esz] = data[:ln*esz]
+                self.emit(f'    [JNI] {name}(arr={arr:#x}, start={st}, len={ln}) '
+                          f'=> {data[:32].hex()}')
+        elif name in ('UNUSED_NewByteArray',):
+            # a[1]=长度。造一个真 byte[]（内容先填 0），native 能写、我们能读
+            n = a[1]
+            self.emit(f'    [JNI] NewByteArray(len={n})')
+            ret = 0x8000 + len(self.jbytes)
+            self.jbytes[ret] = bytearray(n)
+            self.jstr[ret] = b''          # 占位，避免被当字符串
+        elif name in ('SetByteArrayRegion',):
+            # a[1]=array a[2]=start a[3]=len a[4]=buf
+            arr, st, ln, buf = a[1], a[2], a[3], a[4]
+            tgt = self.jbytes.get(arr)
+            if tgt is not None and ln and buf:
+                data = self.rd(buf, ln)
+                tgt[st:st+ln] = data
+                self.emit(f'    [JNI] SetByteArrayRegion(arr={arr:#x}, start={st}, len={ln}) '
+                          f'=> {data[:32].hex()}')
+        elif name in ('GetByteArrayElements',):
+            arr = a[1]
+            tgt = self.jbytes.get(arr)
+            if tgt is not None:
+                addr = self.alloc(len(tgt))
+                self.uc.mem_write(addr, bytes(tgt))
+                ret = addr
+        elif name in ('NewObjectArray',):
+            # a[1]=size  a[2]=class  a[3]=init
+            self.emit(f'    [JNI] NewObjectArray(size={a[1]})')
+            ret = 0x6000 + len(self.jarr)
+            self.jarr[ret] = []
+        elif name in ('SetObjectArrayElement',):
+            arr, idx, obj = a[1], a[2], a[3]
+            lst = self.jarr.get(arr)
+            if lst is not None:
+                while len(lst) <= idx:
+                    lst.append(None)
+                lst[idx] = self.jstr.get(obj)
+            self.emit(f'    [JNI] SetObjectArrayElement(i={idx}, obj={obj:#x})')
+        elif name in ('GetObjectArrayElement',):
+            lst = self.jarr.get(a[1])
             ret = 0
+            if lst is not None and 0 <= a[2] < len(lst):
+                hit = lst[a[2]]
+                if hit is not None:
+                    for k, v in self.jstr.items():
+                        if v == hit:
+                            ret = k
+                            break
+        elif name in ('GetStringUTFLength', 'GetStringLength'):
+            ret = 0
+        elif name == 'GetArrayLength':
+            # ★ 返回数组长度（byte[]/Object[] 都要对）—— native 用它判「>0」
+            tgt = self.jbytes.get(a[1])
+            if tgt is not None:
+                ret = len(tgt)
+            elif a[1] in self.jarr:
+                ret = len(self.jarr[a[1]])
+            else:
+                ret = 0
         elif name in ('GetJavaVM',):
             self.uc.mem_write(a[1], struct.pack('<Q', VM_PTR))
-            ret = 0
+            # ★ 返回 JNI 版本号（JNI_VERSION_1_6 = 0x00010006）——
+            #   返回 0 会被 native 当成「失败」而直接退出。
+            ret = 0x00010006
         elif idx == 215 or name == 'RegisterNatives':
             cls, methods, n = a[1], a[2], a[3]
             self.emit(f'    [JNI] RegisterNatives cls={cls:#x} methods={methods:#x} n={n}')
@@ -586,14 +812,42 @@ class Emu:
         elif name in ('ExceptionOccurred',):
             ret = 0
         elif name in ('GetObjectClass',):
-            ret = 0x1000
+            # ★★ 按**对象的真实类型**返回 Class —— native 靠 Class 指针相等
+            #   来判断类型（是 String / byte[] / Long…）。乱返回必然让 native 直接退出。
+            obj = a[1]
+            if obj in self.jbytes:
+                ret = CLASS_ADDR['[B']
+            elif obj in self.jlongs:
+                ret = CLASS_ADDR['java/lang/Long']
+            elif obj in self.jarr:
+                ret = CLASS_ADDR['java/util/Map']
+            elif obj in self.jstr:
+                ret = CLASS_ADDR['java/lang/String']
+            else:
+                ret = CLASS_ADDR['java/lang/Object']
         elif name in ('GetSuperclass',):
             # 返回非 0：libmetasec 用它遍历类层次做校验，返回 0 会走失败分支
             ret = a[1] + 0x100 if a[1] else 0x2001
         elif name in ('NewGlobalRef', 'NewLocalRef', 'NewWeakGlobalRef'):
             ret = a[1]
+        elif name in ('GetVersion',):
+            ret = 0x00010006          # JNI_VERSION_1_6
         elif name in ('GetStaticObjectField',):
-            ret = 0
+            # ★ 返回一个「假 Integer 对象」，携带 self.long_field_value
+            ret = 0xA000 + len(self.jlongs)
+            self.jlongs[ret] = struct.pack('<Q', self.long_field_value)
+            self.jint_obj[ret] = self.long_field_value
+        elif name in ('GetStaticIntField', 'GetStaticLongField', 'GetStaticShortField',
+                      'GetStaticByteField', 'GetStaticCharField', 'GetStaticFloatField',
+                      'GetStaticDoubleField', 'GetObjectField', 'GetLongField',
+                      'GetIntField', 'GetShortField', 'GetByteField', 'GetCharField'):
+            # ★ 这些以前全部落「未实现」⇒ 恒 0；native 读配置拿到 0 就直接放弃。
+            #   统一走可配置值（探针脚本里调 emu.field_value）。
+            ret = self.field_value
+        elif name in ('GetStaticBooleanField',):
+            # ★★ native 用这个「全局布尔开关」判断是否就绪；之前没实现 → 恒 0
+            #   ⇒ 每个 cmd 都在这里直接返回。置 1 模拟「开关已打开」。
+            ret = self.bool_field_value
         elif name in ('GetStaticIntField',):
             ret = 0
         elif name in ('GetStaticLongField',):
@@ -603,13 +857,62 @@ class Emu:
         elif name in ('GetLongField',):
             ret = 0
         elif name in ('GetBooleanField',):
-            ret = 0
+            ret = self.bool_field_value
         else:
-            self.emit(f'    [JNI 未实现] #{idx} {name}({[hex(x) for x in a]}) -> 0')
+            # ★★ 记录「native 调到但我们没实现」的 JNI —— native 判定失败的根源
+            #   往往就在这里（返回 0 / 假值）。
+            self.jni_unimpl.append((idx, name, list(a[:4])))
+            # ★ 未实现的 JNI **返回 0（NULL）⇒ native 拿到空指针就直接放弃**。
+            #   给它一个可写的堆地址，让 native 至少能继续往下走。
+            ret = self.alloc(64)
+            self.emit(f'    [JNI 未实现] #{idx} {name}({[hex(x) for x in a]}) -> {ret:#x}')
+        # ★ 记下**原始索引** —— 这个 so 的 JNIEnv 表布局与标准 jni.h 不一致，
+        #   JNI_INDEX 的名字会误导；判据只能靠「索引 + 参数语义」。
+        self.jni_calls.append((idx, name, list(a[:4]), ret))
         c = self.record('jni', name, a, ret)
         if self.trace:
             self.emit(f'  #{c.seq} JNI {name}({[hex(x) for x in a[:3]]}) = {ret:#x}')
         self.ret_to_lr(ret)
+
+    def invoke_java(self, mname: str, obj: int, is_static: bool = False) -> int:
+        """按方法名造一个「合理」的返回值（只覆盖我们真需要的那些）。"""
+        if mname == 'put':
+            # ★★ Map.put(k, v)：native 把签名头写进我们传的 Map ⇒ 这里能截获结果！
+            #   CallObjectMethodV 的 va_list 指针在 a[3]（本函数看不到），
+            #   所以在 on_jni 里单独处理（见 CALL_PUT 钩子）。
+            pass
+        if mname in ('valueOf',):
+            # Integer.valueOf(int) / Long.valueOf(long) → 造一个假包装对象
+            addr = 0xA000 + len(self.jlongs)
+            self.jlongs[addr] = struct.pack('<Q', self.long_field_value)
+            self.jint_obj[addr] = self.long_field_value
+            return addr
+        if mname in ('getBytes', 'getBytesUTF8'):
+            raw = self.jstr.get(obj)
+            if raw is None:
+                return 0
+            addr = 0x8000 + len(self.jbytes)
+            self.jbytes[addr] = bytearray(raw)
+            self.jstr[addr] = b''
+            return addr
+        return 0
+
+    def run_threads(self, max_rounds=4):
+        """手动执行 native 请求创建的线程（Unicorn 单线程，线程不会自动跑）。
+
+        ★ 这是让 native 完成**运行时解密**的关键：初始化线程被桩掉了，
+          解释器就会拿到全 0 的表而直接退出。
+        """
+        done = 0
+        while self.threads and done < max_rounds:
+            start, arg = self.threads.pop(0)
+            try:
+                self.tail_call(start, arg)
+                done += 1
+            except Exception as e:
+                self.emit(f'    [thread {start:#x}] 执行失败: {type(e).__name__}: {e}')
+                break
+        return done
 
     def on_vm(self, idx, name):
         a = self.args(3)
@@ -623,6 +926,8 @@ class Emu:
             ret = 0
         else:
             self.emit(f'    [VM] {name}({[hex(x) for x in a]}) -> 0')
+        # ★ 记录 VM 调用（native 拿 JavaVM 后多半要走 AttachCurrentThread）
+        self.vm_calls.append((idx, name, list(a[:3]), ret))
         self.record('vm', name, a, ret)
         self.ret_to_lr(ret)
 

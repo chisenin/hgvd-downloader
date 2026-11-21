@@ -23,10 +23,15 @@ public static class Program
         //   发行版（Avalonia）的同名回归见 AvaloniaEpisodeRowTests。
         fail += NamingTests.Run();
         fail += MumuLocateTests.Run();
+        fail += AdbLocateTests.Run();   // ★ 2026-11-21：雷电成为正式模拟器，adb 层要有护栏
         fail += DeviceStoreTests.Run();
         // ★ DRM 用真实黄金向量守「短剧密钥解包」——多切一字节就解不出 key，
         //   整条加密内容（短剧）链路全废，见 DrmTests 的注释。
         fail += DrmTests.Run();
+        // ★ 抓流自动停止：一次性 / 并发安全 / 停抓流不取消下载
+        fail += GrabLoopTests.Run();
+        // ★ 自动抓剧清单解析：预置直链 / 码率选择 / 容错
+        fail += GrabManifestTests.Run();
         // ★ 兴趣岛内核（2026-11-21 合并）：链接解析 / 清单 / 命名 / 队列
         fail += XqdTests.Run();
         // ★ 2026-11-21 补齐：红果清单落盘 / 下载历史 / 去重口径 / 5 档筛选 / 剩余时间

@@ -519,6 +519,9 @@ public partial class MainWindow : Window
                 ShortDrama = _rowMap.TryGetValue(kv.Key, out var s) && s.IsShortDrama,
             };
             foreach (var r in rows)
+            {
+                // 自动抓剧的预置直链要随清单持久化（重启后仍可下，不必重新 hook）
+                _epCache.TryGetValue(r.Vid, out var src);
                 g.Episodes.Add(new QueueEpisode
                 {
                     Vid = r.Vid,
@@ -526,7 +529,11 @@ public partial class MainWindow : Window
                     Title = r.Title,
                     Duration = r.Duration,
                     VideoIdType = r.VideoIdType,
+                    DirectUrl = src?.DirectUrl ?? "",
+                    DirectBackupUrl = src?.DirectBackupUrl ?? "",
+                    DirectContentKey = src?.DirectContentKey ?? "",
                 });
+            }
             groups.Add(g);
         }
         _hgQueueStore.Save(groups);
@@ -560,6 +567,9 @@ public partial class MainWindow : Window
                     SeriesId = g.SeriesId,
                     SeriesTitle = title,
                     VideoIdType = e.VideoIdType,
+                    DirectUrl = e.DirectUrl ?? "",
+                    DirectBackupUrl = e.DirectBackupUrl ?? "",
+                    DirectContentKey = e.DirectContentKey ?? "",
                 };
                 _epCache[ep.Vid] = ep;
                 var r = new EpisodeRow(ep) { TitleWidth = _titleWidth };
@@ -1450,10 +1460,14 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    /// <summary>抓流两态按钮：启动 MITM 代理拦直链下载；再点一次停止并清代理。</summary>
+    /// <summary>抓流两态按钮：启动后**常驻**（边抓边下、循环推进），再点一次才停止并清代理。</summary>
     /// <remarks>
     /// ★ 与「提取App缓存」互补：缓存只覆盖播过的内容；抓流能在 App 点播时
     ///   顺带拿到相邻几集，且清过缓存照样能用。
+    /// ★ 2026-11-21 用户定的流程：抓流是常驻的直链探测器 —— 抓到本集直链就下，
+    ///   同时继续探测下一集、循环推进，**只有点「停止抓流」或「暂停」才停**。
+    ///   抓到直链绝不再停代理（否则相邻几集 / 换集全抓不到）。
+    /// ★ 暂停由统一的「下载」按钮负责（TogglePause 会调 _grab.Pause/Resume）。
     /// ★ 教学类不加密，GrabRunner 的下载不会走 DRM 分支。
     /// </remarks>
     private GrabRunner _grab;
@@ -1462,36 +1476,244 @@ public partial class MainWindow : Window
     {
         if (_grab != null)
         {
-            _grab.Stop();
+            var old = _grab;
             _grab = null;
+            old.Stop();                 // 手动停止 = 停代理 + 取消在途下载
             BtnGrab.Content = "抓流";
-            ShowBanner("抓流已停止，模拟器代理已清除", BannerKind.Info);
-            Log("✓ 抓流已停止，代理已清除");
+            BtnGrab.IsEnabled = true;
+            // 抓流会话也会占用主按钮的暂停态，停了就复位
+            if (_paused) { _paused = false; _hgGate.Resume(); _xqd.SetPaused(false); }
+            BtnRun.Content = "下载";
+            BtnRun.IsEnabled = true;
+            LblStatus.Text = "就绪";
+            ShowBanner($"抓流已停止（成功 {old.Done} · 失败 {old.Failed}），模拟器代理正在后台清除", BannerKind.Info);
+            Log("✓ 抓流已停止，代理在后台清除");
             return;
         }
 
+        StartGrabSession();
+    }
+
+    /// <summary>启动一轮抓流会话（抓流按钮与「下载无直链时自动转抓流」共用）。</summary>
+    private void StartGrabSession()
+    {
+        var runner = new GrabRunner(_svc, Log, (job, res) =>
+        {
+            // 成品记入两源共用的历史窗口
+            RecordHistory("红果", job.Book, job.Index.ToString("000"), "",
+                          job.Vid, res.OutPath, res.Size, job.Duration,
+                          res.Ok ? "done" : "failed");
+            Dispatcher.UIThread.Post(UpdateQueueSummary);
+        });
+        runner.CaptureStopped += (r, reason) => Dispatcher.UIThread.Post(() =>
+        {
+            if (!ReferenceEquals(_grab, r)) return;
+            _grab = null;
+            BtnGrab.Content = "抓流";
+            BtnGrab.IsEnabled = true;
+            if (_paused) { _paused = false; _hgGate.Resume(); _xqd.SetPaused(false); }
+            BtnRun.Content = "下载";
+            BtnRun.IsEnabled = true;
+            LblStatus.Text = "就绪";
+            Log($"✓ 抓流会话结束：成功 {r.Done} · 失败 {r.Failed}");
+        });
+        _grab = runner;
+        BtnGrab.IsEnabled = false;
+        BtnGrab.Content = "停止抓流";
+        ShowBanner("正在启动抓流（会重启红果，请稍候）…", BannerKind.Info);
+        _ = StartGrabAsync(runner);
+    }
+
+    private async Task StartGrabAsync(GrabRunner runner)
+    {
         try
         {
-            var runner = new GrabRunner(_svc, Log, (job, res) =>
-            {
-                // 成品记入两源共用的历史窗口
-                RecordHistory("红果", job.Book, job.Index.ToString("000"), "",
-                              job.Vid, res.OutPath, res.Size, job.Duration,
-                              res.Ok ? "done" : "failed");
-                Dispatcher.UIThread.Post(UpdateQueueSummary);
-            });
-            _grab = runner;
+            await runner.StartAsync();
+            if (!ReferenceEquals(_grab, runner) || !runner.CaptureRunning) return;
+            BtnGrab.IsEnabled = true;
             BtnGrab.Content = "停止抓流";
-            ShowBanner("正在启动抓流（会重启红果，请稍候）…", BannerKind.Info);
-            _ = runner.StartAsync();
+            // ★ 抓流会话占用主按钮：显示「暂停」，用户点它 → TogglePause 同时暂停抓流下载
+            _downloading = true;
+            _paused = false;
+            BtnRun.IsEnabled = true;
+            BtnRun.Content = "暂停";
+            LblStatus.Text = "抓流中（边抓边下）";
+            ShowBanner("抓流已就绪：在 App 里点播，抓到即下、边抓边下、循环推进；"
+                     + "点「暂停」暂停下载，点「停止抓流」结束。", BannerKind.Info);
         }
         catch (Exception ex)
         {
-            _grab = null;
+            runner.Stop();
+            if (ReferenceEquals(_grab, runner)) _grab = null;
             BtnGrab.Content = "抓流";
+            BtnGrab.IsEnabled = true;
+            _downloading = false;
+            _paused = false;
+            BtnRun.Content = "下载";
+            BtnRun.IsEnabled = true;
+            LblStatus.Text = "就绪";
             Log("✗ 抓流启动失败：" + ex.Message);
             ShowBanner("抓流启动失败：" + ex.Message, BannerKind.Err);
         }
+    }
+
+    // ───────────────────────── 自动抓剧（frida hook 雷电） ─────────────────────────
+    // 路线2集成：调用 tools/metasec/hook_grab.py（Python + frida 从雷电红果 App hook 直链），
+    // 只出清单（--dry），下载交给本机 Downloader（复用进度/断点/历史链路）。
+    // 与「抓流」（MuMu + MITM 代理）并存，互不替换。
+
+    private CancellationTokenSource _autoGrabCts;
+
+    private async void BtnAutoGrab_Click(object sender, RoutedEventArgs e)
+    {
+        // 抓剧中再点 = 停止（与「抓流」两态按钮一致）
+        if (_autoGrabCts != null)
+        {
+            try { _autoGrabCts.Cancel(); } catch { }
+            Log("· 正在停止抓剧（进程树将在后台终止）…");
+            return;
+        }
+
+        // 输入剧 ID / 深链
+        var dlg = new AutoGrabDialog(this);
+        await dlg.ShowDialog(this);
+        if (!dlg.Confirmed) return;
+
+        string series = AutoGrabDialog.NormalizeSeries(dlg.SeriesId);
+        if (series.Length == 0)
+        {
+            ShowBanner("剧 ID 无效：请填纯数字 series_id 或 dragon8662://detail?series_id=… 深链。", BannerKind.Err);
+            return;
+        }
+        string title = dlg.DramaTitle;
+
+        // 环境检查
+        var runner = new HookGrabRunner(_svc.Config);
+        string miss = runner.Check();
+        if (!string.IsNullOrEmpty(miss))
+        {
+            ShowBanner(miss, BannerKind.Err);
+            Log("✗ " + miss.Replace("\n", " "));
+            return;
+        }
+
+        _autoGrabCts = new CancellationTokenSource();
+        // ★ 抓剧期间按钮**保持可用**并变成「停止抓剧」——它就是取消入口
+        BtnAutoGrab.Content = "停止抓剧";
+        ApplyOutDir();  // 确保下载目录已同步
+
+        try
+        {
+            ShowBanner("正在抓剧：自动上滑采集直链，采集完成后加入下载清单…", BannerKind.Info);
+            Log($"── 自动抓剧开始：series={series} 剧名={title ?? "(待定)"} ──");
+
+            string manifest = await runner.RunAsync(
+                series, title, _svc.Config.MaxEpisodes > 0 ? _svc.Config.MaxEpisodes : 200,
+                msg => RunOnUi(() => Log("  " + msg)), _autoGrabCts.Token);
+
+            // 解析清单 → 注入共用清单
+            string book = title;
+            if (string.IsNullOrEmpty(book))
+                book = InferTitleFromManifest(manifest, series);
+
+            var parsed = GrabManifest.Load(manifest, series, book, GetQuality());
+            if (parsed.Error.Length > 0)
+            {
+                Log("✗ " + parsed.Error);
+                ShowBanner(parsed.Error, BannerKind.Err);
+                return;
+            }
+            if (parsed.Episodes.Count == 0)
+            {
+                ShowBanner("清单里没有可下载的分集。", BannerKind.Err);
+                return;
+            }
+
+            int added = InjectGrabbedEpisodes(parsed.Episodes, book);
+            Log($"✓ 抓剧完成：解析 {parsed.Episodes.Count} 集，新加入 {added} 集（跳过 {parsed.Skipped}）");
+            ShowBanner($"抓剧完成：加入 {added} 集到下载清单。点「下载」开始下载。", BannerKind.Ok);
+        }
+        catch (OperationCanceledException)
+        {
+            Log("· 自动抓剧已取消");
+            ShowBanner("自动抓剧已取消。", BannerKind.Info);
+        }
+        catch (Exception ex)
+        {
+            Log("✗ 抓剧失败：" + ex.Message);
+            ShowBanner("抓剧失败：" + ex.Message, BannerKind.Err);
+        }
+        finally
+        {
+            _autoGrabCts?.Dispose();
+            _autoGrabCts = null;
+            BtnAutoGrab.IsEnabled = true;
+            BtnAutoGrab.Content = "自动抓剧";
+        }
+    }
+
+    /// <summary>清单没带剧名时，从任一集的 vm 里猜一个；没有就用「短剧_&lt;series&gt;」。</summary>
+    private static string InferTitleFromManifest(string manifest, string series)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                if (!prop.Value.TryGetProperty("vm", out var vm)) continue;
+                if (vm.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                foreach (var k in new[] { "series_name", "book_name", "title" })
+                    if (vm.TryGetProperty(k, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        string s = v.GetString() ?? "";
+                        if (s.Length > 0) return s.Length > 60 ? s.Substring(0, 60) : s;
+                    }
+            }
+        }
+        catch { }
+        return "短剧_" + series;
+    }
+
+    /// <summary>
+    /// 把抓到的分集（含预置直链）加入两源共用清单，按 series_id 分组。
+    /// 已在清单里的 vid 跳过；加入后立即落盘（直链随 QueueStore 持久化，重启可续下）。
+    /// </summary>
+    private int InjectGrabbedEpisodes(List<Episode> eps, string book)
+    {
+        // 与收藏夹共用同一 series_id 分组（同一部剧只会出现一组）
+        string key = eps[0].SeriesId;
+        if (!_queueBySeries.TryGetValue(key, out var rows))
+        {
+            rows = new List<EpisodeRow>();
+            var header = EpisodeRow.Header(key, book, 0);
+            header.TitleWidth = _titleWidth;
+            _queueHeaders[key] = header;
+            EpisodeRows.Add(header);
+            EpisodeView.Add(header);
+            _queueBySeries[key] = rows;
+        }
+
+        int added = 0;
+        var existing = rows.Select(r => r.Vid).ToHashSet(StringComparer.Ordinal);
+        foreach (var ep in eps)
+        {
+            if (existing.Contains(ep.Vid)) continue;
+            ep.SeriesTitle = book;
+            _epCache[ep.Vid] = ep;
+            var r = new EpisodeRow(ep) { TitleWidth = _titleWidth };
+            r.PropertyChanged += EpisodeRow_PropertyChanged;
+            rows.Add(r);
+            EpisodeRows.Add(r);
+            EpisodeView.Add(r);
+            added++;
+        }
+
+        RefreshGroupHeader(key, book, rows.Count);
+        PersistHongguoQueue();
+        ApplyEpView();
+        UpdateQueueSummary();
+        return added;
     }
 
     private async void BtnCache_Click(object sender, RoutedEventArgs e)
@@ -1499,9 +1721,12 @@ public partial class MainWindow : Window
         BtnCache.IsEnabled = false;
         try
         {
-            ShowBanner("正在从 MuMu 提取 App 视频缓存…", BannerKind.Info);
-            string mumu = Core.Auth.MumuAuth.FindMumu();
-            int inst = Core.Auth.MumuAuth.FindUsableInstance(mumu, out _);
+            ShowBanner("正在从模拟器提取 App 视频缓存…", BannerKind.Info);
+            // ★ 没有 MuMu 时走 adb（雷电）——实例号在 adb 分支下无意义，失败就取 0
+            string mumu = Core.Auth.MumuAuth.TryFindMumu();
+            int inst;
+            try { inst = Core.Auth.MumuAuth.FindUsableInstance(mumu, out _); }
+            catch { inst = 0; }
             Log($"从实例 {inst} 提取缓存…");
 
             string outDir = Path.Combine(_svc.Config.ResolveOutDir(), "_app_cache");
@@ -1557,12 +1782,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        // ★ 短剧默认跳过（bytevc 加密，解不出画面）—— 只针对红果的行
-        int dramas = targets.Count(t => !t.IsXqd && t.State == "待下载" && IsDramaRow(t));
+        // ★ 短剧默认跳过（bytevc 加密，解不出画面）—— 只针对红果的行。
+        //   ★ 自动抓剧的行有预置直链（App 自己 hook 到的，单集实测能解出可播 MP4），
+        //     不受此限制：它们走 DirectUrl 分支，不碰失效的 bytevc 直连解析。
+        int dramas = targets.Count(t => !t.IsXqd && t.State == "待下载"
+                                     && IsDramaRow(t) && !HasGrabbedUrl(t));
         if (dramas > 0)
             ShowBanner($"已跳过 {dramas} 部短剧 —— 它的编码是字节私有 bytevc，下载后无法正常播放。",
                        BannerKind.Info);
-        targets = targets.Where(t => t.IsXqd || !IsDramaRow(t)).ToList();
+        targets = targets.Where(t => t.IsXqd || !IsDramaRow(t) || HasGrabbedUrl(t)).ToList();
         if (targets.Count == 0)
         {
             ShowBanner("没有可下载的分集（短剧会自动跳过）。", BannerKind.Info);
@@ -1589,11 +1817,26 @@ public partial class MainWindow : Window
         SetRunningUi(false);
         LblStatus.Text = "就绪";
         UpdateQueueSummary();
+        Log($"—— 直连完成 {res.Ok}，失败 {res.Fail}");
+
+        // ★ 下载流程（用户 2026-11-21 定的）：有直链直接下 / 无直链自动抓流。
+        //   res.Aborted = 红果播放接口连续空 body（网关校验 X-Helios / X-Medusa，宿主机算不出）
+        //   ⇒ 不等不重试，直接转入常驻抓流：App 代签取直链，我们边抓边下、循环推进。
+        //   ★ 只有目标里有红果行、且当前没在抓流时才转；兴趣岛行不受影响。
+        bool hasHongguo = targets.Any(t => !t.IsXqd && t.IsEpisode);
+        if (res.Aborted && hasHongguo && _grab == null)
+        {
+            ShowBanner("播放接口拿不到直链（网关校验播放签名），已自动转入抓流。"
+                     + "\n请在红果 App 里连续点播要下载的集：抓到即下、边抓边下、循环推进；"
+                     + "点「暂停」暂停、点「停止抓流」结束。", BannerKind.Info);
+            Log("· 直连无直链 → 自动转入抓流（App 代签取址，常驻循环）");
+            StartGrabSession();
+            return;
+        }
         if (res.Aborted)
             ShowBanner("播放接口连续多次返回空 body，已停止本批。"
                      + "\n★ 2026-11-21 起网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；"
                      + "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」。", BannerKind.Err);
-        Log($"—— 完成 {res.Ok}，失败 {res.Fail}");
     }
 
     /// <summary>统一的运行态 UI：下载 ↔ 暂停 ↔ 继续（两源同一个按钮）。</summary>
@@ -1608,15 +1851,17 @@ public partial class MainWindow : Window
         _xqd.SetPaused(false);
     }
 
-    /// <summary>一个按钮管两源：红果走 PauseGate（保留连接），兴趣岛走 XqdQueue 的暂停。</summary>
+    /// <summary>一个按钮管三处：红果直连走 PauseGate，兴趣岛走 XqdQueue，抓流走 GrabRunner。</summary>
     private void TogglePause()
     {
         _paused = !_paused;
         if (_paused) _hgGate.Pause(); else _hgGate.Resume();
         _xqd.SetPaused(_paused);
+        // ★ 抓流会话的暂停：只暂停下载消费、代理继续探测，恢复时无需重启 App
+        if (_paused) _grab?.Pause(); else _grab?.Resume();
         BtnRun.Content = _paused ? "继续" : "暂停";
         LblStatus.Text = _paused ? "已暂停（进度与分片保留）" : "下载中";
-        Log(_paused ? "已暂停（两源同时生效；进度/分片保留）" : "已继续");
+        Log(_paused ? "已暂停（两源 + 抓流同时生效；进度/分片保留）" : "已继续");
     }
 
     /// <summary>
@@ -1963,6 +2208,10 @@ public partial class MainWindow : Window
         return shelf?.IsShortDrama ?? false;
     }
 
+    /// <summary>是否为自动抓剧注入的行（有预置直链，可下短剧）。</summary>
+    private bool HasGrabbedUrl(EpisodeRow row)
+        => _epCache.TryGetValue(row.Vid, out var ep) && ep.HasDirectUrl;
+
     private bool _stopRequested;
 
     /// <summary>正在下载（用来禁掉「批量下载」按钮，避免重复点）。</summary>
@@ -2183,7 +2432,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            string mumu = Core.Auth.MumuAuth.FindMumu();
+            string mumu = Core.Auth.MumuAuth.TryFindMumu();
             return Core.Auth.MumuAuth.ListInstances(mumu).ToList();
         }
         catch { return new List<Core.Auth.MumuAuth.Instance>(); }
