@@ -7,7 +7,8 @@ namespace Hgvd.Tests;
 /// <summary>直连验证：用**播放专用签名**打 video_model/v1（v1.0.0 的老路径）。</summary>
 /// <remarks>
 /// 用法：`Hgvd.Tests.exe --playtest [seriesId]`
-/// ★ 这个入口存在的意义：如果它还能出直链，那抓流完全不需要，应当立刻砍掉。
+/// ★ 这个入口用来实机确认播放接口的直链口径（2026-11-22 抓流裁掉后，
+///   它是唯一仍在的实机取链探针）。
 /// </remarks>
 public static class PlayTest
 {

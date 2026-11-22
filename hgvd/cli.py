@@ -241,96 +241,6 @@ def cmd_shelf(args) -> int:
     return 0
 
 
-def cmd_grab(args) -> int:
-    """抓流：App 播一集，我们抓直链并下载（不经过宿主机签名）。
-
-    ★ 2026-11-21 起播放接口校验 X-Helios / X-Medusa（docs/05 §1.3），
-      宿主机算不出来；App 能算，所以改成「App 取地址、我们下载」。
-    ★ 抓流是常驻的直链探测器：抓到直链就下、同时继续探测下一集，
-      循环推进，只有 Ctrl-C 才清代理、关 MITM、等下载排空后退出。
-      （2026-11-21 用户定的流程；「首条即停」会把相邻几集 / 换集全漏掉。）
-    """
-    from .auth import mumu as mumu_auth
-    from .grab import (CaptureProxy, Grabber, ca_ok, clear_proxy,
-                       pick_host_ip, pick_instance, restart_app, set_proxy)
-
-    def say(msg: str):
-        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
-    try:
-        mumu = mumu_auth.find_mumu()
-    except Exception as exc:                # noqa: BLE001
-        print(f"找不到 MuMuManager：{exc}")
-        return 2
-
-    try:
-        idx = pick_instance(mumu, args.instance)
-    except Exception as exc:                # noqa: BLE001
-        print(str(exc))
-        return 2
-
-    out = args.out or str(Path.home() / "hgvd_grab")
-    say(f"实例 {idx}，输出到 {out}")
-
-    grabber = Grabber(out, quality=args.quality, log=say)
-    grabber.start()
-    proxy = CaptureProxy(args.port, grabber.feed_model, grabber.feed_detail, say)
-    proxy.start()
-    time.sleep(0.5)
-
-    try:
-        host = pick_host_ip(mumu, idx, args.port)
-    except Exception as exc:                # noqa: BLE001
-        proxy.stop()
-        print(str(exc))
-        return 2
-    say(f"宿主地址 {host}:{args.port}")
-
-    set_proxy(mumu, idx, f"{host}:{args.port}")
-
-    def restore():
-        if args.keep_proxy:
-            return
-        clear_proxy(mumu, idx)
-        say("已清除模拟器代理")
-
-    if not args.no_restart:
-        say("重启红果（ttnet 只在启动时读代理）…")
-        restart_app(mumu, idx)
-        time.sleep(6)
-
-    ok = ca_ok(mumu, idx)
-    if ok is None:
-        say("⚠ 读不到 App 的 CA 状态（可能还没启动完），先继续；抓不到再看 docs/05 §2.1")
-    if ok is False:
-        restore()
-        proxy.stop()
-        print("\n✗ 模拟器里没有本工具的 CA，无法解密 App 流量。")
-        print("  按 docs/05 §2.1 把 _ref/metasec/ca/ca.crt 装进 Conscrypt APEX 后再试；")
-        print("  装好后 App 需要重启一次（装 CA 的动作本身就要重启 App）。")
-        return 3
-
-    say("就绪：在 App 里连续点播，抓到即下、边抓边下、循环推进；Ctrl-C 结束。")
-    try:
-        # ★ 常驻循环：代理一直开着，抓到直链只投递下载、不停 MITM，
-        #   相邻几集 / 换集都能继续抓。只有 Ctrl-C 才收网。
-        while True:
-            time.sleep(3)
-            done, fail, pending = grabber.stats
-            if done or fail or pending:
-                say(f"进度：成功 {done} · 失败 {fail} · 待下 {pending}")
-    except KeyboardInterrupt:
-        print()
-    finally:
-        restore()
-        proxy.stop()
-        if not grabber.wait_idle(600):
-            say("⚠ 下载队列 10 分钟内未清空，强制结束（半截文件不会成为成品）")
-        done, fail, _ = grabber.stats
-        say(f"结束：成功 {done} · 失败 {fail}")
-    return 0
-
-
 def cmd_list(args) -> int:
     """列出某部剧的分集。
 
@@ -694,19 +604,6 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--no-thumbs", action="store_true",
                     help="不生成缩略图与索引页")
     pc.set_defaults(func=cmd_cache)
-
-    pg = sub.add_parser("grab", help="抓流：App 播一集，抓直链下载（绕开播放接口签名）")
-    pg.add_argument("--out", default="", help="下载目录")
-    pg.add_argument("--instance", type=int, default=None, help="MuMu 实例号（默认自动找运行中的）")
-    pg.add_argument("--port", type=int, default=8899, help="本地代理端口")
-    pg.add_argument("--quality", default="", help="只取指定清晰度（如 720p）；默认取最高")
-    pg.add_argument("--no-restart", action="store_true",
-                    help="不重启 App（App 已经带着代理启动过时才用）")
-    pg.add_argument("--keep-proxy", action="store_true",
-                    help="退出时保留模拟器的 http_proxy 设置")
-    # ★ 2026-11-21 删除 --all / --take-unknown：这两个开关会绕过白名单，
-    #   把推荐流与短剧一起收下，与「只下载收藏夹里的教材/合集类视频」冲突。
-    pg.set_defaults(func=cmd_grab)
 
     pl = sub.add_parser("list", help="列出某部剧的分集")
     pl.add_argument("series_id")

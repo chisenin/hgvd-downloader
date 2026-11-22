@@ -274,18 +274,12 @@
                           ToolTip.Tip="查看两源的下载历史（最近 500 条，同一成品只留一条）" />
                   <Button x:Name="BtnCache" Content="提取App缓存" Margin="6,0,0,0"
                           Classes="modern" Click="BtnCache_Click"
-                          ToolTip.Tip="从 MuMu 里的红果 App 提取已播放的视频缓存（标准 MP4）。&#10;只覆盖已缓存的内容；没缓存或刚清过缓存时请用「抓流」。" />
-                  <Button x:Name="BtnGrab" Content="抓流" Margin="6,0,0,0"
-                          Classes="modern" Click="BtnGrab_Click"
-                          ToolTip.Tip="抓流：让 App 自己取播放地址，本机拦下直链并下载。&#10;先用收藏夹+album_detail 建好教学合集白名单，只下白名单里的集；教学类不解密。&#10;★ 会临时把模拟器代理指向本机并重启红果，点「停止抓流」时自动清除代理。" />
-                  <!-- ★ 「自动抓剧」入口已**删除**（2026-11-21 复核后裁掉）。
-                       理由：它按用户输入的剧 ID 取流，**不查收藏夹、不查内容类型**，
-                       默认剧名还是「短剧_<id>」，下载环节还专门放行短剧 ——
-                       与本工具的目标口径（只下收藏夹里的教材/合集类视频）直接冲突。
-                       相关代码（AutoGrabDialog / HookGrabRunner / GrabManifest /
-                       Episode.DirectUrl 预置直链通道 / tools/metasec/hook_grab.py）
-                       已一并删除，不留「恢复入口」的路。
-                       保留「抓流」：它有白名单（收藏夹教学合集），符合目标口径。 -->
+                          ToolTip.Tip="从红果 App 提取已播放的视频缓存（标准 MP4）。&#10;只覆盖已缓存的内容，先在 App 里播放并等它下完再提取。" />
+                  <!-- ★ 「自动抓剧」「抓流」两个入口都已**删除**（2026-11-22 复核后裁掉）。
+                       理由：两者都靠外部手段拿直链，与「只下收藏夹里的教材/合集类视频」
+                       的目标口径不符，且抓流因红果接口改版（2026-11-21 22:20）
+                       已失效 —— 匹配的是旧接口 multi_video_model/*，新响应也没有数字 vid。
+                       相关代码一并删除，不留「恢复入口」的路。 -->
 
                 </StackPanel>
               </Grid>

@@ -14,7 +14,6 @@ namespace Hgvd.Avalonia;
 ///   --selftest [series_id]   加载收藏夹 → 展开分集 → 打印结果（不显示窗口）
 ///   --uitest                 界面交互自检（走真实事件绑定）
 ///   --batchtest [部数]       批量下载冒烟测试（老直连路径，接口加固后已不适合作门禁）
-///   --tlsprobe [秒数]        本地 TLS 证书链门禁（验证 MITM 能发出完整链）
 ///   --dlprobe                本地下载链路门禁（Downloader + 命名 + ffprobe 校验）
 ///   --demo <series_id> [skip] 加载一部剧并真的开始下载（窗口正常显示，便于截图）
 ///   --authcheck              只查「能不能从 MuMu 拿到授权」，打印路径/实例/cookie 字段
@@ -47,13 +46,6 @@ public partial class App : Application
                 {
                     var w = new MainWindow { ShowInTaskbar = false, Opacity = 0 };
                     RunThenShutdown(async () => await w.SelfTestAsync(p1 ?? ""));
-                    return;
-                }
-            case "--tlsprobe":
-                {
-                    var w = new MainWindow { ShowInTaskbar = false, Opacity = 0 };
-                    RunThenShutdown(async () => await w.TlsProbeAsync(
-                        int.TryParse(p1, out int ts) ? ts : 12));
                     return;
                 }
             case "--dlprobe":

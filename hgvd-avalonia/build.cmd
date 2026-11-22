@@ -40,7 +40,7 @@ set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
 set "DOTNET_NOLOGO=1"
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
-set "VER=1.6.0"
+set "VER=1.7.0"
 set "APP=hgvd-downloader-v%VER%"
 set "PKG=pkg\%APP%"
 set "LOGDIR=%USERPROFILE%\.hgv_tool"
@@ -83,18 +83,17 @@ set "HGVD_VERIFY=1"
 goto build
 
 rem ══════════════════════════════════════════════════════════════
-rem  发版门禁：界面自检 + 证书链 + 下载链路（本地可控，不依赖 App 点播）
+rem  发版门禁：界面自检 + 下载链路（本地可控，不依赖 App 点播）
 rem  ★ 验的是**目录版**（本地唯一产物形态）。
 rem  ★ 两个开关都**不靠退出码**（程序是 WinExe，--uitest/--batchtest 恒返回 0），
 rem    只能解析它们写出来的日志：
 rem      %USERPROFILE%\.hgv_tool\uitest.log    末尾 === fail=N ===
-rem      %USERPROFILE%\.hgv_tool\tlsprobe.log  末尾 === ok=1 fail=0 ===
 rem      %USERPROFILE%\.hgv_tool\dlprobe.log   末尾 === ok=1 fail=0 ===
 rem    所以先删旧日志，跑完再确认日志存在 —— 否则会拿上一次的结果冒充通过。
 rem ══════════════════════════════════════════════════════════════
 :check
 echo.
-echo [verify 1/3] UI self-test
+echo [verify 1/2] UI self-test
 if exist "%LOGDIR%\uitest.log" del /q "%LOGDIR%\uitest.log"
 "%PKG%\%APP%.exe" --uitest
 if not exist "%LOGDIR%\uitest.log" (
@@ -110,24 +109,7 @@ echo [FAIL] UI self-test has failures, see %LOGDIR%\uitest.log
 )
 
 echo.
-echo [verify 2/3] MITM certificate chain (local TLS handshake)
-if exist "%LOGDIR%\tlsprobe.log" del /q "%LOGDIR%\tlsprobe.log"
-"%PKG%\%APP%.exe" --tlsprobe 12
-if not exist "%LOGDIR%\tlsprobe.log" (
-echo [FAIL] tls probe wrote no log -- app did not start, or crashed on startup.
-    exit /b 1
-)
-findstr /C:"=== ok=1 fail=0 ===" "%LOGDIR%\tlsprobe.log" >nul
-if errorlevel 1 (
-    echo.
-echo [FAIL] certificate chain gate failed, see %LOGDIR%\tlsprobe.log
-    type "%LOGDIR%\tlsprobe.log"
-    exit /b 1
-)
-type "%LOGDIR%\tlsprobe.log"
-
-echo.
-echo [verify 3/3] Download pipeline (local small file -> download -> ffprobe)
+echo [verify 2/2] Download pipeline (local small file -> download -> ffprobe)
 if exist "%LOGDIR%\dlprobe.log" del /q "%LOGDIR%\dlprobe.log"
 "%PKG%\%APP%.exe" --dlprobe
 if not exist "%LOGDIR%\dlprobe.log" (
@@ -144,7 +126,7 @@ echo [FAIL] download pipeline gate failed, see %LOGDIR%\dlprobe.log
 type "%LOGDIR%\dlprobe.log"
 
 echo.
-echo === VERIFY PASSED: UI self-test + cert chain + download pipeline all green ===
+echo === VERIFY PASSED: UI self-test + download pipeline all green ===
 echo     Directory build: %~dp0%PKG%
 echo     Ready to release (bash tools/publish_release.sh v%VER%)
 goto :eof

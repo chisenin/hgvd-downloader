@@ -623,10 +623,6 @@ public sealed class PlaybackModel
     }
 
     /// <summary>解析一段 video_model JSON 字符串。</summary>
-    /// <remarks>
-    /// ★ 抓流拿到的 preload 响应是 ``data[vid].video_model``，外层多一层 vid；
-    ///   这里只吃最内层那段，两种入口共用同一份解析，别写第二份。
-    /// </remarks>
     public static PlaybackModel ParseModel(string raw)
     {
         var model = new PlaybackModel();

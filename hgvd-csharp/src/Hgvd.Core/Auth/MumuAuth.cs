@@ -477,7 +477,7 @@ public static class MumuAuth
 
     /// <summary>
     /// adb 兼容执行（雷电）：命令与 MuMu 那条完全一样（cat prefs / am start / settings put），
-    /// 所以上层的登录态读取、抓流开关机、代理设置都能原样跑。
+    /// 所以上层的登录态读取、App 启动等调用都能原样跑。
     /// ★ 先试 root（读 <c>/data/data/&lt;pkg&gt;</c> 必须 root），失败再退回普通 shell。
     /// </summary>
     private static string ShViaAdb(string cmd, int timeoutMs)

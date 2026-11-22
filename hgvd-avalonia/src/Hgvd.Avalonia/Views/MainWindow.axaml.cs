@@ -21,7 +21,6 @@ using Hgvd.Avalonia.ViewModels;
 using Hgvd.Core;
 using Hgvd.Core.Api;
 using Hgvd.Core.Engine;
-using Hgvd.Core.Grab;
 using Hgvd.Xqd;
 using Hgvd.Xqd.Api;
 
@@ -177,7 +176,6 @@ public partial class MainWindow : Window
         BtnRescanCamps.IsVisible = xqd;
         BtnManualToggle.IsVisible = xqd;
         BtnCache.IsVisible = !xqd;      // 提取 App 缓存只对红果有意义
-        BtnGrab.IsVisible = !xqd;       // 抓流同理：走红果的播放接口
         UpdateQueueSummary();
         LblHint.IsVisible = !xqd;
 
@@ -1452,103 +1450,6 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    /// <summary>抓流两态按钮：启动后**常驻**（边抓边下、循环推进），再点一次才停止并清代理。</summary>
-    /// <remarks>
-    /// ★ 与「提取App缓存」互补：缓存只覆盖播过的内容；抓流能在 App 点播时
-    ///   顺带拿到相邻几集，且清过缓存照样能用。
-    /// ★ 2026-11-21 用户定的流程：抓流是常驻的直链探测器 —— 抓到本集直链就下，
-    ///   同时继续探测下一集、循环推进，**只有点「停止抓流」或「暂停」才停**。
-    ///   抓到直链绝不再停代理（否则相邻几集 / 换集全抓不到）。
-    /// ★ 暂停由统一的「下载」按钮负责（TogglePause 会调 _grab.Pause/Resume）。
-    /// ★ 教学类不加密，GrabRunner 的下载不会走 DRM 分支。
-    /// </remarks>
-    private GrabRunner _grab;
-
-    private void BtnGrab_Click(object sender, RoutedEventArgs e)
-    {
-        if (_grab != null)
-        {
-            var old = _grab;
-            _grab = null;
-            old.Stop();                 // 手动停止 = 停代理 + 取消在途下载
-            BtnGrab.Content = "抓流";
-            BtnGrab.IsEnabled = true;
-            // 抓流会话也会占用主按钮的暂停态，停了就复位
-            if (_paused) { _paused = false; _hgGate.Resume(); _xqd.SetPaused(false); }
-            BtnRun.Content = "下载";
-            BtnRun.IsEnabled = true;
-            LblStatus.Text = "就绪";
-            ShowBanner($"抓流已停止（成功 {old.Done} · 失败 {old.Failed}），模拟器代理正在后台清除", BannerKind.Info);
-            Log("✓ 抓流已停止，代理在后台清除");
-            return;
-        }
-
-        StartGrabSession();
-    }
-
-    /// <summary>启动一轮抓流会话（抓流按钮与「下载无直链时自动转抓流」共用）。</summary>
-    private void StartGrabSession()
-    {
-        var runner = new GrabRunner(_svc, Log, (job, res) =>
-        {
-            // 成品记入两源共用的历史窗口
-            RecordHistory("红果", job.Book, job.Index.ToString("000"), "",
-                          job.Vid, res.OutPath, res.Size, job.Duration,
-                          res.Ok ? "done" : "failed");
-            Dispatcher.UIThread.Post(UpdateQueueSummary);
-        });
-        runner.CaptureStopped += (r, reason) => Dispatcher.UIThread.Post(() =>
-        {
-            if (!ReferenceEquals(_grab, r)) return;
-            _grab = null;
-            BtnGrab.Content = "抓流";
-            BtnGrab.IsEnabled = true;
-            if (_paused) { _paused = false; _hgGate.Resume(); _xqd.SetPaused(false); }
-            BtnRun.Content = "下载";
-            BtnRun.IsEnabled = true;
-            LblStatus.Text = "就绪";
-            Log($"✓ 抓流会话结束：成功 {r.Done} · 失败 {r.Failed}");
-        });
-        _grab = runner;
-        BtnGrab.IsEnabled = false;
-        BtnGrab.Content = "停止抓流";
-        ShowBanner("正在启动抓流（会重启红果，请稍候）…", BannerKind.Info);
-        _ = StartGrabAsync(runner);
-    }
-
-    private async Task StartGrabAsync(GrabRunner runner)
-    {
-        try
-        {
-            await runner.StartAsync();
-            if (!ReferenceEquals(_grab, runner) || !runner.CaptureRunning) return;
-            BtnGrab.IsEnabled = true;
-            BtnGrab.Content = "停止抓流";
-            // ★ 抓流会话占用主按钮：显示「暂停」，用户点它 → TogglePause 同时暂停抓流下载
-            _downloading = true;
-            _paused = false;
-            BtnRun.IsEnabled = true;
-            BtnRun.Content = "暂停";
-            LblStatus.Text = "抓流中（边抓边下）";
-            ShowBanner("抓流已就绪：在 App 里点播，抓到即下、边抓边下、循环推进；"
-                     + "点「暂停」暂停下载，点「停止抓流」结束。", BannerKind.Info);
-        }
-        catch (Exception ex)
-        {
-            runner.Stop();
-            if (ReferenceEquals(_grab, runner)) _grab = null;
-            BtnGrab.Content = "抓流";
-            BtnGrab.IsEnabled = true;
-            _downloading = false;
-            _paused = false;
-            BtnRun.Content = "下载";
-            BtnRun.IsEnabled = true;
-            LblStatus.Text = "就绪";
-            Log("✗ 抓流启动失败：" + ex.Message);
-            ShowBanner("抓流启动失败：" + ex.Message, BannerKind.Err);
-        }
-    }
-
     private async void BtnCache_Click(object sender, RoutedEventArgs e)
     {
         BtnCache.IsEnabled = false;
@@ -1652,24 +1553,13 @@ public partial class MainWindow : Window
         UpdateQueueSummary();
         Log($"—— 直连完成 {res.Ok}，失败 {res.Fail}");
 
-        // ★ 下载流程（用户 2026-11-21 定的）：有直链直接下 / 无直链自动抓流。
-        //   res.Aborted = 红果播放接口连续空 body（网关校验 X-Helios / X-Medusa，宿主机算不出）
-        //   ⇒ 不等不重试，直接转入常驻抓流：App 代签取直链，我们边抓边下、循环推进。
-        //   ★ 只有目标里有红果行、且当前没在抓流时才转；兴趣岛行不受影响。
-        bool hasHongguo = targets.Any(t => !t.IsXqd && t.IsEpisode);
-        if (res.Aborted && hasHongguo && _grab == null)
-        {
-            ShowBanner("播放接口拿不到直链（网关校验播放签名），已自动转入抓流。"
-                     + "\n请在红果 App 里连续点播要下载的集：抓到即下、边抓边下、循环推进；"
-                     + "点「暂停」暂停、点「停止抓流」结束。", BannerKind.Info);
-            Log("· 直连无直链 → 自动转入抓流（App 代签取址，常驻循环）");
-            StartGrabSession();
-            return;
-        }
+        // ★ 抓流已裁掉（2026-11-22）：无直链不再自动转抓流，只给出提示。
+        //   res.Aborted = 红果播放接口连续空 body（网关校验 X-Helios / X-Medusa，宿主机算不出）。
         if (res.Aborted)
             ShowBanner("播放接口连续多次返回空 body，已停止本批。"
-                     + "\n★ 2026-11-21 起网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；"
-                     + "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」。", BannerKind.Err);
+                     + "\n★ 网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；"
+                     + "不是限流、不是网络，等再久也不会恢复。可先在 App 里播放，"
+                     + "再用「提取App缓存」取出已下完的视频。", BannerKind.Err);
     }
 
     /// <summary>统一的运行态 UI：下载 ↔ 暂停 ↔ 继续（两源同一个按钮）。</summary>
@@ -1684,17 +1574,15 @@ public partial class MainWindow : Window
         _xqd.SetPaused(false);
     }
 
-    /// <summary>一个按钮管三处：红果直连走 PauseGate，兴趣岛走 XqdQueue，抓流走 GrabRunner。</summary>
+    /// <summary>一个按钮管两处：红果直连走 PauseGate，兴趣岛走 XqdQueue。</summary>
     private void TogglePause()
     {
         _paused = !_paused;
         if (_paused) _hgGate.Pause(); else _hgGate.Resume();
         _xqd.SetPaused(_paused);
-        // ★ 抓流会话的暂停：只暂停下载消费、代理继续探测，恢复时无需重启 App
-        if (_paused) _grab?.Pause(); else _grab?.Resume();
         BtnRun.Content = _paused ? "继续" : "暂停";
         LblStatus.Text = _paused ? "已暂停（进度与分片保留）" : "下载中";
-        Log(_paused ? "已暂停（两源 + 抓流同时生效；进度/分片保留）" : "已继续");
+        Log(_paused ? "已暂停（两源同时生效；进度/分片保留）" : "已继续");
     }
 
     /// <summary>

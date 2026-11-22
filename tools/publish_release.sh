@@ -89,7 +89,6 @@ if [ "${HGVD_SKIP_VERIFY:-0}" != "1" ]; then
     }
 
     check_log "uitest.log"    "=== fail=0 ===" ""          "界面自检"
-    check_log "tlsprobe.log"  "=== ok=1 fail=0 ===" ""     "MITM 证书链"
     check_log "dlprobe.log"   "=== ok=1 fail=0 ===" ""     "下载链路"
     echo
 else

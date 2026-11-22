@@ -408,7 +408,6 @@ public partial class MainWindow
         Check("切到兴趣岛 → 左栏换成营列表", LstCamps.IsVisible && !LstShelf.IsVisible,
             $"营列表={LstCamps.IsVisible} 收藏夹={LstShelf.IsVisible}");
         Check("切到兴趣岛 → 隐藏红果专属的「提取App缓存」", !BtnCache.IsVisible);
-        Check("切到兴趣岛 → 隐藏红果专属的「抓流」", !BtnGrab.IsVisible);
         Check("切到兴趣岛 → 授权状态切到兴趣岛",
             (LblAuth.Text ?? "").StartsWith("兴趣岛", StringComparison.Ordinal),
             LblAuth.Text ?? "");
@@ -477,16 +476,16 @@ public partial class MainWindow
         TabHongguo.IsChecked = true;
         await Task.Delay(300);
         Check("切回红果 → 收藏夹恢复", LstShelf.IsVisible && !LstCamps.IsVisible);
-        Check("切回红果 → 抓流按钮恢复", BtnGrab.IsVisible && BtnCache.IsVisible);
-        // ★ 护栏：「自动抓剧」能力必须**不存在**（2026-11-21 复核后裁掉）。
-        //   它按用户输入的剧 ID 取流，不查收藏夹、不查内容类型，默认剧名还是「短剧_<id>」，
-        //   与目标口径（只下收藏夹里的教材/合集类视频）直接冲突。
-        //   ⇒ 入口、对话框、HookGrabRunner、GrabManifest、Episode.DirectUrl 通道全部删除。
+        Check("切回红果 → 提取App缓存按钮恢复", BtnCache.IsVisible);
+        // ★ 护栏：「自动抓剧」「抓流」能力必须**都不存在**（2026-11-22 复核后裁掉）。
+        //   两者都靠外部手段拿直链，与「只下收藏夹里的教材/合集类视频」的目标口径冲突；
+        //   且红果接口 2026-11-21 22:20 改版后抓流已失效（匹配旧接口、新响应无数字 vid）。
+        //   ⇒ 入口、对话框、GrabRunner/CaptureProxy/MitmCa、Episode.DirectUrl 通道全部删除。
         //   ★ 若将来要重新引入「按剧取直链」，必须先让它走**白名单**（收藏夹教学合集），
         //     否则就是把这个越界口子重新打开。
-        Check("自动抓剧能力已裁掉（界面里没有这个入口）",
+        Check("自动抓剧与抓流能力已裁掉（界面里没有这两个入口）",
             !this.GetVisualDescendants().OfType<Button>()
-                .Any(b => b.Name == "BtnAutoGrab"));
+                .Any(b => b.Name == "BtnAutoGrab" || b.Name == "BtnGrab"));
         Check("切回红果 → 兴趣岛的条目仍在同一张清单里",
             EpisodeRows.Count(r => r.IsXqd && r.IsEpisode) == xqdRows,
             $"{EpisodeRows.Count(r => r.IsXqd && r.IsEpisode)} 行");
@@ -799,10 +798,9 @@ public partial class MainWindow
 
     // ──────────────────────────────────────────────────────────── 发版门禁探针
     // ★ 播放接口加固后，无人值守拿不到有效直链（直链带 100 秒时间戳），
-    //   所以端到端下载门禁拆成两段本地可控的验证：
-    //     TlsProbeAsync     —— MITM 证书链（原 _ref/csharp 少换行那个坑）
+    //   所以端到端下载门禁用本地可控的验证：
     //     DownloadProbeAsync —— 下载引擎 + 命名 + ffprobe 校验
-    //   真实点播抓流（需人在 App 里点）保留为手工验证。
+    //   ★ 原 TlsProbeAsync（MITM 证书链）随抓流一起裁掉（2026-11-22）。
 
     private static void ProbeLog(string report, string line)
     {
@@ -811,68 +809,6 @@ public partial class MainWindow
             File.AppendAllText(report, line + "\n", Encoding.UTF8);
         }
         catch { }
-    }
-
-    /// <summary>本地 TLS 握手探针：验证证书链能发到客户端（Verification: OK 的等价检查）。</summary>
-    public async Task TlsProbeAsync(int seconds = 12)
-    {
-        string report = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".hgv_tool", "tlsprobe.log");
-        try { Directory.CreateDirectory(Path.GetDirectoryName(report)!); File.Delete(report); } catch { }
-
-        int port = 18443;
-        ProbeLog(report, "═══ TLS 证书链门禁 ═══");
-        try
-        {
-            var ctx = Hgvd.Core.Grab.MitmCa.ContextFor("hgvd-selftest.local");
-            if (ctx == null) { ProbeLog(report, "✗ 证书上下文为空"); return; }
-
-            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
-            listener.Start();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
-
-            var server = Task.Run(async () =>
-            {
-                try
-                {
-                    using var client = await listener.AcceptTcpClientAsync(cts.Token);
-                    using var tls = new System.Net.Security.SslStream(client.GetStream(), false);
-                    await tls.AuthenticateAsServerAsync(
-                        new System.Net.Security.SslServerAuthenticationOptions
-                        {
-                            ServerCertificateContext = ctx,
-                            ClientCertificateRequired = false,
-                            CertificateRevocationCheckMode =
-                                System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck,
-                            ApplicationProtocols = new List<System.Net.Security.SslApplicationProtocol>
-                            {
-                                System.Net.Security.SslApplicationProtocol.Http11,
-                            },
-                        }, cts.Token);
-                    ProbeLog(report, $"✓ 握手成功 {tls.SslProtocol}");
-                }
-                catch (Exception ex) { ProbeLog(report, "✗ " + ex.GetType().Name + ": " + ex.Message); }
-            });
-
-            // 客户端：不校验证书（我们验的是「服务端能否发出完整链」，链本身用 openssl 单独验）
-            using (var client = new System.Net.Sockets.TcpClient())
-            {
-                await client.ConnectAsync(System.Net.IPAddress.Loopback, port, cts.Token);
-                using var tls = new System.Net.Security.SslStream(client.GetStream(), false,
-                    (_, _, _, _) => true);
-                await tls.AuthenticateAsClientAsync("hgvd-selftest.local");
-                ProbeLog(report, "✓ 客户端握手完成");
-            }
-            await server;
-            listener.Stop();
-            ProbeLog(report, "=== ok=1 fail=0 ===");
-        }
-        catch (Exception ex)
-        {
-            ProbeLog(report, "✗ 探针异常：" + ex.Message);
-            ProbeLog(report, "=== ok=0 fail=1 ===");
-        }
     }
 
     /// <summary>下载链路门禁：本地 http 小文件 → Downloader → ffprobe 校验时长。</summary>
@@ -923,7 +859,7 @@ public partial class MainWindow
                 catch { }
             });
 
-            string outPath = Path.Combine(tmp, "抓流门禁样本.001.本地测试.mp4");
+            string outPath = Path.Combine(tmp, "下载门禁样本.001.本地测试.mp4");
             var req = new DownloadRequest
             {
                 Url = "http://127.0.0.1:18444/probe.mp4",
