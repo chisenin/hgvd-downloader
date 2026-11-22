@@ -118,7 +118,7 @@ public sealed class EpisodeRow : NotifyBase
     {
         "已完成" or "已存在" => "#EAF7EE",
         "下载中" or "解析中" => "#E8F0FA",
-        "封装中" or "校验中" or "排队中" => "#FDF6E7",
+        "封装中" or "校验中" or "排队中" or "解密中" => "#FDF6E7",
         "已暂停" => "#FDF1E3",
         "失败" => "#FDEEEE",
         _ => "#EEF2F8",
@@ -128,7 +128,7 @@ public sealed class EpisodeRow : NotifyBase
     {
         "已完成" or "已存在" => "#B8E0C4",
         "下载中" or "解析中" => "#B9CCE4",
-        "封装中" or "校验中" or "排队中" => "#EBD9A8",
+        "封装中" or "校验中" or "排队中" or "解密中" => "#EBD9A8",
         "已暂停" => "#E8C79A",
         "失败" => "#F0C2C2",
         _ => "#DCE3EE",

@@ -40,7 +40,7 @@ set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
 set "DOTNET_NOLOGO=1"
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
-set "VER=1.8.0"
+set "VER=1.9.0"
 set "APP=hgvd-downloader-v%VER%"
 set "PKG=pkg\%APP%"
 set "LOGDIR=%USERPROFILE%\.hgv_tool"
@@ -116,7 +116,7 @@ echo [FAIL] UI self-test has failures, see %LOGDIR%\uitest.log
 )
 
 echo.
-echo [verify 2/2] Download pipeline (local small file -> download -> ffprobe)
+echo [verify 2/2] Download pipeline: local small file download then ffprobe
 if exist "%LOGDIR%\dlprobe.log" del /q "%LOGDIR%\dlprobe.log"
 "%PKG%\%APP%.exe" --dlprobe
 if not exist "%LOGDIR%\dlprobe.log" (
@@ -139,7 +139,7 @@ echo     Ready to release (bash tools/publish_release.sh v%VER%)
 goto :eof
 
 :selftest
-echo [selftest] headless: shelf -> episodes -> playback url
+echo [selftest] headless: shelf, episodes, playback url
 "%DOTNET%" run --project "%PROJ%" -c Debug --no-restore -- --selftest || goto :err
 goto :eof
 

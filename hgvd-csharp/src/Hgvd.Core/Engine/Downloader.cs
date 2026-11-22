@@ -24,6 +24,13 @@ public sealed class DownloadRequest
     ///   （「由于连接方在一段时间后没有正确答复…」），换 backup_url 就好了。
     /// </summary>
     public string BackupUrl = "";
+
+    /// <summary>
+    /// 自定义 HTTP 客户端（可选）。不传则用 <see cref="Net.Client"/>。
+    /// ★ 兴趣岛直链要走 okhttp UA + 宽松证书链（CDN 偶有证书不全的节点），
+    ///   由调用方传 XqdNet 的客户端；引擎不再各建一套网络层。
+    /// </summary>
+    public HttpClient Client;
 }
 
 /// <summary>下载结果。</summary>
@@ -58,14 +65,15 @@ public static class Downloader
     /// <summary>下载一集（支持断点续传、进度回调、ffprobe 校验、CENC 解密）。</summary>
     public static async Task<DownloadResult> DownloadAsync(
         DownloadRequest req, DownloadCallbacks cb = null,
-        CancellationToken ct = default, PauseGate gate = null)
+        CancellationToken ct = default, IPauseToken gate = null)
     {
         cb ??= new DownloadCallbacks();
+        var http = req.Client ?? Net.Client;
         var outFull = Path.GetFullPath(req.OutPath);
         Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
         string part = outFull + ".part";
 
-        cb.OnPhase?.Invoke("下载");
+        cb.OnPhase?.Invoke(JobState.Downloading);
 
         long total = 0;
         long have = 0;
@@ -91,7 +99,7 @@ public static class Downloader
                 // ★★ ResponseHeadersRead：收到响应头就返回，流式读 body。
                 //   默认的 ResponseContentRead 会**缓冲完整个响应**才返回 —— 这就是
                 //   「拿到大小到进度条启动」卡十几秒的原因：SendAsync 在后台缓冲整集。
-                resp = await Net.Client.SendAsync(httpReq,
+                resp = await http.SendAsync(httpReq,
                     HttpCompletionOption.ResponseHeadersRead, ct);
                 cb.OnDiag?.Invoke($"GET 响应头 {swGet.ElapsedMilliseconds}ms");
             }
@@ -111,7 +119,7 @@ public static class Downloader
                     have = new FileInfo(part).Length;
                     alt.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
                 }
-                resp = await Net.Client.SendAsync(alt,
+                resp = await http.SendAsync(alt,
                     HttpCompletionOption.ResponseHeadersRead, ct);
                 cb.OnDiag?.Invoke($"备用 GET 响应头 {swGet.ElapsedMilliseconds}ms");
             }
@@ -127,12 +135,23 @@ public static class Downloader
             {
                 resp.EnsureSuccessStatusCode();
                 total = resp.Content.Headers.ContentLength ?? 0;
+
+                // ★ 服务器不认 Range（回 200 而不是 206）：必须清掉旧 .part。
+                //   否则会把完整流追加在半截文件后面，产出「双份 / 损坏」成品。
+                //   （兴趣岛直链 CDN、部分对象存储都可能忽略 Range。）
+                if (have > 0 && resp.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                {
+                    have = 0;
+                    try { File.Delete(part); } catch { }
+                }
                 if (total > 0 && have > 0) total += have;
 
-                await using var fs = new FileStream(part, FileMode.Append, FileAccess.Write);
+                await using var fs = new FileStream(part,
+                    have > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write);
                 await using var src = await resp.Content.ReadAsStreamAsync(ct);
                 var buf = new byte[262144];
                 var sw = Stopwatch.StartNew();
+                long baseDone = have;
                 long done = have;
                 int n;
                 bool firstByte = true;
@@ -147,7 +166,8 @@ public static class Downloader
                     if (gate != null) await gate.WaitAsync(ct);
                     await fs.WriteAsync(buf.AsMemory(0, n), ct);
                     done += n;
-                    double speed = sw.Elapsed.TotalSeconds > 0 ? done / sw.Elapsed.TotalSeconds : 0;
+                    double speed = sw.Elapsed.TotalSeconds > 0
+                        ? (done - baseDone) / sw.Elapsed.TotalSeconds : 0;
                     cb.OnProgress?.Invoke(done, total, speed);
                 }
                 await fs.FlushAsync(ct);
@@ -175,7 +195,7 @@ public static class Downloader
         // ★ CENC 解密
         if (!string.IsNullOrEmpty(req.ContentKey))
         {
-            cb.OnPhase?.Invoke("解密");
+            cb.OnPhase?.Invoke(JobState.Decrypting);
             string dec = outFull + ".dec.mp4";
             if (!await DecryptAsync(outFull, dec, req.ContentKey, ct))
             {
@@ -196,7 +216,7 @@ public static class Downloader
         }
 
         // ★ 时长校验
-        cb.OnPhase?.Invoke("校验");
+        cb.OnPhase?.Invoke(JobState.Verifying);
         double dur = Util.ProbeDuration(outFull);
         if (dur <= 0)
             return new DownloadResult
@@ -206,7 +226,7 @@ public static class Downloader
             };
         if (req.ExpectDuration > 0)
         {
-            double tol = Math.Max(3.0, req.ExpectDuration * 0.02);
+            double tol = ExistingArtifact.Tolerance(MediaSource.Hongguo, req.ExpectDuration);
             if (Math.Abs(dur - req.ExpectDuration) > tol)
                 return new DownloadResult
                 {

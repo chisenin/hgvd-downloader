@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Hgvd.Core;
+using Hgvd.Core.Download;
 using Hgvd.Xqd.Engine;
 
 namespace Hgvd.Xqd;
@@ -217,47 +219,91 @@ public sealed class XqdQueue
     }
 
     /// <summary>
-    /// 按磁盘上已有的成品重判状态。
-    /// ★ 口径与红果对齐：文件 ≥1MB 且（有预期时长时）ffprobe 时长对得上才算「已存在」。
-    ///   上游只看 10KB，截断的成品会被当成完整文件直接跳过 —— 这里宁可重下。
+    /// 按磁盘上已有的成品重判状态（同步入口，回归/无 UI 上下文用）。
+    /// ★ 内部走 <see cref="RescanAsync"/>（全链 ConfigureAwait(false)，阻塞等待不会死锁）。
     /// </summary>
-    public int Rescan()
+    public int Rescan() => RescanAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// 按磁盘上已有的成品重判状态。
+    /// ★ 口径与红果对齐：文件 ≥1MB 且（有预期时长时）ffprobe 时长对得上才算「已存在」，
+    ///   判定本身走 <see cref="Hgvd.Core.ExistingArtifact"/>（容差按源标定）。
+    ///   上游只看 10KB，截断的成品会被当成完整文件直接跳过 —— 这里宁可重下。
+    /// ★ ffprobe 4 路并行（与红果预检同口径）：100 条已存在的清单从 ~4.5s 降到 ~1s，
+    ///   而且本方法是异步的，混合下载开始时不会把界面卡住。
+    /// </summary>
+    public async Task<int> RescanAsync()
     {
+        List<XqdJob> snapshot;
+        lock (_gate) snapshot = _jobs.ToList();
+
+        // ① 先做不花 IO 的判定；需要 ffprobe 的挑出来并行探测
+        // ★ 探测是多线程写同一张表 → 必须并发容器（普通 Dictionary 会写坏）
+        var judged = new System.Collections.Concurrent.ConcurrentDictionary<XqdJob, (bool Exists, long Size)>();
+        var needProbe = new List<(XqdJob Job, long Size)>();
+        foreach (var j in snapshot)
+        {
+            bool exists = false;
+            long size = 0;
+            try
+            {
+                if (File.Exists(j.OutPath))
+                {
+                    size = new FileInfo(j.OutPath).Length;
+                    if (j.State == XqdState.Done)
+                    {
+                        // 自己下完的：只确认文件还在，不重复 probe（省 IO）
+                        exists = true;
+                    }
+                    else if (size >= XqdDedupe.MinBytes && j.ExpectDuration > 0)
+                    {
+                        needProbe.Add((j, size));          // ② 交给并行探测
+                    }
+                    else
+                    {
+                        exists = XqdDedupe.IsExisting(size, 0, 0);
+                    }
+                }
+            }
+            catch { }
+            judged[j] = (exists, size);
+        }
+
+        if (needProbe.Count > 0)
+        {
+            using var sem = new SemaphoreSlim(4);
+            var tasks = needProbe.Select(async item =>
+            {
+                await sem.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    double probed = await Task.Run(
+                        () => Hgvd.Core.Util.ProbeDuration(item.Job.OutPath)).ConfigureAwait(false);
+                    judged[item.Job] = (XqdDedupe.IsExisting(item.Size, item.Job.ExpectDuration, probed),
+                                        item.Size);
+                }
+                catch
+                {
+                    // 单条探测失败：不判已存在（宁可重下），不影响其它条
+                    judged[item.Job] = (false, item.Size);
+                }
+                finally { sem.Release(); }
+            }).ToList();
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+
         int n = 0;
         lock (_gate)
         {
-            foreach (var j in _jobs)
+            foreach (var j in snapshot)
             {
-                bool exists = false;
-                long size = 0;
-                try
-                {
-                    if (File.Exists(j.OutPath))
-                    {
-                        size = new FileInfo(j.OutPath).Length;
-                        if (j.State == XqdState.Done)
-                        {
-                            // 自己下完的：只确认文件还在，不重复 probe（省 IO）
-                            exists = true;
-                        }
-                        else if (size >= XqdDedupe.MinBytes && j.ExpectDuration > 0)
-                        {
-                            double probed = Hgvd.Core.Util.ProbeDuration(j.OutPath);
-                            exists = XqdDedupe.IsExisting(size, j.ExpectDuration, probed);
-                        }
-                        else
-                        {
-                            exists = XqdDedupe.IsExisting(size, 0, 0);
-                        }
-                    }
-                }
-                catch { }
-
-                if (exists)
+                if (!_jobs.Contains(j)) continue;          // 探测期间被移出清单
+                var v = judged[j];
+                if (v.Exists)
                 {
                     if (j.State != XqdState.Done && j.State != XqdState.Exists) n++;
                     j.State = XqdState.Exists;
-                    j.Size = size;
+                    j.Size = v.Size;
                     j.Message = "";
                 }
                 else if (j.State == XqdState.Exists)
@@ -319,9 +365,12 @@ public sealed class XqdQueue
     /// <summary>
     /// 跑一批任务。targets 为 null 时跑「所有待下载 / 失败」的。
     /// 返回 (成功, 失败, 跳过)。
+    /// <paramref name="queue"/>：与红果共用的顶层工位池；传 null 时用本队列自己的课间并发。
+    /// <paramref name="pause"/>：与红果共用的暂停闸门；传 null 时用本队列自己的 XqdControl。
     /// </summary>
     public async Task<(int ok, int fail, int skip)> RunAsync(
-        IEnumerable<XqdJob> targets, CancellationToken ct)
+        IEnumerable<XqdJob> targets, CancellationToken ct,
+        DownloadQueueCore queue = null, IPauseToken pause = null)
     {
         if (_running) return (0, 0, 0);
 
@@ -336,13 +385,13 @@ public sealed class XqdQueue
         }
 
         _running = true;
-        _control = new XqdControl();
+        _control = new XqdControl(pause ?? queue?.Pause);
         int ok = 0, fail = 0, skip = 0;
         int workers = Math.Max(1, Options.LessonWorkers);
 
         Log?.Invoke($"开始下载 {list.Count} 节（课间并发 {workers}，分片并发 {Options.SegmentWorkers}）");
 
-        using var gate = new SemaphoreSlim(workers);
+        using var lessonGate = new SemaphoreSlim(workers);
         var tasks = new List<Task>();
 
         // ★ 整个「排队 + 跑」都必须在 try 里：
@@ -352,7 +401,23 @@ public sealed class XqdQueue
         {
             foreach (var job in list)
             {
-                await gate.WaitAsync(ct).ConfigureAwait(false);
+                await lessonGate.WaitAsync(ct).ConfigureAwait(false);
+                DownloadQueueCore.SlotLease lease = null;
+                try
+                {
+                    if (queue != null) lease = await queue.AcquireAsync(ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    lessonGate.Release();
+                    throw;
+                }
+                if (ct.IsCancellationRequested)
+                {
+                    lease?.Dispose();
+                    lessonGate.Release();
+                    break;
+                }
                 tasks.Add(Task.Run(async () =>
                 {
                     try
@@ -364,7 +429,8 @@ public sealed class XqdQueue
                     }
                     finally
                     {
-                        gate.Release();
+                        lease?.Dispose();
+                        lessonGate.Release();
                     }
                 }, ct));
             }

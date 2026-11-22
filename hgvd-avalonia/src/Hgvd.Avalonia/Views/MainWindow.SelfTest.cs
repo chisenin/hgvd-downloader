@@ -391,8 +391,7 @@ public partial class MainWindow
                                         : "有余量");
 
         // ⑫ ★ 双源共用清单 + 按需授权（2026-11-21 第二版）
-        //    ★ 用临时存储目录，绝不把测试清单写进用户真实的 ~/.hgv_tool/xqd/jobs.json；
-        //      _testMode 同时禁掉课表自动发现（不联网）。
+        //    ★ 用临时存储目录，绝不把测试清单写进用户真实的 ~/.hgv_tool/downloads.json；        //      _testMode 同时禁掉课表自动发现（不联网）。
         string xqdRoot = Path.Combine(Path.GetTempPath(), "hgvd_xqd_uitest");
         try { if (Directory.Exists(xqdRoot)) Directory.Delete(xqdRoot, true); } catch { }
         UseXqdStoreForTest(xqdRoot);
@@ -508,10 +507,14 @@ public partial class MainWindow
             _xqd.Jobs.Count == 1, $"{_xqd.Jobs.Count} 个任务");
 
         // 红果清单：落盘 → 恢复（临时文件，不碰用户的 queue.json）
-        string qpath = Path.Combine(Path.GetTempPath(), "hgvd_queue_uitest", "queue.json");
+        // ★ 用一个全新的临时目录：统一清单改成 downloads.json 后，
+        //   只有「目录里没有 downloads.json」时才会走旧 queue.json 的一次性迁移。
+        string qdir = Path.Combine(Path.GetTempPath(),
+            "hgvd_queue_uitest_" + Guid.NewGuid().ToString("N")[..8]);
+        string qpath = Path.Combine(qdir, "queue.json");
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(qpath));
+            Directory.CreateDirectory(qdir);
             File.WriteAllText(qpath, """
             [
               {"SeriesId":"uitest_s1","SeriesTitle":"恢复测试剧","ShortDrama":false,
@@ -523,10 +526,11 @@ public partial class MainWindow
             """);
         }
         catch { }
+        UseHongguoQueueStoreForTest(qpath);
         ReloadHongguoQueueForTest();
         var restoredRows = EpisodeRows.Where(r => r.IsEpisode && !r.IsXqd).ToList();
         bool restoredHeader = EpisodeRows.Any(r => r.IsGroupHeader && r.SeriesId == "uitest_s1");
-        Check("红果清单：从 queue.json 恢复（两集 + 分组标题）",
+        Check("红果清单：从旧 queue.json 迁移恢复（两集 + 分组标题）",
             restoredRows.Count == 2 && restoredHeader,
             $"{restoredRows.Count} 行，标题行={restoredHeader}");
         Check("红果清单：恢复后一律「待下载」（已存在由下载时判）",
@@ -567,7 +571,7 @@ public partial class MainWindow
     /// （清单解析 → 分片下载 → ffmpeg 合成 → ffprobe 校验）并打印成品信息。
     ///
     /// ★ 用法：<c>hgvd-downloader-vX.exe --xqdtest &lt;url&gt; [课名]</c>
-    /// ★ 产物落在系统临时目录，用临时清单存储 —— 不碰用户的下载目录和真实 jobs.json。
+    /// ★ 产物落在系统临时目录，用临时清单存储 —— 不碰用户的下载目录和真实 downloads.json。
     /// ★ 结果写 <c>~/.hgv_tool/xqdtest.log</c>（末行 <c>=== pass=1 ===</c>），供发版门禁读取。
     /// </summary>
     public async Task XqdTestAsync(string url, string title = "")
@@ -745,7 +749,7 @@ public partial class MainWindow
 
     /// <summary>
     /// 开发期演示（--xqdui）：停在兴趣岛页并填几条示例，便于截图核对布局。
-    /// ★ 用系统临时目录里的独立清单，不碰用户真实的 jobs.json / 下载目录。
+    /// ★ 用系统临时目录里的独立清单，不碰用户真实的 downloads.json / 下载目录。
     /// </summary>
     internal void PrepareXqdDemoForShot()
     {

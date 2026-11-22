@@ -31,7 +31,12 @@ public static class Paths
     public static string DevicesPath => Path.Combine(ToolDir, "devices.json");
     public static string ConfigPath => Path.Combine(ToolDir, "config.json");
     public static string HistoryPath => Path.Combine(ToolDir, "history.json");
-    /// <summary>红果侧的下载清单（重启恢复；与兴趣岛的 xqd\jobs.json 并列）。</summary>
+    /// <summary>
+    /// 两源共用的下载清单（重启恢复）。红果 / 兴趣岛各写自己的 section。
+    /// ★ 旧的 queue.json 与 xqd\jobs.json 只作为一次性迁移来源，不再作为主存储。
+    /// </summary>
+    public static string ManifestPath => Path.Combine(ToolDir, "downloads.json");
+    /// <summary>红果旧清单（仅迁移用）。</summary>
     public static string QueuePath => Path.Combine(ToolDir, "queue.json");
     /// <summary>
     /// 下载进度记账（开始/完成/失败/直链），按成品路径索引。

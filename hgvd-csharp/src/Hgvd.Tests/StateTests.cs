@@ -179,16 +179,26 @@ public static class StateTests
         Check("去重：长课按 0.5% 容差（4000s ±15s）",
             XqdDedupe.IsExisting(2 * mb, 4000, 4015) && !XqdDedupe.IsExisting(2 * mb, 4000, 4030));
         Check("去重：ffprobe 读不出时长 → 回退体积门槛", XqdDedupe.IsExisting(2 * mb, 4000, 0));
+        // ★ 2026-11-22 统一入口：同一套结构，容差按源标定
+        Check("去重：红果按接口标称 2%/3s 容差",
+            ExistingArtifact.IsExisting(2 * mb, 100, 102.5, MediaSource.Hongguo)
+            && !ExistingArtifact.IsExisting(2 * mb, 100, 104, MediaSource.Hongguo));
+        Check("去重：兴趣岛按 EXTINF 0.5%/1s 容差",
+            !ExistingArtifact.IsExisting(2 * mb, 100, 102, MediaSource.Xiqudao));
     }
 
     private static void Filter()
     {
         Check("筛选：待下载", EpViewFilter.Match("待下载", EpViewFilter.Pending)
             && !EpViewFilter.Match("下载中", EpViewFilter.Pending));
-        Check("筛选：下载中（含暂停/封装/校验）",
+        Check("筛选：下载中（含暂停/封装/校验/解密）",
             EpViewFilter.Match("封装中", EpViewFilter.Running)
+            && EpViewFilter.Match("解密中", EpViewFilter.Running)
             && EpViewFilter.Match("已暂停", EpViewFilter.Running)
             && !EpViewFilter.Match("已完成", EpViewFilter.Running));
+        Check("阶段词：解密 → 解密中（红果 CENC）",
+            JobState.PhaseWord("解密") == JobState.Decrypting
+            && JobState.PhaseWord("下载") == JobState.Downloading);
         Check("筛选：已完成（含已存在）",
             EpViewFilter.Match("已完成", EpViewFilter.Done)
             && EpViewFilter.Match("已存在", EpViewFilter.Done));

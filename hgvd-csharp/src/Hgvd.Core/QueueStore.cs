@@ -28,31 +28,46 @@ public sealed class QueueGroup
 }
 
 /// <summary>
-/// 红果侧的下载清单持久化：<c>%USERPROFILE%\.hgv_tool\queue.json</c>。
+/// 红果侧的清单读写 —— 现在只是统一清单 <c>downloads.json</c> 的一个 section。
 ///
-/// ★ 为什么需要：合并后右栏是**两源共用**的清单，兴趣岛的任务会落盘
-///   （<c>xqd\jobs.json</c>），红果的原来只在内存 —— 重启后同一张表只剩一半，
-///   「共用清单」在重启这一刻是假的。
-/// ★ 只存「清单成员」，不存运行状态：重启后一律回到「待下载」，
-///   已下载的由 SkipExisting（文件 + 时长）重新判定。
+/// ★ 旧的 <c>queue.json</c> 保留作一次性迁移来源：首次加载时读一次，
+///   写进 downloads.json 后打 imported 标记，之后不再读（否则清空清单会被旧文件复活）。
+/// ★ 对外仍是 QueueGroup / QueueEpisode 的接口，界面层不需要知道存储换过。
 /// </summary>
 public sealed class QueueStore
 {
     public QueueStore(string path = null)
     {
-        Path = string.IsNullOrEmpty(path) ? Paths.QueuePath : path;
+        bool isDefault = string.IsNullOrEmpty(path);
+        Path = isDefault ? Paths.QueuePath : path;
+        string dir = System.IO.Path.GetDirectoryName(Path) ?? ".";
+        ManifestPath = isDefault ? Paths.ManifestPath : System.IO.Path.Combine(dir, "downloads.json");
+        _manifest = DownloadManifestStore.Shared(ManifestPath);
     }
 
+    /// <summary>旧的 queue.json 路径（仅供迁移/排障）。</summary>
     public string Path { get; }
 
-    private static readonly JsonSerializerOptions Opts = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
+    /// <summary>实际主存储（两源共用）。</summary>
+    public string ManifestPath { get; }
+
+    private readonly DownloadManifestStore _manifest;
 
     public List<QueueGroup> Load()
+    {
+        var groups = _manifest.ImportIfNeeded(ManifestSource.Hongguo, () => ToManifest(LoadLegacy()));
+        return FromManifest(groups);
+    }
+
+    public void Save(IEnumerable<QueueGroup> groups)
+    {
+        _manifest.Store(ManifestSource.Hongguo, ToManifest(groups));
+    }
+
+    public void Clear() => _manifest.Clear(ManifestSource.Hongguo);
+
+    /// <summary>只读旧的 queue.json；坏文件/不存在都返回空（不能影响启动）。</summary>
+    private List<QueueGroup> LoadLegacy()
     {
         try
         {
@@ -63,33 +78,59 @@ public sealed class QueueStore
                 .Where(g => g != null && !string.IsNullOrEmpty(g.SeriesId) && g.Episodes.Count > 0)
                 .ToList();
         }
-        catch
-        {
-            // 文件坏了不能让程序起不来 —— 当成空清单
-            return new List<QueueGroup>();
-        }
+        catch { return new List<QueueGroup>(); }
     }
 
-    public void Save(IEnumerable<QueueGroup> groups)
+    private static List<DownloadManifestGroup> ToManifest(IEnumerable<QueueGroup> groups)
     {
-        try
-        {
-            var list = groups.Where(g => g.Episodes.Count > 0).ToList();
-            string dir = System.IO.Path.GetDirectoryName(Path) ?? ".";
-            Directory.CreateDirectory(dir);
-            // 先写临时文件再替换：写到一半断电不会留下半截 JSON
-            string tmp = Path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(list, Opts));
-            File.Move(tmp, Path, true);
-        }
-        catch
-        {
-            // 存不下不影响下载（与 XqdStore 一致）
-        }
+        if (groups == null) return new List<DownloadManifestGroup>();
+        return groups
+            .Where(g => g != null && g.Episodes != null && g.Episodes.Count > 0)
+            .Select(g => new DownloadManifestGroup
+            {
+                Source = ManifestSource.Hongguo,
+                GroupId = g.SeriesId,
+                Title = g.SeriesTitle,
+                ShortDrama = g.ShortDrama,
+                Items = g.Episodes.Select(e => new DownloadManifestRecord
+                {
+                    Id = e.Vid,
+                    Seq = e.Index,
+                    Title = e.Title,
+                    ExpectDuration = e.Duration,
+                    VideoIdType = e.VideoIdType,
+                    State = JobState.Pending,
+                }).ToList(),
+            })
+            .ToList();
     }
 
-    public void Clear()
+    private static List<QueueGroup> FromManifest(List<DownloadManifestGroup> groups)
     {
-        try { if (File.Exists(Path)) File.Delete(Path); } catch { }
+        if (groups == null) return new List<QueueGroup>();
+        return groups
+            .Where(g => g != null && !string.IsNullOrEmpty(g.GroupId) && g.Items.Count > 0)
+            .Select(g => new QueueGroup
+            {
+                SeriesId = g.GroupId,
+                SeriesTitle = g.Title,
+                ShortDrama = g.ShortDrama,
+                Episodes = g.Items.Select(r => new QueueEpisode
+                {
+                    Vid = r.Id,
+                    Index = r.Seq,
+                    Title = r.Title,
+                    Duration = r.ExpectDuration,
+                    VideoIdType = r.VideoIdType,
+                }).ToList(),
+            })
+            .ToList();
     }
+
+    private static readonly JsonSerializerOptions Opts = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 }

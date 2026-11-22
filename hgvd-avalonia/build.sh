@@ -42,7 +42,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
-VER="1.8.0"
+VER="1.9.0"
 APP="hgvd-downloader-v$VER"
 PKG="pkg/$APP"
 LOGDIR="$HOME/.hgv_tool"

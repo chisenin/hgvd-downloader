@@ -691,7 +691,7 @@ public sealed class HongguoService
                 {
                     double d = await Task.Run(() => Util.ProbeDuration(item.Path), ct);
                     if (d <= 0) return;                        // 探测失败 → 不跳过，宁可重下
-                    double tol = Math.Max(3.0, item.Ep.Duration * 0.02);
+                    double tol = ExistingArtifact.Tolerance(MediaSource.Hongguo, item.Ep.Duration);
                     if (item.Ep.Duration > 0 && Math.Abs(d - item.Ep.Duration) > tol) return;
                     long sz = new FileInfo(item.Path).Length;
                     lock (skip)
@@ -737,7 +737,8 @@ public sealed class HongguoService
         if (_cfg.SkipExisting && File.Exists(outPath))
         {
             double d = Util.ProbeDuration(outPath);
-            if (d > 0 && (ep.Duration <= 0 || Math.Abs(d - ep.Duration) <= Math.Max(3, ep.Duration * 0.02)))
+            if (d > 0 && (ep.Duration <= 0
+                || Math.Abs(d - ep.Duration) <= ExistingArtifact.Tolerance(MediaSource.Hongguo, ep.Duration)))
             {
                 // 兜底路径也补一条记账（单集双击 / 没走预检时能迁移）
                 _progress.Upsert(new ProgressEntry

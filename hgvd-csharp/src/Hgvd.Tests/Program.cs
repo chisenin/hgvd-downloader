@@ -31,6 +31,10 @@ public static class Program
         fail += XqdTests.Run();
         // ★ 2026-11-21 补齐：红果清单落盘 / 下载历史 / 去重口径 / 5 档筛选 / 剩余时间
         fail += StateTests.Run();
+        // ★ 2026-11-22 共用清单：一个 downloads.json，两源 section + 旧文件迁移
+        fail += ManifestTests.Run();
+        // ★ 2026-11-22 P3：两源共用顶层工位池 + 共享暂停闸门
+        fail += QueueCoreTests.Run();
         // ★ 2026-11-22 下载提速：进度记账 + 预检秒跳判据
         fail += ProgressTests.Run();
         Console.WriteLine();

@@ -56,7 +56,7 @@ public partial class MainWindow : Window
     private string _hgQuality = "1080p";
     private string _xqdQuality = "max";
 
-    /// <summary>红果清单的落盘（重启恢复）。兴趣岛用 XqdStore 的 jobs.json。</summary>
+    /// <summary>红果清单的落盘（重启恢复）。两源现在共用 downloads.json，兴趣岛写自己的 section。</summary>
     private QueueStore _hgQueueStore = new();
     private bool _hgRestored;
 
@@ -679,7 +679,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>按 series_id 移除整组（不依赖左栏行，刷新剔除时也能用）。</summary>
-    private void RemoveSeriesGroup(string sid)
+    private void RemoveSeriesGroup(string sid, bool persist = true)
     {
         StopWarm(sid);                                       // 停掉这一组在飞的预热
         if (!_queueBySeries.TryGetValue(sid, out var rows)) return;
@@ -694,7 +694,7 @@ public partial class MainWindow : Window
         RemoveHeader(sid);
         _queueBySeries.Remove(sid);
         Log($"「{title}」已从下载清单移出（当前 {_queueBySeries.Count} 部）");
-        PersistHongguoQueue();
+        if (persist) PersistHongguoQueue();
         UpdateQueueSummary();
     }
 
@@ -730,13 +730,14 @@ public partial class MainWindow : Window
         _hgRestored = true;
         _xqdRestored = true;
         _hgQueueStore = new QueueStore(
-            Path.Combine(Path.GetTempPath(), "hgvd_queue_uitest", "queue.json"));
-    }
+            Path.Combine(Path.GetTempPath(), "hgvd_queue_uitest", "queue.json"));    }
 
-    /// <summary>--uitest：清掉现有红果行后，从临时 queue.json 真走一次恢复。</summary>
+    /// <summary>--uitest：清掉现有红果行后，从临时旧 queue.json 真走一次迁移 + 恢复。</summary>
     internal void ReloadHongguoQueueForTest()
     {
-        foreach (string sid in _queueBySeries.Keys.ToList()) RemoveSeriesGroup(sid);
+        // ★ 清行时不要落盘：否则会先把「空清单」写进新的 downloads.json，
+        //   旧 queue.json 的迁移就永远不会触发了。
+        foreach (string sid in _queueBySeries.Keys.ToList()) RemoveSeriesGroup(sid, persist: false);
         _hgRestored = false;
         RestoreHongguoQueueRows(force: true);
     }
@@ -1003,7 +1004,7 @@ public partial class MainWindow : Window
     // ---------------------------------------------------------- 单行移出
     //
     // ★ 为什么必须有：兴趣岛原来靠右键「移出清单」删单条；合并进共用表后右键没了，
-    //   而手动链接任务没有营/剧的勾选框 —— 粘错一条就再也删不掉（还会写进 jobs.json）。
+    //   而手动链接任务没有营/剧的勾选框 —— 粘错一条就再也删不掉（还会写进 downloads.json）。
     //   现在右键与 Delete 都走同一个入口。
 
     private void MenuRemoveRow_Click(object sender, RoutedEventArgs e)
@@ -1044,7 +1045,7 @@ public partial class MainWindow : Window
         {
             _xqd.Retry(row.Xqd);          // 清分片 + 重置 + 落盘
             row.SyncFromXqd();
-            Log($"「{row.Xqd.Title}」已清缓存并重置为待下载");
+            Log($"「{row.Xqd.Title}」已清分片缓存；完整成品仍会按「已存在」跳过，要重下请先删成品");
             UpdateQueueSummary();
             return;
         }
@@ -1584,7 +1585,7 @@ public partial class MainWindow : Window
         SetRunningUi(false);
         LblStatus.Text = "就绪";
         UpdateQueueSummary();
-        Log($"—— 直连完成 {res.Ok}，失败 {res.Fail}");
+        Log($"—— 本批完成 {res.Ok}，失败 {res.Fail}");
 
         // ★ 抓流已裁掉（2026-11-22）：无直链不再自动转抓流，只给出提示。
         //   res.Aborted = 红果播放接口连续空 body（网关校验 X-Helios / X-Medusa，宿主机算不出）。
@@ -1801,7 +1802,9 @@ public partial class MainWindow : Window
         //    ★ 绝不再静默回落到系统「下载」——那会让用户以为下成功了却找不到文件。
         //    ★ 走 DownloadHook（--uitest 的模拟下载）时不检查：那条路径根本不落盘，
         //      检查了会让界面自检依赖「本机下载目录可用」这个无关条件。
-        if (DownloadHook == null && !_svc.Config.TryResolveOutDir(out _, out string dirErr))
+        //    ★ 只下兴趣岛时跳过：它用的是上面的 EdOut，不是红果配置里的目录。
+        if (targets.Count > 0 && DownloadHook == null
+            && !_svc.Config.TryResolveOutDir(out _, out string dirErr))
         {
             ShowBanner(dirErr + "\n★ 已中止本次下载，不会改存到别处。", BannerKind.Err);
             Log($"✗ {dirErr}");
@@ -1835,7 +1838,6 @@ public partial class MainWindow : Window
         // ★★ 下载并发固定 2 路（2026-11-22 用户定：两集并发 + 直链先行），
         //   --uitest 假下载器非线程安全，自检强制单工位。
         int workers = DownloadHook != null ? 1 : 2;
-        using var pool = new SemaphoreSlim(workers, workers);
         int okN = 0, failN = 0, addrFailN = 0, stopNewFlag = 0;
         var errLock = new object();
 
@@ -1850,12 +1852,54 @@ public partial class MainWindow : Window
             prefetch = new Core.Engine.PrefetchWindow(_svc, prefetchEps, GetQuality(), window: 10);
             prefetch.Start();
         }
+
+        // ★ 两源同一张清单 → 同一批开跑（2026-11-22）。
+        //   以前兴趣岛排在红果全部跑完之后：混合选中时，兴趣岛的行会一直停在
+        //   「待下载」，看起来像没被点中。现在两边同时开始，共用一个暂停/继续。
+        // ★ 并发上限：红果占 2 个网络工位；混合时兴趣岛课间并发降到 1
+        //   （1 课 × 12 分片 + 2 条红果流），不高于兴趣岛自己「2 课 × 12 片」的峰值。
+        // ★★ P3：两源共用**同一个**顶层工位池（DownloadQueueCore）和同一个暂停闸门。
+        //   红果每集占 1 格、兴趣岛每课占 1 格；混合 = 2 + 1 = 3 格，纯兴趣岛 = 2 格。
+        int slots = workers + (xqdTargets.Count > 0 && jobs.Count > 0 ? 1 : 0);
+        using var queue = new Hgvd.Core.Download.DownloadQueueCore(slots, _hgGate);
+        // ★ 总池之外，红果自己仍限 2 格：否则红果的派发循环会先把 3 格全拿走，
+        //   兴趣岛要等一整集跑完才轮得到，混合批次又变成「先红果后兴趣岛」。
+        using var redGate = new SemaphoreSlim(workers, workers);
+
+        Task<(int Ok, int Fail)> xqdTask = null;
+        if (xqdTargets.Count > 0 && !_stopRequested)
+        {
+            int lessonWorkers = jobs.Count > 0 ? 1 : 2;
+            xqdTask = DownloadXqdRowsAsync(xqdTargets, lessonWorkers, queue);
+        }
+
         var running = new List<Task>();
         foreach (var row in jobs)
         {
             if (_stopRequested) break;
-            await pool.WaitAsync(_cts.Token);                // 最多 workers 个工位
-            if (Volatile.Read(ref stopNewFlag) != 0 || _stopRequested) { pool.Release(); continue; }
+            await redGate.WaitAsync(_cts.Token);                // 红果自身最多 2 格
+            Hgvd.Core.Download.DownloadQueueCore.SlotLease lease;
+            try
+            {
+                lease = await queue.AcquireAsync(_cts.Token);   // 总池最多 slots 格
+            }
+            catch
+            {
+                redGate.Release();
+                throw;
+            }
+            if (Volatile.Read(ref stopNewFlag) != 0 || _stopRequested)
+            {
+                lease.Dispose();
+                redGate.Release();
+                continue;
+            }
+            if (_cts.IsCancellationRequested)
+            {
+                lease.Dispose();
+                redGate.Release();
+                break;
+            }
 
             running.Add(Task.Run(async () =>
             {
@@ -1956,35 +2000,47 @@ public partial class MainWindow : Window
                 {
                     lock (errLock) _downloadErrors.Add($"调度异常：{ex.Message}");
                 }
-                finally { pool.Release(); }
+                finally { lease.Dispose(); redGate.Release(); }
             }, _cts.Token));
         }
 
         await Task.WhenAll(running);
         prefetch?.Stop();
+
         ok = okN;
         fail = failN;
         addrFail = addrFailN;
-        UpdateHint();
-        if (stopNewFlag != 0) return (ok, fail, true);
 
-        // 兴趣岛的条目排在红果之后跑：它们要先解析播放地址，慢一些
-        if (xqdTargets.Count > 0 && !_stopRequested)
+        // 兴趣岛是并发跑的：这里只和它一起收尾（成功/失败已在队列内落好）
+        if (xqdTask != null)
         {
-            await _hgGate.WaitAsync(_cts.Token);             // 暂停中先别切到兴趣岛阶段
-            var (xok, xfail) = await DownloadXqdRowsAsync(xqdTargets);
-            ok += xok;
-            fail += xfail;
+            try
+            {
+                var (xok, xfail) = await xqdTask;
+                ok += xok;
+                fail += xfail;
+            }
+            catch (Exception e)
+            {
+                Log("兴趣岛批次异常：" + e.Message);
+                lock (errLock) _downloadErrors.Add("兴趣岛批次异常：" + e.Message);
+            }
         }
 
+        UpdateHint();
+        if (stopNewFlag != 0) return (ok, fail, true);
         return (ok, fail, false);
     }
 
     /// <summary>
-    /// 兴趣岛部分的下载：交给 XqdQueue（课间并发 2 / 课内分片 12），
+    /// 兴趣岛部分的下载：交给 XqdQueue（课间并发默认 2 / 课内分片 12），
     /// 进度通过 JobChanged/JobProgress 回调同步到共用清单的同一行。
+    /// ★ <paramref name="lessonWorkers"/>：混合跑红果时传 1，避免两源一起把带宽/连接数顶满。
+    /// ★ <paramref name="queue"/>：两源共用的顶层工位池；每节课向它拿 1 格。
     /// </summary>
-    private async Task<(int Ok, int Fail)> DownloadXqdRowsAsync(List<EpisodeRow> rows)
+    private async Task<(int Ok, int Fail)> DownloadXqdRowsAsync(
+        List<EpisodeRow> rows, int lessonWorkers = 2,
+        Hgvd.Core.Download.DownloadQueueCore queue = null)
     {
         var jobs = rows.Where(r => r.Xqd != null).Select(r => r.Xqd).Distinct().ToList();
         if (jobs.Count == 0) return (0, 0);
@@ -2005,15 +2061,17 @@ public partial class MainWindow : Window
         }
         _xqd.Options.OutRoot = outRoot;
         _xqd.Options.Quality = _xqdQuality;
+        _xqd.Options.LessonWorkers = Math.Max(1, lessonWorkers);
         _xqd.RebasePaths();
-        _xqd.Rescan();
+        await _xqd.RescanAsync();          // ★ 异步 + 4 路并行：混合开始时不再卡界面
         foreach (var r in rows) r.SyncFromXqd();
 
-        // 统一暂停态：进入兴趣岛阶段时把当前 _paused 应用给队列
+        // 统一暂停态：进入兴趣岛阶段时把当前 _paused 应用给队列，并在暂停中不启动
         _xqd.SetPaused(_paused);
+        await _hgGate.WaitAsync(_cts.Token);
         try
         {
-            var (ok, fail, skip) = await _xqd.RunAsync(jobs, _cts.Token);
+            var (ok, fail, skip) = await _xqd.RunAsync(jobs, _cts.Token, queue, _hgGate);
             return (ok + skip, fail);
         }
         finally

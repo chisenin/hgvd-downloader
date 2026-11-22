@@ -1,37 +1,37 @@
 using System;
 using System.Collections.Generic;
+using Hgvd.Core;
 
 namespace Hgvd.Xqd;
 
-/// <summary>兴趣岛下载的状态词 —— 与红果侧共用同一套中文习惯，别另起一套。</summary>
+/// <summary>
+/// 兴趣岛的状态词 —— 只是 <see cref="JobState"/> 的转发，**不要在这里加词**。
+///
+/// ★ 两源共用一套状态词：红果、兴趣岛的行在同一张清单、同一套筛选里，
+///   各自定义就会出现「红果的『下载』不算下载中」这种同表不同语义。
+/// ★ 保留这个类是为了既有调用（XqdQueue / 界面 / 回归）不必改名。
+/// </summary>
 public static class XqdState
 {
-    public const string Pending = "待下载";
-    public const string Queued = "排队中";
-    public const string Resolving = "解析中";
-    public const string Downloading = "下载中";
-    public const string Muxing = "封装中";
-    public const string Verifying = "校验中";
-    public const string Paused = "已暂停";
-    public const string Done = "已完成";
-    public const string Exists = "已存在";
-    public const string Failed = "失败";
+    public const string Pending = JobState.Pending;
+    public const string Queued = JobState.Queued;
+    public const string Resolving = JobState.Resolving;
+    public const string Downloading = JobState.Downloading;
+    public const string Muxing = JobState.Muxing;
+    public const string Decrypting = JobState.Decrypting;
+    public const string Verifying = JobState.Verifying;
+    public const string Paused = JobState.Paused;
+    public const string Done = JobState.Done;
+    public const string Exists = JobState.Exists;
+    public const string Failed = JobState.Failed;
 
     /// <summary>进行中：可以被阶段名自由覆盖。</summary>
-    public static bool IsRunning(string word) =>
-        word is Queued or Resolving or Downloading or Muxing or Verifying;
+    public static bool IsRunning(string word) => JobState.IsRunning(word);
 
     /// <summary>终态：不会被后续进度回调覆盖。</summary>
-    public static bool IsTerminal(string word) => word is Done or Exists or Failed;
+    public static bool IsTerminal(string word) => JobState.IsTerminal(word);
 
-    public static string PhaseWord(string phase) => phase switch
-    {
-        "解析" => Resolving,
-        "下载" => Downloading,
-        "封装" => Muxing,
-        "校验" => Verifying,
-        _ => phase ?? "",
-    };
+    public static string PhaseWord(string phase) => JobState.PhaseWord(phase);
 }
 
 /// <summary>一个营（我的课程里的一个合集）。对应兴趣岛 myCourseListV2 的一项。</summary>
@@ -144,17 +144,51 @@ public sealed class XqdCallbacks
 }
 
 /// <summary>暂停 / 取消。暂停时冻结、分片保留；取消抛 OperationCanceledException。</summary>
-public sealed class XqdControl
+public sealed class XqdControl : IPauseToken
 {
+    private readonly IPauseToken _shared;
     private volatile bool _paused;
     private volatile bool _cancelled;
 
-    public bool Paused { get => _paused; set => _paused = value; }
+    /// <summary>
+    /// <paramref name="shared"/> 不为空时，暂停状态以它为准（两源共用一个 PauseGate）；
+    /// 为空时退回自己的布尔闸门（老的独立运行路径 / 回归）。
+    /// </summary>
+    public XqdControl(IPauseToken shared = null)
+    {
+        _shared = shared;
+        if (shared is Hgvd.Core.Engine.PauseGate) _paused = shared.IsPaused;
+    }
+
+    public bool Paused
+    {
+        get => _shared?.IsPaused ?? _paused;
+        set
+        {
+            _paused = value;
+            if (_shared is Hgvd.Core.Engine.PauseGate gate)
+            {
+                if (value) gate.Pause(); else gate.Resume();
+            }
+        }
+    }
     public bool Cancelled { get => _cancelled; set => _cancelled = value; }
+    public bool IsPaused => Paused;
+
+    /// <summary>Core 单文件引擎用的接口；与 <see cref="WaitIfPausedAsync"/> 等价。</summary>
+    public System.Threading.Tasks.Task WaitAsync(
+        System.Threading.CancellationToken ct = default) => WaitIfPausedAsync(ct);
 
     public async System.Threading.Tasks.Task WaitIfPausedAsync(
         System.Threading.CancellationToken ct = default)
     {
+        if (_shared != null)
+        {
+            await _shared.WaitAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (_cancelled) throw new OperationCanceledException("已取消");
+            return;
+        }
         while (_paused && !_cancelled && !ct.IsCancellationRequested)
             await System.Threading.Tasks.Task.Delay(120, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();

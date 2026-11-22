@@ -10,7 +10,7 @@ namespace Hgvd.Core.Engine;
 ///   下次从头解析播放地址；而这里的暂停是**保留当前连接与进度**，恢复后接着写。
 /// ★ 只在拷贝循环里等待，锁粒度极小；取消仍然走 CancellationToken。
 /// </summary>
-public sealed class PauseGate
+public sealed class PauseGate : IPauseToken
 {
     private volatile bool _paused;
     private TaskCompletionSource<bool> _resume = Completed();
