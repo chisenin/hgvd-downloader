@@ -42,14 +42,24 @@ public sealed class HongguoService
     private Account _account;
     private SignedClient _client;
     private DeviceIdentity _ident;
+    private readonly ProgressStore _progress;
 
     public HongguoService(AppConfig cfg = null)
     {
         _cfg = cfg ?? AppConfig.Load();
         _account = Account.Load();
+        _progress = new ProgressStore();
     }
 
     public AppConfig Config => _cfg;
+
+    /// <summary>下载进度记账（开始/完成/失败 + 直链留档）。</summary>
+    public ProgressStore Progress => _progress;
+
+    /// <summary>当前账号标识（记账用它判断直链是否随账号更换而作废）。</summary>
+    public string AccountKey =>
+        !string.IsNullOrEmpty(_account.UserId) ? _account.UserId
+        : (_account.Cookies.TryGetValue("install_id", out var iid) ? iid : "");
 
     public bool LoggedIn => _account.Ok;
 
@@ -395,8 +405,107 @@ public sealed class HongguoService
     private static readonly Dictionary<string, (string Url, long Size, string Key, string Codec, string Backup)>
         PlaybackCache = new();
 
-    /// <summary>清空播放地址缓存（换账号 / 签名失败时可手动调用）。</summary>
-    public static void ClearPlaybackCache() => PlaybackCache.Clear();
+    /// <summary>
+    /// 预热缓存：勾选入清单时后台提前解析的直链。
+    /// ★ 独立字典 + 时间戳 + 账号，与正式下载的 <see cref="PlaybackCache"/> 分开：
+    ///   ① 预热的失败**绝不能计入熔断**（否则勾一部剧就把正在下的任务熔断掉）；
+    ///   ② 直链会过期 → 带时间戳，超过 <see cref="WarmTtlMs"/> 作废；
+    ///   ③ 换账号 → account 不匹配作废。
+    /// </summary>
+    private sealed class WarmEntry
+    {
+        public string Url = "", Key = "", Codec = "", Backup = "";
+        public long Size;
+        public long Ts;          // Unix 毫秒
+        public string Account = "";
+    }
+    private static readonly Dictionary<string, WarmEntry> WarmCache = new();
+    private const long WarmTtlMs = 30 * 60 * 1000;   // 30 分钟：勾选到开下通常几分钟，够用又不会拿到过期链
+
+    /// <summary>清空播放地址缓存（换账号 / 签名失败时可手动调用）。含预热缓存。</summary>
+    public static void ClearPlaybackCache()
+    {
+        lock (PlaybackCache) PlaybackCache.Clear();
+        lock (WarmCache) WarmCache.Clear();
+    }
+
+    /// <summary>
+    /// 解析单集直链并写进 <see cref="WarmCache"/>（失败静默、不碰熔断）。
+    /// 供有界预取窗口与旧的批量预热共用；已在缓存/未过期则直接跳过。
+    /// </summary>
+    public async Task WarmOneAsync(Episode ep, string quality, CancellationToken ct = default)
+    {
+        if (ep == null || string.IsNullOrEmpty(ep.Vid) || !LoggedIn) return;
+        quality ??= _cfg.Quality;
+        string account = AccountKey;
+        int type = ep.VideoIdType >= 0 ? ep.VideoIdType : 1;
+        string ck = $"{ep.Vid}|{type}|{quality}";
+        lock (PlaybackCache)
+            if (PlaybackCache.TryGetValue(ck, out var hit) && !string.IsNullOrEmpty(hit.Url)) return;
+        lock (WarmCache)
+            if (WarmCache.TryGetValue(ck, out var w) && !string.IsNullOrEmpty(w.Url)
+                && w.Account == account
+                && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - w.Ts < WarmTtlMs) return;
+
+        try
+        {
+            var model = await Client.PlaybackAsync(ep.Vid, type, ct)
+                .WaitAsync(TimeSpan.FromSeconds(15), ct);
+            if (model.Streams.Count == 0) return;          // 没流：静默，不计熔断
+            var chosen = model.Streams.FirstOrDefault(
+                s => string.Equals(s.Definition, quality, StringComparison.OrdinalIgnoreCase))
+                ?? model.Streams[0];
+            lock (WarmCache)
+                WarmCache[ck] = new WarmEntry
+                {
+                    Url = chosen.Url, Size = chosen.Size, Key = model.ContentKey,
+                    Codec = chosen.Codec, Backup = chosen.BackupUrl ?? "",
+                    Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Account = account,
+                };
+        }
+        catch { /* ★ 预热失败一律静默，不调 NotePlaybackEmpty —— 不触发熔断 */ }
+    }
+
+    /// <summary>
+    /// 后台预热一批分集的直链（勾选入清单时调用）。
+    /// ★ 低并发（2 路）、失败静默、不碰熔断；成功写 <see cref="WarmCache"/> 供正式下载命中。
+    /// ★ 只热传进来的 vid（= 清单内），不碰收藏夹其它剧。
+    /// </summary>
+    public async Task WarmAsync(List<Episode> episodes, string quality,
+        CancellationToken ct = default)
+    {
+        if (!LoggedIn || episodes == null || episodes.Count == 0) return;
+        quality ??= _cfg.Quality;
+        using var sem = new SemaphoreSlim(2);
+        var tasks = episodes.Select(async ep =>
+        {
+            await sem.WaitAsync(ct);
+            try { await WarmOneAsync(ep, quality, ct); }
+            finally { sem.Release(); }
+        });
+        await Task.WhenAll(tasks);
+    }
+
+    /// <summary>
+    /// 正式解析前先查预热缓存（命中且未过期/账号一致则提升到正式缓存）。
+    /// </summary>
+    private bool TryTakeWarm(string ck, string account, out (string Url, long Size, string Key, string Codec, string Backup) result)
+    {
+        result = default;
+        lock (WarmCache)
+        {
+            if (!WarmCache.TryGetValue(ck, out var w) || string.IsNullOrEmpty(w.Url)) return false;
+            if (w.Account != account
+                || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - w.Ts >= WarmTtlMs)
+            {
+                WarmCache.Remove(ck);                       // 过期/换号 → 丢弃，走正常解析
+                return false;
+            }
+            result = (w.Url, w.Size, w.Key, w.Codec, w.Backup);
+        }
+        lock (PlaybackCache) PlaybackCache[ck] = result;    // 提升到正式缓存（进程内不再失效）
+        return true;
+    }
 
     // ---------------------------------------------------------- 播放接口熔断
 
@@ -468,9 +577,18 @@ public sealed class HongguoService
             if (PlaybackCache.TryGetValue(ck, out var hit) && !string.IsNullOrEmpty(hit.Url))
                 return (hit.Url, hit.Size, hit.Key, hit.Codec, "", hit.Backup);
 
+        // ★ 勾选时预热的结果：命中且未过期/账号一致 → 直接用，免一次解析
+        if (TryTakeWarm(ck, AccountKey, out var warm))
+            return (warm.Url, warm.Size, warm.Key, warm.Codec, "", warm.Backup);
+
         try
         {
-            var model = await Client.PlaybackAsync(videoId, videoIdType, ct);
+            // ★★ 单集解析硬超时 15 秒（2026-11-22）：
+            //   失败集会走 SignedClient 的 5 次退避（≈43s）× 两个 video_id_type（≈86s），
+            //   并发下载时会长期占住一个工位。正常解析 ~0.2s，15s 足够宽松；
+            //   超时按普通失败返回（不计熔断），快速让出工位。
+            var model = await Client.PlaybackAsync(videoId, videoIdType, ct)
+                .WaitAsync(TimeSpan.FromSeconds(15), ct);
             if (model.Streams.Count == 0)
             {
                 // 拿到了 JSON 但没有流 —— 说明签名是通的，是**参数/内容**问题
@@ -507,20 +625,127 @@ public sealed class HongguoService
         }
     }
 
-    /// <summary>下载一集。</summary>
+    /// <summary>
+    /// 预检一批分集，得出「哪些可以直接跳过」（本批跳过表）。
+    ///
+    /// ★★ 为什么要有这一步：原来 SkipExisting 在下载循环里**逐集**跑 ffprobe
+    ///   （每集起一个进程 ~45ms），用户 180 集里下了 100 集时，开头要空转 4.5s
+    ///   「一集一集试到已存在才跳」。现在按下下载键先扫一遍，分三类：
+    ///   ① 记账 done + 磁盘 size 一致 → 秒跳（0 次 ffprobe）；
+    ///   ② 无记账但文件在 → 4 路并行 ffprobe，判据与原逻辑**完全相同**，通过者补记 done；
+    ///   ③ 文件缺失 → 待下载。
+    ///   ★ 结果缓存成表，循环里只查表，不再起进程。
+    /// </summary>
+    public async Task<Dictionary<string, DownloadResult>> PrecheckAsync(
+        List<Episode> episodes, CancellationToken ct = default)
+    {
+        var skip = new Dictionary<string, DownloadResult>();
+        if (!_cfg.SkipExisting || episodes == null || episodes.Count == 0) return skip;
+
+        // 先按成品路径去重（同一集可能被重复加入清单）
+        var byPath = new Dictionary<string, Episode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var ep in episodes)
+        {
+            if (ep == null || string.IsNullOrEmpty(ep.Vid)) continue;
+            string path;
+            try { path = BuildOutPath(ep); } catch { continue; }  // 目录不可用交给下载循环报错
+            if (!byPath.ContainsKey(path)) byPath[path] = ep;
+        }
+
+        var map = _progress.LoadMap();
+        var needProbe = new List<(string Path, Episode Ep)>();
+
+        foreach (var kv in byPath)
+        {
+            string path = kv.Key;
+            var ep = kv.Value;
+            long diskSize;
+            try { diskSize = File.Exists(path) ? new FileInfo(path).Length : 0; }
+            catch { diskSize = 0; }
+            if (diskSize <= 0) continue;                       // ③ 文件不在 → 待下载
+
+            if (map.TryGetValue(path, out var rec) && rec.IsDone && rec.Size == diskSize)
+            {
+                // ① 记账命中：0 次 ffprobe
+                skip[ep.Vid] = new DownloadResult
+                {
+                    Ok = true, OutPath = path, Size = diskSize,
+                    Duration = rec.Duration, Skipped = true,
+                };
+            }
+            else
+            {
+                needProbe.Add((path, ep));                     // ② 无记账 / size 不符 → 探测兜底
+            }
+        }
+
+        // ② 4 路并行 ffprobe；判据与原来的 SkipExisting 完全一致
+        if (needProbe.Count > 0)
+        {
+            using var sem = new SemaphoreSlim(4);
+            var fresh = new List<ProgressEntry>();
+            var tasks = needProbe.Select(async item =>
+            {
+                await sem.WaitAsync(ct);
+                try
+                {
+                    double d = await Task.Run(() => Util.ProbeDuration(item.Path), ct);
+                    if (d <= 0) return;                        // 探测失败 → 不跳过，宁可重下
+                    double tol = Math.Max(3.0, item.Ep.Duration * 0.02);
+                    if (item.Ep.Duration > 0 && Math.Abs(d - item.Ep.Duration) > tol) return;
+                    long sz = new FileInfo(item.Path).Length;
+                    lock (skip)
+                    {
+                        skip[item.Ep.Vid] = new DownloadResult
+                        {
+                            Ok = true, OutPath = item.Path, Size = sz,
+                            Duration = d, Skipped = true,
+                        };
+                        // 补记 done → 下次走 ① 秒跳（老文件的一次性迁移）
+                        fresh.Add(new ProgressEntry
+                        {
+                            Path = item.Path, State = "done", Size = sz,
+                            Duration = d, Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            Account = AccountKey,
+                        });
+                    }
+                }
+                catch { /* 单集探测失败不影响其它集 */ }
+                finally { sem.Release(); }
+            });
+            await Task.WhenAll(tasks);
+            if (fresh.Count > 0) _progress.UpsertMany(fresh);
+        }
+
+        return skip;
+    }
+
+    /// <summary>下载一集。<paramref name="preskipped"/> 非空 = 预检已判定跳过，不再跑 ffprobe。</summary>
     public async Task<DownloadResult> DownloadEpisodeAsync(
         Episode ep, string quality = null, DownloadCallbacks cb = null,
-        CancellationToken ct = default, PauseGate gate = null)
+        CancellationToken ct = default, PauseGate gate = null,
+        DownloadResult preskipped = null)
     {
         quality ??= _cfg.Quality;
         string outPath = BuildOutPath(ep);
         Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+
+        // ★ 预检表命中：直接返回，一次进程都不起
+        if (preskipped != null && preskipped.Skipped)
+            return preskipped;
 
         if (_cfg.SkipExisting && File.Exists(outPath))
         {
             double d = Util.ProbeDuration(outPath);
             if (d > 0 && (ep.Duration <= 0 || Math.Abs(d - ep.Duration) <= Math.Max(3, ep.Duration * 0.02)))
             {
+                // 兜底路径也补一条记账（单集双击 / 没走预检时能迁移）
+                _progress.Upsert(new ProgressEntry
+                {
+                    Path = outPath, State = "done", Size = new FileInfo(outPath).Length,
+                    Duration = d, Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Account = AccountKey,
+                });
                 return new DownloadResult
                 {
                     Ok = true, OutPath = outPath, Size = new FileInfo(outPath).Length,
@@ -553,6 +778,12 @@ public sealed class HongguoService
         }
 
         if (string.IsNullOrEmpty(url))
+        {
+            _progress.Upsert(new ProgressEntry
+            {
+                Path = outPath, State = "failed", Duration = ep.Duration,
+                Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Account = AccountKey,
+            });
             return new DownloadResult
             {
                 Ok = false, OutPath = outPath,
@@ -561,6 +792,16 @@ public sealed class HongguoService
                     + (string.IsNullOrEmpty(failure) ? "" : $"：{failure}")
                     + "。★ 「提取App缓存」（hgvd cache）完全不经过 video_model，是另一条出片路径。",
             };
+        }
+
+        // ★ 下载开始前立即落盘「开始 + 直链」—— 异常退出时至少留有这一条
+        //   （直链仅诊断留档，下次绝不拿它下载：会过期）
+        _progress.Upsert(new ProgressEntry
+        {
+            Path = outPath, State = "started", Duration = ep.Duration,
+            Url = url, Backup = backupUrl,
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Account = AccountKey,
+        });
 
         var req = new DownloadRequest
         {
@@ -572,7 +813,38 @@ public sealed class HongguoService
             // ★ 主 CDN 主机连不上时自动换备用直链
             BackupUrl = backupUrl,
         };
-        return await Downloader.DownloadAsync(req, cb, ct, gate);
+        var res = await Downloader.DownloadAsync(req, cb, ct, gate);
+        // ★ 终态立即落盘：done 才能走下次的 ① 秒跳；失败留 failed
+        _progress.Upsert(new ProgressEntry
+        {
+            Path = outPath, State = res.Ok ? "done" : "failed",
+            Size = res.Size > 0 ? res.Size : (File.Exists(outPath) ? new FileInfo(outPath).Length : 0),
+            Duration = res.Duration > 0 ? res.Duration : ep.Duration,
+            Url = url, Backup = backupUrl,
+            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Account = AccountKey,
+        });
+        return res;
+    }
+
+    /// <summary>
+    /// 把仍在下载（started）但未落终态的记账标成 interrupted（正常退出时调用）。
+    /// ★ 只改 started，不动 done/failed —— 那是已确认的终态。
+    /// </summary>
+    public void MarkInterrupted()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        // ★ 整表读-改-写在 Store 的锁内完成，不与并发下载写记账打架
+        _progress.Mutate(map =>
+        {
+            foreach (var kv in map)
+            {
+                if (kv.Value.State == "started")
+                {
+                    kv.Value.State = "interrupted";
+                    kv.Value.Ts = now;
+                }
+            }
+        });
     }
 
     /// <summary>构造成品路径：<c>下载目录\剧名\剧名.001.标题.mp4</c>。</summary>

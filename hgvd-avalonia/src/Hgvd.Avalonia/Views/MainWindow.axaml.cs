@@ -83,6 +83,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Core.Api.Episode> _epCache = new();
     /// <summary>series_id → 已加入清单的分集行（取消勾选时整组移除）。</summary>
     private readonly Dictionary<string, List<EpisodeRow>> _queueBySeries = new();
+    /// <summary>series_id → 该组预热任务的取消源（取消勾选时停掉在飞请求）。</summary>
+    private readonly Dictionary<string, CancellationTokenSource> _warmCts = new();
     /// <summary>营名 → 已加入清单的课表行（取消勾选营时整组移除）。</summary>
     private readonly Dictionary<string, List<EpisodeRow>> _queueByCamp = new();
     /// <summary>series_id / 营名 → 该组的分组标题行。</summary>
@@ -146,6 +148,9 @@ public partial class MainWindow : Window
 
         // ★ 标题列吃掉剩余宽度（列定义不支持 "*"，只能自己算）
         SizeChanged += (_, _) => UpdateEpisodeColumns();
+        // ★ 正常关闭：把仍停在 started 的记账标成 interrupted
+        //   （异常退出做不到，只能靠下载开始时写的那条记录）
+        Closing += (_, _) => { try { _svc.MarkInterrupted(); } catch { } };
         Opened += async (_, _) =>
         {
             UpdateEpisodeColumns();
@@ -585,6 +590,32 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// <summary>
+    /// 入清单即后台预热这一组的直链（低并发、失败静默、不触发熔断）。
+    /// ★ --uitest 自检不打网络，跳过。
+    /// </summary>
+    private void StartWarm(string seriesId, List<Core.Api.Episode> eps)
+    {
+        if (_testMode || DownloadHook != null || eps == null || eps.Count == 0) return;
+        StopWarm(seriesId);                                  // 同组重复勾选：先停旧的
+        var cts = new CancellationTokenSource();
+        _warmCts[seriesId] = cts;
+        _ = Task.Run(async () =>
+        {
+            try { await _svc.WarmAsync(eps, GetQuality(), cts.Token); }
+            catch { }
+        });
+    }
+
+    /// <summary>取消勾选 / 清空清单 → 停掉该组在飞的预热请求。</summary>
+    private void StopWarm(string seriesId)
+    {
+        if (!_warmCts.TryGetValue(seriesId, out var cts)) return;
+        try { cts.Cancel(); } catch { }
+        cts.Dispose();
+        _warmCts.Remove(seriesId);
+    }
+
     /// 勾选一部剧 → 把它的分集**追加**到右栏清单末尾（不是替换）。
     /// ★ 多部剧各自成组，分组标题行把序号隔开，下载文件名也按各自的集号走。
     /// </summary>
@@ -625,6 +656,7 @@ public partial class MainWindow : Window
             Marquee.Text = eps.Count > 0 ? $"{row.Display} — {eps[0].Title}" : row.Display;
             Log($"「{row.Display}」{eps.Count} 集已加入下载清单（当前 {_queueBySeries.Count} 部）");
             PersistHongguoQueue();
+            StartWarm(row.SeriesId, eps);       // ★ 入清单即后台预热直链，不等下载键
             ApplyEpView();
             UpdateQueueSummary();
             LblStatus.Text = "就绪";
@@ -649,6 +681,7 @@ public partial class MainWindow : Window
     /// <summary>按 series_id 移除整组（不依赖左栏行，刷新剔除时也能用）。</summary>
     private void RemoveSeriesGroup(string sid)
     {
+        StopWarm(sid);                                       // 停掉这一组在飞的预热
         if (!_queueBySeries.TryGetValue(sid, out var rows)) return;
         string title = rows.Count > 0 ? rows[0].SeriesTitle : sid;
 
@@ -1783,91 +1816,157 @@ public partial class MainWindow : Window
             return (0, fail, false);
         }
 
-        foreach (var row in targets)
+        // ★★ 下载前一次性预检（A+B）：得出「哪些集可直接跳过」的表。
+        //   原来 SkipExisting 在循环里逐集跑 ffprobe（100 集已存在 ≈ 4.5s 空转），
+        //   现在记账命中秒跳、无记账的 4 路并行探测，循环里只查表。
+        //   ★ --uitest 的假下载不落盘，跳过预检（否则依赖本机文件与 ffprobe）。
+        Dictionary<string, DownloadResult> preskip = new();
+        if (DownloadHook == null)
+        {
+            var eps = targets.Where(r => r.IsEpisode && _epCache.ContainsKey(r.Vid))
+                             .Select(r => _epCache[r.Vid]).ToList();
+            preskip = await _svc.PrecheckAsync(eps, _cts.Token);
+            if (preskip.Count > 0)
+                Log($"预检：{preskip.Count} 集已存在将直接跳过（免逐集校验）");
+        }
+
+        // ★★ 3 路并发下载（2026-11-22）：串行时一个失败集要耗 86s，全体干等。
+        //   并发后失败集只占一个工位（且单集解析已限时 15s），其余照常下。
+        // ★★ 下载并发固定 2 路（2026-11-22 用户定：两集并发 + 直链先行），
+        //   --uitest 假下载器非线程安全，自检强制单工位。
+        int workers = DownloadHook != null ? 1 : 2;
+        using var pool = new SemaphoreSlim(workers, workers);
+        int okN = 0, failN = 0, addrFailN = 0, stopNewFlag = 0;
+        var errLock = new object();
+
+        // ★★ 直链预取窗口：下载游标前方始终备好 10 集（后台解析，不占下载工位）。
+        //   只对「真正要下载」的集预取（预检跳过的已排除），不给网关添压。
+        Core.Engine.PrefetchWindow prefetch = null;
+        var jobs = targets.Where(r => r.IsEpisode && !r.IsXqd && !preskip.ContainsKey(r.Vid)).ToList();
+        if (DownloadHook == null && jobs.Count > 0)
+        {
+            var prefetchEps = jobs.Where(r => _epCache.ContainsKey(r.Vid))
+                                  .Select(r => _epCache[r.Vid]).ToList();
+            prefetch = new Core.Engine.PrefetchWindow(_svc, prefetchEps, GetQuality(), window: 10);
+            prefetch.Start();
+        }
+        var running = new List<Task>();
+        foreach (var row in jobs)
         {
             if (_stopRequested) break;
-            await _hgGate.WaitAsync(_cts.Token);             // 暂停时在两集之间也停住
-            if (row.IsGroupHeader) continue;                 // 分组标题不是真实分集
-            if (!_epCache.TryGetValue(row.Vid, out var ep)) continue;
+            await pool.WaitAsync(_cts.Token);                // 最多 workers 个工位
+            if (Volatile.Read(ref stopNewFlag) != 0 || _stopRequested) { pool.Release(); continue; }
 
-            string series = string.IsNullOrEmpty(row.SeriesTitle) ? row.SeriesId : row.SeriesTitle;
-            row.State = "下载中";
-            row.Error = "";
-
-            // ★ 进度刷新要**节流**：原来每个 256KB 分片都往 UI 线程派一次任务，
-            //   30MB 的文件 = 120+ 次；下载时 UI 线程被派发队列灌满，
-            //   鼠标事件排队 → 窗口「拖不动」。
-            //   现在限制成最多 10 次/秒，最后一次（d == t）不丢。
-            long lastUi = 0;
-            var cb = new DownloadCallbacks
+            running.Add(Task.Run(async () =>
             {
-                OnPhase = p => RunOnUi(() => { row.State = p; }),
-                OnResolvedSize = sz => RunOnUi(() => { row.PlanSize = sz; }),
-                OnProgress = (d, t, s) =>
+                try
                 {
-                    long now = Environment.TickCount64;
-                    bool last = t > 0 && d >= t;
-                    if (!last && now - lastUi < 100) return;
-                    lastUi = now;
-                    RunOnUi(() =>
-                    {
-                        row.Down = d;
-                        row.Total = t;
-                        row.Speed = s;
-                    });
-                },
-            };
+                    // ★ 暂停：工位开始前也过闸门（下载内部的 PauseGate 仍逐分片生效）
+                    await _hgGate.WaitAsync(_cts.Token);
+                    if (!_epCache.TryGetValue(row.Vid, out var ep)) return;
+                    string series = string.IsNullOrEmpty(row.SeriesTitle) ? row.SeriesId : row.SeriesTitle;
 
-            try
-            {
-                var res = DownloadHook != null
-                    ? await DownloadHook(ep, GetQuality(), cb, _cts.Token)
-                    : await _svc.DownloadEpisodeAsync(ep, GetQuality(), cb, _cts.Token, _hgGate);
-                if (res.Ok)
-                {
-                    ok++;
-                    addrFail = 0;
-                    RunOnUi(() =>
+                    // ★ 预检已判跳过 → 直接标记完成，不进解析/下载
+                    if (preskip.TryGetValue(row.Vid, out var skipRes))
                     {
-                        row.State = "已完成";
-                        row.Down = res.Size;
-                        row.Total = res.Size;
-                    });
-                    string tag = res.Skipped ? "已存在" : "完成";
-                    Log($"✓ {series} [{row.Index}] {tag} "
-                        + $"{Util.FmtSize(res.Size)} {Util.FmtDuration(res.Duration)}");
-                    RecordHistory("红果", series, row.Title, row.SeriesId, row.Vid,
-                                  res.OutPath, res.Size, res.Duration,
-                                  res.Skipped ? "已存在" : "已完成");
-                }
-                else
-                {
-                    fail++;
-                    // ★★ 只有「空 body」才计入熔断；
-                    //   其余（code=101000 参数错 / 网络错 / 502）不该触发中止。
-                    bool rateLimited = res.Error?.Contains("空 body") == true;
-                    if (res.Error?.Contains("无法解析播放地址") == true && rateLimited) addrFail++;
-                    RunOnUi(() => { row.State = "失败"; row.Error = res.Error; });
-                    Log($"✗ {series} [{row.Index}] {res.Error}");
-                    _downloadErrors.Add($"「{series}」[{row.Index}] {res.Error}");
-                    // ★ 连续空 body → Core 里已置熔断位，立刻停
-                    if (addrFail >= 3 || HongguoService.PlaybackBlocked)
+                        Interlocked.Increment(ref okN);
+                        RunOnUi(() =>
+                        {
+                            row.State = "已存在";
+                            row.Down = skipRes.Size;
+                            row.Total = skipRes.Size;
+                        });
+                        Log($"✓ {series} [{row.Index}] 已存在（预检跳过）{Util.FmtSize(skipRes.Size)}");
+                        RecordHistory("红果", series, row.Title, row.SeriesId, row.Vid,
+                                      skipRes.OutPath, skipRes.Size, skipRes.Duration, "已存在");
+                        return;
+                    }
+
+                    prefetch?.Consume();   // 消耗一个预备额度，窗口补解析下一集
+                    RunOnUi(() => { row.State = "下载中"; row.Error = ""; });
+
+                    // ★ 进度刷新节流：最多 10 次/秒，最后一次不丢
+                    long lastUi = 0;
+                    var cb = new DownloadCallbacks
                     {
-                        Log("！播放接口连续空 body，停止本批（网关校验收音签名被拒，不是限流）。"
-                            + "先看日志判据，急用可改用「提取App缓存」出片。");
-                        return (ok, fail, true);
+                        OnPhase = p => RunOnUi(() => { row.State = p; }),
+                        OnResolvedSize = sz => RunOnUi(() => { row.PlanSize = sz; }),
+                        OnDiag = msg => Log($"    [{row.Index}] {msg}"),
+                        OnProgress = (d, t, s) =>
+                        {
+                            long now = Environment.TickCount64;
+                            bool last = t > 0 && d >= t;
+                            if (!last && now - lastUi < 100) return;
+                            lastUi = now;
+                            RunOnUi(() => { row.Down = d; row.Total = t; row.Speed = s; });
+                        },
+                    };
+
+                    try
+                    {
+                        var res = DownloadHook != null
+                            ? await DownloadHook(ep, GetQuality(), cb, _cts.Token)
+                            : await _svc.DownloadEpisodeAsync(ep, GetQuality(), cb, _cts.Token, _hgGate);
+                        if (res.Ok)
+                        {
+                            Interlocked.Increment(ref okN);
+                            Interlocked.Exchange(ref addrFailN, 0);
+                            RunOnUi(() =>
+                            {
+                                row.State = "已完成";
+                                row.Down = res.Size;
+                                row.Total = res.Size;
+                            });
+                            string tag = res.Skipped ? "已存在" : "完成";
+                            Log($"✓ {series} [{row.Index}] {tag} "
+                                + $"{Util.FmtSize(res.Size)} {Util.FmtDuration(res.Duration)}");
+                            RecordHistory("红果", series, row.Title, row.SeriesId, row.Vid,
+                                          res.OutPath, res.Size, res.Duration,
+                                          res.Skipped ? "已存在" : "已完成");
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref failN);
+                            // ★★ 只有「空 body」才计入熔断
+                            bool rateLimited = res.Error?.Contains("空 body") == true;
+                            if (res.Error?.Contains("无法解析播放地址") == true && rateLimited)
+                                Interlocked.Increment(ref addrFailN);
+                            RunOnUi(() => { row.State = "失败"; row.Error = res.Error; });
+                            Log($"✗ {series} [{row.Index}] {res.Error}");
+                            lock (errLock) _downloadErrors.Add($"「{series}」[{row.Index}] {res.Error}");
+                            // ★ 熔断：只停新工位，已在飞的让它完成（不杀在途下载）
+                            if (Volatile.Read(ref addrFailN) >= 3 || HongguoService.PlaybackBlocked)
+                            {
+                                Interlocked.Exchange(ref stopNewFlag, 1);
+                                Log("！播放接口连续空 body，停止派发新任务（在途的会跑完）。"
+                                    + "先看日志判据，急用可改用「提取App缓存」出片。");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Interlocked.Increment(ref failN);
+                        RunOnUi(() => { row.State = "失败"; row.Error = ex.Message; });
+                        Log($"✗ {series} [{row.Index}] {ex.Message}");
+                        lock (errLock) _downloadErrors.Add($"「{series}」[{row.Index}] {ex.Message}");
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                fail++;
-                RunOnUi(() => { row.State = "失败"; row.Error = ex.Message; });
-                Log($"✗ {series} [{row.Index}] {ex.Message}");
-                _downloadErrors.Add($"「{series}」[{row.Index}] {ex.Message}");
-            }
-            UpdateHint();
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    lock (errLock) _downloadErrors.Add($"调度异常：{ex.Message}");
+                }
+                finally { pool.Release(); }
+            }, _cts.Token));
         }
+
+        await Task.WhenAll(running);
+        prefetch?.Stop();
+        ok = okN;
+        fail = failN;
+        addrFail = addrFailN;
+        UpdateHint();
+        if (stopNewFlag != 0) return (ok, fail, true);
 
         // 兴趣岛的条目排在红果之后跑：它们要先解析播放地址，慢一些
         if (xqdTargets.Count > 0 && !_stopRequested)

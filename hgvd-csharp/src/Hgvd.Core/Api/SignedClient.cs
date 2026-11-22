@@ -483,71 +483,134 @@ public sealed class SignedClient
     }
 
     /// <summary>走 preload 取播放模型；拿不到流时返回空模型（由调用方兜底）。</summary>
+    /// <remarks>
+    /// ★★ 2026-11-22：mapKey × 网关的串行试探改为**并行竞速**。
+    ///   原来 key=1004/1001/1000 依次试、每个再试 2 个网关；教学合集常用 1001
+    ///   排第二位 ⇒ 每集开头要多等 1~2 个往返（用户实测「显示下载中 → 进度条启动」停顿明显）。
+    ///   现在最多 6 个组合同时发，谁先拿到流就用谁，其余立刻取消。
+    /// ★ 诊断模式（HGVD_HOST / HGVD_PLAYBACK_HOST）**保持串行**：
+    ///   并行会同时向多个目标发请求，破坏「抓客户端真实发出的那一枪」的判据。
+    /// </remarks>
     private async Task<PlaybackModel> PlaybackPreloadAsync(string videoId, CancellationToken ct)
     {
-        string query = string.Join("&", DevicePairs().Select(kv =>
-            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value ?? "")}"));
+        bool diagnostic =
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HGVD_HOST")) ||
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HGVD_PLAYBACK_HOST"));
+        return diagnostic
+            ? await PlaybackPreloadSerialAsync(videoId, ct)
+            : await PlaybackPreloadParallelAsync(videoId, ct);
+    }
 
+    /// <summary>诊断模式：按原顺序逐个试，保证同一时刻只有一发请求。</summary>
+    private async Task<PlaybackModel> PlaybackPreloadSerialAsync(
+        string videoId, CancellationToken ct)
+    {
+        string query = BuildPreloadQuery();
         foreach (string key in PreloadMapKeys)
         {
             byte[] body = BuildPreloadBody(videoId, key);
             foreach (string baseUrl in PlaybackBaseUrls())
             {
-                try
-                {
-                    using var req = new HttpRequestMessage(
-                        HttpMethod.Post, $"{baseUrl}{PathPreload}?{query}")
-                    {
-                        Content = new ByteArrayContent(body),
-                    };
-                    req.Content.Headers.ContentType =
-                        new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
-                        { CharSet = "UTF-8" };
-                    req.Content.Headers.ContentEncoding.Add("gzip");
-                    req.Headers.TryAddWithoutValidation("User-Agent", PreloadUa);
-                    req.Headers.TryAddWithoutValidation("Accept",
-                        "application/json; charset=utf-8,application/x-protobuf");
-                    req.Headers.TryAddWithoutValidation("x-xs-from-web", "0");
-                    req.Headers.TryAddWithoutValidation("lc", "101");
-                    req.Headers.TryAddWithoutValidation("sdk-version", "2");
-                    if (!string.IsNullOrEmpty(_cookie))
-                        req.Headers.TryAddWithoutValidation("Cookie", _cookie);
-
-                    using var resp = await Net.Client.SendAsync(req, ct);
-                    string text = await resp.Content.ReadAsStringAsync(ct);
-                    if (string.IsNullOrWhiteSpace(text)) continue;
-
-                    using var doc = JsonDocument.Parse(text);
-                    var root = doc.RootElement;
-                    int code = root.TryGetProperty("code", out var c) &&
-                               c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
-                    if (code != 0) continue;
-                    if (!root.TryGetProperty("data", out var data) ||
-                        data.ValueKind != JsonValueKind.Object) continue;
-
-                    JsonElement entry;
-                    if (!data.TryGetProperty(videoId, out entry))
-                    {
-                        var first = data.EnumerateObject().Select(p => p.Value).FirstOrDefault();
-                        if (first.ValueKind != JsonValueKind.Object) continue;
-                        entry = first;
-                    }
-                    string vm = J.Str(entry, "video_model");
-                    if (string.IsNullOrEmpty(vm)) continue;
-
-                    // 复用老的解析：包成 {"data":{"video_model":"<raw>"}}
-                    using var wrapped = JsonDocument.Parse(
-                        "{\"data\":{\"video_model\":" + JsonSerializer.Serialize(vm) + "}}");
-                    var model = PlaybackModel.Parse(wrapped);
-                    if (model.Streams.Count > 0) return model;
-                }
-                catch
-                {
-                    // 换下一个网关 / 下一个 key
-                }
+                var model = await ProbePreloadAsync(videoId, key, baseUrl, query, ct);
+                if (model.Streams.Count > 0) return model;
             }
         }
         return new PlaybackModel();
+    }
+
+    /// <summary>正常模式：所有 (mapKey, 网关) 组合并行竞速，先到先用。</summary>
+    private async Task<PlaybackModel> PlaybackPreloadParallelAsync(
+        string videoId, CancellationToken ct)
+    {
+        string query = BuildPreloadQuery();
+        var hosts = PlaybackBaseUrls();
+        var probes = new List<Task<PlaybackModel>>(PreloadMapKeys.Length * hosts.Length);
+        using var race = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        foreach (string key in PreloadMapKeys)
+            foreach (string baseUrl in hosts)
+                probes.Add(ProbePreloadAsync(videoId, key, baseUrl, query, race.Token));
+
+        try
+        {
+            while (probes.Count > 0)
+            {
+                var done = await Task.WhenAny(probes);
+                probes.Remove(done);
+                var model = await done;      // 内部吞掉所有异常，不会抛
+                if (model.Streams.Count > 0) return model;
+            }
+            return new PlaybackModel();
+        }
+        finally
+        {
+            // 其余请求仍在飞 —— 取消掉，别让它们继续占连接
+            race.Cancel();
+            // 取消后的异常没人 await 会变成未观察异常，统一消费掉
+            foreach (var t in probes)
+                _ = t.ContinueWith(x => { _ = x.Exception; }, TaskScheduler.Default);
+        }
+    }
+
+    private string BuildPreloadQuery() => string.Join("&", DevicePairs().Select(kv =>
+        $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value ?? "")}"));
+
+    /// <summary>单次 preload 试探；失败 / 无流返回空模型（并行与串行共用）。</summary>
+    private async Task<PlaybackModel> ProbePreloadAsync(
+        string videoId, string key, string baseUrl, string query, CancellationToken ct)
+    {
+        byte[] body = BuildPreloadBody(videoId, key);
+        try
+        {
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post, $"{baseUrl}{PathPreload}?{query}")
+            {
+                Content = new ByteArrayContent(body),
+            };
+            req.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")
+                { CharSet = "UTF-8" };
+            req.Content.Headers.ContentEncoding.Add("gzip");
+            req.Headers.TryAddWithoutValidation("User-Agent", PreloadUa);
+            req.Headers.TryAddWithoutValidation("Accept",
+                "application/json; charset=utf-8,application/x-protobuf");
+            req.Headers.TryAddWithoutValidation("x-xs-from-web", "0");
+            req.Headers.TryAddWithoutValidation("lc", "101");
+            req.Headers.TryAddWithoutValidation("sdk-version", "2");
+            if (!string.IsNullOrEmpty(_cookie))
+                req.Headers.TryAddWithoutValidation("Cookie", _cookie);
+
+            using var resp = await Net.Client.SendAsync(req, ct);
+            string text = await resp.Content.ReadAsStringAsync(ct);
+            if (string.IsNullOrWhiteSpace(text)) return new PlaybackModel();
+
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            int code = root.TryGetProperty("code", out var c) &&
+                       c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+            if (code != 0) return new PlaybackModel();
+            if (!root.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Object) return new PlaybackModel();
+
+            JsonElement entry;
+            if (!data.TryGetProperty(videoId, out entry))
+            {
+                var first = data.EnumerateObject().Select(p => p.Value).FirstOrDefault();
+                if (first.ValueKind != JsonValueKind.Object) return new PlaybackModel();
+                entry = first;
+            }
+            string vm = J.Str(entry, "video_model");
+            if (string.IsNullOrEmpty(vm)) return new PlaybackModel();
+
+            // 复用老的解析：包成 {"data":{"video_model":"<raw>"}}
+            using var wrapped = JsonDocument.Parse(
+                "{\"data\":{\"video_model\":" + JsonSerializer.Serialize(vm) + "}}");
+            var model = PlaybackModel.Parse(wrapped);
+            return model.Streams.Count > 0 ? model : new PlaybackModel();
+        }
+        catch
+        {
+            return new PlaybackModel();   // 换下一个网关 / 下一个 key（由调用方决定）
+        }
     }
 
     /// <summary>取播放模型（各清晰度的直链 + 加密信息）。</summary>

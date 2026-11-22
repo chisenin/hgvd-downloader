@@ -40,7 +40,7 @@ set "DOTNET_CLI_TELEMETRY_OPTOUT=1"
 set "DOTNET_NOLOGO=1"
 
 set "PROJ=src\Hgvd.Avalonia\Hgvd.Avalonia.csproj"
-set "VER=1.7.0"
+set "VER=1.8.0"
 set "APP=hgvd-downloader-v%VER%"
 set "PKG=pkg\%APP%"
 set "LOGDIR=%USERPROFILE%\.hgv_tool"
@@ -62,10 +62,17 @@ rem      publish 会**静默不裁剪**（产物 89 MB 而不是 41 MB，而且�
 "%DOTNET%" restore "%PROJ%" -p:Configuration=Release --configfile "%~dp0NuGet.config" -r win-x64 || goto :err
 
 echo [3/3] Publishing directory build (local product form) to %PKG%
-rem ★ 目录版用 PublishSingleFile=false —— 运行时 dll 与 ffmpeg 都摊在目录里，
-rem   启动快、可单独替换 ffmpeg、出问题能直接看目录里有什么。
+rem ★ 目录版用 PublishSingleFile=false —— 运行时 dll 摊在目录里，
+rem   启动快、出问题能直接看目录里有什么。
+rem ★★ EmbedFfmpeg=false：目录版**不内嵌** ffmpeg，下面复制进 pkg 根目录，
+rem   可单独替换；内嵌只留给 CI 的单文件版。
 if exist "%PKG%" rd /s /q "%PKG%"
-"%DOTNET%" publish "%PROJ%" -c Release --no-restore -o "%PKG%" -p:PublishSingleFile=false -p:PkgVersion=%VER% || goto :err
+"%DOTNET%" publish "%PROJ%" -c Release --no-restore -o "%PKG%" -p:PublishSingleFile=false -p:EmbedFfmpeg=false -p:PkgVersion=%VER% || goto :err
+
+rem ★ 把 ffmpeg/ffprobe 摊进目录版（目录版不内嵌，见上）
+copy /Y "%~dp0..\.cache\ffmpeg\ffmpeg.exe"  "%PKG%\" >nul || goto :noffmpeg
+copy /Y "%~dp0..\.cache\ffmpeg\ffprobe.exe" "%PKG%\" >nul || goto :noffmpeg
+echo   ffmpeg/ffprobe copied into %PKG%
 
 echo.
 echo Build output (local product form = directory build):
@@ -135,6 +142,11 @@ goto :eof
 echo [selftest] headless: shelf -> episodes -> playback url
 "%DOTNET%" run --project "%PROJ%" -c Debug --no-restore -- --selftest || goto :err
 goto :eof
+
+:noffmpeg
+echo.
+echo [FAIL] ffmpeg/ffprobe not found in .cache\ffmpeg -- run prepare-ffmpeg.ps1 first.
+exit /b 1
 
 :err
 echo.

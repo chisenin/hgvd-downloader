@@ -84,7 +84,14 @@ jobs:
           $pkg = "hgvd-avalonia/pkg/hgvd-downloader-v$ver"
           if (Test-Path $pkg) { Remove-Item $pkg -Recurse -Force -Confirm:$false }
           dotnet restore hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -p:Configuration=Release --configfile .github/nuget.ci.config -r win-x64
-          dotnet publish hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o $pkg -p:PublishSingleFile=false -p:PkgVersion=$ver
+          # ★ 目录版不内嵌 ffmpeg（EmbedFfmpeg=false），下面把 exe 摊进包里
+          dotnet publish hgvd-avalonia/src/Hgvd.Avalonia/Hgvd.Avalonia.csproj -c Release --no-restore -o $pkg -p:PublishSingleFile=false -p:EmbedFfmpeg=false -p:PkgVersion=$ver
+          # ★ ffmpeg/ffprobe 复制进目录版（可单独替换；单文件版仍靠内嵌）
+          foreach ($tool in @('ffmpeg', 'ffprobe')) {
+            $src = ".cache/ffmpeg/$tool.exe"
+            if (-not (Test-Path $src)) { throw "缺少 $src（prepare-ffmpeg 应已生成）" }
+            Copy-Item -LiteralPath $src -Destination $pkg -Force
+          }
           Get-ChildItem $pkg | Measure-Object -Property Length -Sum |
             ForEach-Object { Write-Host ("    目录版 {0} 个文件，共 {1:N1} MB" -f $_.Count, ($_.Sum / 1MB)) }
 
@@ -147,25 +154,24 @@ jobs:
             两源**共用同一张下载清单**、同一条队列、同一个日志。
 
             <!-- ★ 每次发版改这一段：标题版本号 + 更新条目 -->
-            ## 本版更新（v1.7.0）
+            ## 本版更新（v1.8.0）
 
-
-
-            - **移除「抓流」**：它靠本机 MITM 代理拦 App 的播放响应取直链，
-
-              红果接口改版后已失效（现在只走 `video_model/v1/`，不再发 `multi_video_model/*`，
-
-              新响应也没有数字 vid 对白名单）。连根删除，不再有「抓流」按钮；
-
-              配套的 MITM 证书/代理组件、白名单表、命令行 `grab` 子命令也一并移除。
-
+            - **下载大幅提速**：按下下载键先一次性预检，已下完的分集直接跳过（不再逐集
+              校验，180 集里已下 100 集的场景从约 5 秒空转降到约 1 秒）；未下完的集
+              有进度记账，异常退出/正常关闭都会留记录，下次接着下。
+            - **直链先行 + 2 路并发**：勾选剧目后在后台提前解析后续 10 集的直链，
+              下载时直接命中、不必现场等解析；两集同时下载，某一集失败不再卡住全体。
+            - **目录版不再内嵌 ffmpeg**：ffmpeg/ffprobe 作为独立文件随目录分发，
+              可单独替换、启动更快；单文件版仍内嵌（首次运行自解压）。
             - 播放接口拿不到直链时，可先在 App 里播放，再用「**提取App缓存**」取出下完的视频。
 
-            - 发版门禁随之从三道精简为两道（界面自检 + 下载链路），去掉不再需要的证书链检查。
+            > 上一个版本（v1.7.0）已移除「抓流」：它靠本机 MITM 代理拦 App 的播放响应取直链，
 
+            > 红果接口改版后失效，连根删除（含 MITM 组件、白名单表、`grab` 子命令），
 
+            > 发版门禁随之从三道精简为两道（界面自检 + 下载链路）。
 
-            > 上一个版本（v1.6.0）已收紧口径为「只下收藏夹里的教材/合集类视频」，
+            > 更早已收紧口径为「只下收藏夹里的教材/合集类视频」，
 
             > 并移除了「按剧 ID 自动抓剧」入口。
 

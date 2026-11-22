@@ -33,6 +33,12 @@ public static class Paths
     public static string HistoryPath => Path.Combine(ToolDir, "history.json");
     /// <summary>红果侧的下载清单（重启恢复；与兴趣岛的 xqd\jobs.json 并列）。</summary>
     public static string QueuePath => Path.Combine(ToolDir, "queue.json");
+    /// <summary>
+    /// 下载进度记账（开始/完成/失败/直链），按成品路径索引。
+    /// ★ 与 history.json 分开：history 只记完成、且 500 条上限会挤掉老记录；
+    ///   这里要保留未完成/失败态与直链，供下次预检秒跳，不能共用。
+    /// </summary>
+    public static string ProgressPath => Path.Combine(ToolDir, "progress.json");
 
     public static void EnsureDir() => Directory.CreateDirectory(ToolDir);
 }

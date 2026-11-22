@@ -42,7 +42,7 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 
 PROJ="src/Hgvd.Avalonia/Hgvd.Avalonia.csproj"
-VER="1.7.0"
+VER="1.8.0"
 APP="hgvd-downloader-v$VER"
 PKG="pkg/$APP"
 LOGDIR="$HOME/.hgv_tool"
@@ -70,11 +70,24 @@ echo "[2/3] 还原依赖（走 nuget.azure.cn 镜像）"
 "$DOTNET" restore "$PROJ" -p:Configuration=Release --configfile "./NuGet.config" -r win-x64
 
 echo "[3/3] 发布目录版（本地唯一产物形态，输出到 $PKG）"
-# ★ 目录版用 PublishSingleFile=false —— 运行时 dll 与 ffmpeg 都摊在目录里，
-#   启动快、可单独替换 ffmpeg、出问题能直接看目录里有什么。
+# ★ 目录版用 PublishSingleFile=false —— 运行时 dll 摊在目录里，
+#   启动快、出问题能直接看目录里有什么。
+# ★★ EmbedFfmpeg=false：目录版不内嵌 ffmpeg，下面复制进 pkg 根目录；
+#   内嵌只留给 CI 的单文件版。
 # ★ 先清空，否则上一次的残留文件会混进产物（用 Python 删，绕开 bash 的 rm 钩子）。
 python -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$PKG" 2>/dev/null || true
-"$DOTNET" publish "$PROJ" -c Release --no-restore -o "$PKG" -p:PublishSingleFile=false -p:PkgVersion="$VER"
+"$DOTNET" publish "$PROJ" -c Release --no-restore -o "$PKG" -p:PublishSingleFile=false -p:EmbedFfmpeg=false -p:PkgVersion="$VER"
+
+# ★ 把 ffmpeg/ffprobe 摊进目录版
+for tool in ffmpeg ffprobe; do
+    src="../.cache/ffmpeg/$tool.exe"
+    if [ ! -f "$src" ]; then
+        echo "[FAIL] $src not found -- run prepare-ffmpeg.ps1 first" >&2
+        exit 1
+    fi
+    cp -f "$src" "$PKG/" || exit 1
+done
+echo "  ffmpeg/ffprobe copied into $PKG"
 
 echo
 echo "产物（本地唯一形态：目录版）："

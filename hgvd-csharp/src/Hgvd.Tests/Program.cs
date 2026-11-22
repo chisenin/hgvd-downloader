@@ -31,6 +31,8 @@ public static class Program
         fail += XqdTests.Run();
         // ★ 2026-11-21 补齐：红果清单落盘 / 下载历史 / 去重口径 / 5 档筛选 / 剩余时间
         fail += StateTests.Run();
+        // ★ 2026-11-22 下载提速：进度记账 + 预检秒跳判据
+        fail += ProgressTests.Run();
         Console.WriteLine();
         if (fail == 0)
         {

@@ -65,7 +65,18 @@ public sealed class HistoryStore
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
+    /// <summary>
+    /// ★ 并发下载时多路会同时写历史（读-改-写），必须串行化，否则后写的覆盖先写的丢记录。
+    ///   Add 内部调 Load/Save 是重入，所以用同一把锁的 NoLock 私有版本。
+    /// </summary>
+    private static readonly object WriteLock = new();
+
     public List<HistoryEntry> Load()
+    {
+        lock (WriteLock) return LoadNoLock();
+    }
+
+    private List<HistoryEntry> LoadNoLock()
     {
         try
         {
@@ -77,6 +88,11 @@ public sealed class HistoryStore
     }
 
     public void Save(IEnumerable<HistoryEntry> items)
+    {
+        lock (WriteLock) SaveNoLock(items);
+    }
+
+    private void SaveNoLock(IEnumerable<HistoryEntry> items)
     {
         try
         {
@@ -95,14 +111,17 @@ public sealed class HistoryStore
         if (entry == null || string.IsNullOrEmpty(entry.Path)) return;
         if (entry.Ts <= 0) entry.Ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        var list = Load();
-        list.RemoveAll(e => string.Equals(e.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
-        list.Insert(0, entry);
-        Save(list);
+        lock (WriteLock)
+        {
+            var list = LoadNoLock();
+            list.RemoveAll(e => string.Equals(e.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, entry);
+            SaveNoLock(list);
+        }
     }
 
     public void Clear()
     {
-        try { if (File.Exists(Path)) File.Delete(Path); } catch { }
+        lock (WriteLock) { try { if (File.Exists(Path)) File.Delete(Path); } catch { } }
     }
 }

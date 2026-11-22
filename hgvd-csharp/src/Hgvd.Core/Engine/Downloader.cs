@@ -48,6 +48,8 @@ public sealed class DownloadCallbacks
     ///   不用等下完才知道多大。
     /// </summary>
     public Action<long> OnResolvedSize;
+    /// <summary>诊断日志（首字节耗时等），供界面排查「拿到大小到开下」的停顿。</summary>
+    public Action<string> OnDiag;
 }
 
 /// <summary>下载引擎。</summary>
@@ -83,9 +85,15 @@ public static class Downloader
             }
 
             HttpResponseMessage? resp = null;
+            var swGet = Stopwatch.StartNew();
             try
             {
-                resp = await Net.Client.SendAsync(httpReq, ct);
+                // ★★ ResponseHeadersRead：收到响应头就返回，流式读 body。
+                //   默认的 ResponseContentRead 会**缓冲完整个响应**才返回 —— 这就是
+                //   「拿到大小到进度条启动」卡十几秒的原因：SendAsync 在后台缓冲整集。
+                resp = await Net.Client.SendAsync(httpReq,
+                    HttpCompletionOption.ResponseHeadersRead, ct);
+                cb.OnDiag?.Invoke($"GET 响应头 {swGet.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {
@@ -103,7 +111,9 @@ public static class Downloader
                     have = new FileInfo(part).Length;
                     alt.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(have, null);
                 }
-                resp = await Net.Client.SendAsync(alt, ct);
+                resp = await Net.Client.SendAsync(alt,
+                    HttpCompletionOption.ResponseHeadersRead, ct);
+                cb.OnDiag?.Invoke($"备用 GET 响应头 {swGet.ElapsedMilliseconds}ms");
             }
             using (resp)
             {
@@ -125,8 +135,14 @@ public static class Downloader
                 var sw = Stopwatch.StartNew();
                 long done = have;
                 int n;
+                bool firstByte = true;
                 while ((n = await src.ReadAsync(buf, ct)) > 0)
                 {
+                    if (firstByte)
+                    {
+                        firstByte = false;
+                        cb.OnDiag?.Invoke($"首字节 {swGet.ElapsedMilliseconds}ms（含响应头+第一批数据）");
+                    }
                     // ★ 暂停闸门：在分块之间等，保留连接与已写进度
                     if (gate != null) await gate.WaitAsync(ct);
                     await fs.WriteAsync(buf.AsMemory(0, n), ct);

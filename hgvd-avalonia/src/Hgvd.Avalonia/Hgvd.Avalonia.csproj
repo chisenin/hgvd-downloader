@@ -12,7 +12,7 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- ★ exe 名带版本号：hgvd-downloader-vX.Y.Z.exe（与 C++/WPF 版同名，方便替换） -->
-    <PkgVersion Condition="'$(PkgVersion)' == ''">1.7.0</PkgVersion>
+    <PkgVersion Condition="'$(PkgVersion)' == ''">1.8.0</PkgVersion>
     <!-- ★ 版本号唯一来源就是 PkgVersion（CI 发版时用标签 vX.Y.Z 传入）：
          Version 同时决定 **程序集版本** —— 界面上的版本号读的就是
          Assembly.GetName().Version（AboutWindow.AppVersion），
@@ -41,17 +41,27 @@
     <ProjectReference Include="..\..\..\hgvd-csharp\src\Hgvd.Xqd\Hgvd.Xqd.csproj" />
   </ItemGroup>
 
+  <!-- ★★ ffmpeg 打包形态开关（2026-11-22 修正）：
+         · 目录版（本地 build.cmd/build.sh、CI 的 B 案）：**不内嵌**
+           ffmpeg.exe / ffprobe.exe 由构建脚本复制进 pkg 目录，可单独替换、启动快。
+           传 -p:EmbedFfmpeg=false 关掉下面的嵌入。
+         · 单文件版（CI 的备用形态）：保持默认 true，把 gz 嵌进 exe，
+           首次运行自解压到 LOCALAPPDATA（外面没有附带文件可用）。
+         ★ 默认 true = 单文件形态；目录版必须显式传 false。 -->
+  <PropertyGroup>
+    <EmbedFfmpeg Condition="'$(EmbedFfmpeg)' == ''">true</EmbedFfmpeg>
+  </PropertyGroup>
+
   <ItemGroup>
-    <!-- ★★ 内置 ffmpeg / ffprobe（官方静态构建，gzip 压缩后嵌入）。
-         build.cmd / build.sh / CI 会先跑 prepare-ffmpeg.ps1 把两个 exe 压成 .gz
-         放到仓库根的 .cache/ffmpeg/；没有的话这两条直接跳过（Debug 构建照常，
-         运行时退回 PATH 里的 ffmpeg）。 -->
+    <!-- ★★ 内置 ffmpeg / ffprobe（仅单文件版用）：
+         prepare-ffmpeg.ps1 把两个 exe 压成 .gz 放到仓库根 .cache/ffmpeg/。
+         目录版传 EmbedFfmpeg=false → 这两条不生效，改用目录里的 exe。 -->
     <EmbeddedResource Include="..\..\..\.cache\ffmpeg\ffmpeg.exe.gz"
                       LogicalName="ffmpeg.exe.gz"
-                      Condition="'$(Configuration)' == 'Release' And Exists('..\..\..\.cache\ffmpeg\ffmpeg.exe.gz')" />
+                      Condition="'$(Configuration)' == 'Release' And '$(EmbedFfmpeg)' != 'false' And Exists('..\..\..\.cache\ffmpeg\ffmpeg.exe.gz')" />
     <EmbeddedResource Include="..\..\..\.cache\ffmpeg\ffprobe.exe.gz"
                       LogicalName="ffprobe.exe.gz"
-                      Condition="'$(Configuration)' == 'Release' And Exists('..\..\..\.cache\ffmpeg\ffprobe.exe.gz')" />
+                      Condition="'$(Configuration)' == 'Release' And '$(EmbedFfmpeg)' != 'false' And Exists('..\..\..\.cache\ffmpeg\ffprobe.exe.gz')" />
   </ItemGroup>
 
   <!-- ══════════════════════════════════════════════════════════════
