@@ -228,7 +228,7 @@ cd hgvd-avalonia && ./build.cmd        # 或 build.sh；verify = 构建 + 界面
 dotnet build hgvd-csharp/src/Hgvd.Tests/Hgvd.Tests.csproj -c Debug --configfile hgvd-avalonia/NuGet.config
 ./hgvd-csharp/src/Hgvd.Tests/bin/Debug/net8.0-windows/Hgvd.Tests.exe
 
-# Python 离线回归（130 项）
+# Python 离线回归（107 项）
 python -m tests.run
 
 # 升版本 / 校验（发布前必须一致）
@@ -267,10 +267,12 @@ tools/                    探测与打包脚本
 
 ## 文档
 
+先看 [`docs/README.md`](docs/README.md)（文档地图：阅读顺序 + 职责边界），再看具体篇：
+
 | 文档 | 内容 |
 |---|---|
-| [`docs/01-接口与请求.md`](docs/01-接口与请求.md) | 红果接口、请求体形状、判据 |
-| [`docs/02-版本与维护范围.md`](docs/02-版本与维护范围.md) | 版本号来源、构建、发版、维护范围 |
+| [`docs/01-接口与请求.md`](docs/01-接口与请求.md) | 四条链路、请求与响应形状、错误码判据 |
+| [`docs/02-版本与维护范围.md`](docs/02-版本与维护范围.md) | 构建、发版、版本号同步、许可口径 |
 | [`docs/03-开发要点.md`](docs/03-开发要点.md) | 裁剪、布局、判据纪律、踩坑 |
 | [`NOTICE.md`](NOTICE.md) | 第三方组件、参考项目、版权声明 |
 

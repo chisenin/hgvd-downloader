@@ -28,8 +28,8 @@ public static class Argus
         // ★★ 填充值必须是「填充长度」本身（标准 PKCS#7），
         //   不是零字节！Python 版 `hgvd/sign/core.py::_pkcs7` 用的就是
         //   `bytes([pad]) * pad`，Go 参考实现同理。
-        //   ★ 2026-11-14 实测：用零填充会让 x-argus / x-ladon 与 Python
-        //     逐字节不一致 —— 服务端收到后**不回任何错误、直接返回空 body**，
+        //   ★ 2026-11-14：用零填充会让 x-argus / x-ladon 与 Python 版
+        //     逐字节不一致 —— 服务端收到不一致的值时**不回任何错误、直接返回空 body**，
         //     表现出来就是「播放接口挂了」，极难定位。
         int pad = 16 - data.Length % 16;
         var outBuf = new byte[data.Length + pad];

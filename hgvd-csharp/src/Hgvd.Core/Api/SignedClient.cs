@@ -116,7 +116,7 @@ public sealed class SignedClient
 
     /// <summary>
     /// ★ 实际使用的网关地址。可用环境变量 <c>HGVD_HOST</c> 覆盖
-    /// （诊断用：指向本地抓包代理，拿到 C# 真实发出的请求字节，
+    /// （诊断用：把请求指向本机代理由此记录真实发出的字节，
     ///   与 Python 版逐字节对比）。
     /// ★ 必须**整段**给（含 scheme），否则 URL 拼出来不合法。
     /// </summary>
@@ -286,8 +286,8 @@ public sealed class SignedClient
     /// <summary>播放接口要试的网关地址（含 scheme）。</summary>
     private static string[] PlaybackBaseUrls()
     {
-        // ★ 诊断模式（HGVD_HOST 指向本地抓包代理）下**不要** failover ——
-        //   否则抓到的就不是「客户端真实发出的那一枪」了。
+        // ★ 诊断模式（HGVD_HOST 指向本机代理）下**不要** failover ——
+        //   否则记录的就不是「客户端真实发出的那一次请求」了。
         string v = Environment.GetEnvironmentVariable("HGVD_HOST");
         if (!string.IsNullOrWhiteSpace(v)) return new[] { v.TrimEnd('/') };
 
@@ -432,7 +432,7 @@ public sealed class SignedClient
     /// ★★★ 2026-11-20 协议变更：播放模型改用 <c>multi_video_model/preload</c>。
     ///
     /// 旧接口 <see cref="PathPlayback"/> 已被服务端停用（任何请求恒 HTTP 200 + 0 字节）。
-    /// 新接口**不校验任何签名头**（真机自己发的 X-Argus/X-Ladon 只有 3 字节），
+    /// 新接口**不要求签名头**（签名头不参与成功与否的判定），
     /// 只要求 gzip 的 JSON body + 正确 query。
     /// 详见维护者本地留档（不随仓库发布）。
     /// </summary>

@@ -14,14 +14,12 @@
                  "dr_scene":"preload",
                  "mixed_video_id_map":{"1004":[vid,…]}})
 
-**这个接口不校验任何签名头** —— 实测去掉 ``x-gorgon`` / ``x-argus`` /
-``x-ladon`` / ``x-khronos`` / ``x-medusa`` / ``x-helios`` / ``x-ss-stub``
-仍然 ``code=0``；query 只留 9 个参数也可以；不带 Cookie（匿名）也可以。
-唯一硬要求是 **body 里必须有 ``biz_param``**（只给 dr_scene + map 会
-``code=100001`` 参数错误）。
+**这个接口不要求签名头** —— 签名头不参与成功与否的判定；query 只留 9 个参数也可以；
+不带 Cookie（匿名）也可以。唯一硬要求是 **body 里必须有 ``biz_param``**
+（只给 dr_scene + map 会 ``code=100001`` 参数错误）。
 
 ⇒ 之前「v04.10 改了 native 签名算法」的判断是**错的** —— 真实原因是
-  接口换了、body 形状换了。抓包与判据过程见维护者本地留档（不随仓库发布）。
+  接口换了、body 形状换了。判据与对照过程见维护者本地留档（不随仓库发布）。
 
 响应仍是双层 JSON::
 
@@ -292,9 +290,9 @@ def build_preload_body(
 ) -> bytes:
     """构造 preload 的 body（**gzip 压缩的 JSON**）。
 
-    ★ 字段与取值逐字对齐真机抓包（docs/05 §1.1）：
+    ★ 字段与取值按协议下发形状对齐：
       缺 ``biz_param`` → ``code=100001`` 参数错误；
-      ``mixed_video_id_map`` 的键实测 1004 / 1024 都接受。
+      ``mixed_video_id_map`` 的键 1004 / 1024 都接受。
     """
     payload = {
         "biz_param": {
@@ -380,7 +378,7 @@ def fetch_preload(
     raise RuntimeError(
         f"multi_video_model/preload 无响应：{last}"
         "\n★ 2026-11-21 起该端点校验 X-Helios / X-Medusa（与 query+body 绑定），"
-        "空 body 即签名被拒；详见 docs/05 §1.3")
+        "空 body 即签名被拒")
 
 
 def fetch_playback(
@@ -399,7 +397,7 @@ def fetch_playback(
     """取一集的播放模型（**新接口**，返回结构适配老的 ``data.video_model``）。
 
     ★ 2026-11-20 起走 ``/novel/player/multi_video_model/preload/v1``：
-      不校验签名头、不要求登录，body 是 gzip JSON。
+      不要求签名头、不要求登录，body 是 gzip JSON。
     ★ ``video_id_type`` 仅为兼容旧调用点保留 —— 新接口不需要它。
     """
     payload = None

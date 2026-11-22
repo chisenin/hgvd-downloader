@@ -68,11 +68,38 @@ probe_*.json
 #     docs/samples/ / tools/metasec/
 docs/08-metasec逆向留档.md
 docs/09-原生抓取层与接口改版.md
+docs/00-本地留档清单.md
 docs/05-抓包与协议排查.md
 docs/06-兴趣岛内核.md
 docs/07-跨语言字节级陷阱.md
 docs/samples/
 tools/metasec/
+
+# 探针 / 重放 / 抓包 / 签名向量类脚本：逆向过程工具，同属「不落公开档」。
+# 它们只用于本地定位与对照，不属于运行时链路；保留在 tools/ 下但不跟踪。
+tools/app_pull.py
+tools/axml.py
+tools/clean_probe.py
+tools/control_test.py
+tools/diff_probe.py
+tools/emptybody_probe.py
+tools/gen_argus_golden.py
+tools/limit_probe.py
+tools/playback_diag.py
+tools/playback_probe.py
+tools/probe_album.py
+tools/probe_album_play.py
+tools/probe_endpoint_matrix.py
+tools/probe_snssdk_playback.py
+tools/rate_probe.py
+tools/replay_capture.py
+tools/request_logger.py
+tools/retry_backoff.py
+tools/scan_playback_params.py
+tools/scrub_samples.py
+tools/swap_sig.py
+tools/try_device_ids.py
+tools/try_hosts.py
 
 # 逆向红线的机器可读词表（给 .githooks/pre-commit 用）；词表本身也不公开。
 .rev-redline

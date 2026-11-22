@@ -570,7 +570,7 @@ public sealed class HongguoService
         if (PlaybackBlocked)
             return ("", 0, "", "", "播放接口连续多次返回空 body，已熔断本批。" +
                 "★ 2026-11-21 起网关会校验播放签名（X-Helios / X-Medusa），空 body 即签名被拒；" +
-                "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」，详见 docs/05 §1.3", "");
+                "不是限流、不是网络，等再久也不会恢复。急用请改用「提取App缓存」", "");
 
         string ck = $"{videoId}|{videoIdType}|{quality}";
         lock (PlaybackCache)

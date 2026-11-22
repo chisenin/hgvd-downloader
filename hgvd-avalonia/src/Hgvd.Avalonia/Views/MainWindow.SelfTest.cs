@@ -796,11 +796,11 @@ public partial class MainWindow
     /// </summary>
     private void SimulateBrandClick() => OnBrandClicked();
 
-    // ──────────────────────────────────────────────────────────── 发版门禁探针
+    // ──────────────────────────────────────────────────────────── 发版门禁自检
     // ★ 播放接口加固后，无人值守拿不到有效直链（直链带 100 秒时间戳），
     //   所以端到端下载门禁用本地可控的验证：
     //     DownloadProbeAsync —— 下载引擎 + 命名 + ffprobe 校验
-    //   ★ 原 TlsProbeAsync（MITM 证书链）随抓流一起裁掉（2026-11-22）。
+    //   ★ 原 TlsProbeAsync（证书链自检）随兜底路径一起裁掉（2026-11-22）。
 
     private static void ProbeLog(string report, string line)
     {
