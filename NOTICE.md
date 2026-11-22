@@ -43,8 +43,7 @@ Required Notice: Copyright 2026 chisenin (https://github.com/chisenin/hgvd-downl
 | 离线回归 | `hgvd-csharp/src/Hgvd.Tests/` | 作者独立实现 |
 
 兴趣岛合并时**没有搬**上游的 ADB 界面自动化、模拟器自动启动、ffmpeg 自动安装，
-本仓库改为「API + MuMu 只读 Cookie + 内置 ffmpeg」。差异见
-[`docs/06-兴趣岛内核.md`](docs/06-兴趣岛内核.md)。
+本仓库改为「API + MuMu 只读 Cookie + 内置 ffmpeg」。
 
 ---
 

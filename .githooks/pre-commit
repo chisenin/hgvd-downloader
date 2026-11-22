@@ -1,0 +1,92 @@
+#!/bin/sh
+# ══════════════════════════════════════════════════════════════
+#  逆向内容提交闸（2026-11-22）
+#
+#  原则：所有逆向相关的过程记录、工具与抓包样本**不落公开档、不推送**。
+#  只靠记性迟早会漏，所以把判定前移到 commit：暂存区一旦命中红线词表就拒提交。
+#
+#  词表：仓库根 `.rev-redline`（已在 .gitignore 中排除，词表本身也不公开）。
+#    - 每行一条，`#` 开头为注释，空行忽略
+#    - 三种写法：
+#        dir:<路径前缀>     该目录下的文件
+#        path:<完整路径>    精确路径
+#        text:<关键词>      文件正文命中（不区分大小写，固定串匹配）
+#
+#  放行：HGVD_REV_SKIP=1 git commit ...   （仅限明确知道自己在做什么）
+#        git commit --no-verify          （会连带跳过其他钩子，不推荐）
+#
+#  删除类改动不受拦：--diff-filter=ACMR 故意排除 D，所以「收回存量」那一次能正常提交。
+# ══════════════════════════════════════════════════════════════
+set -u
+
+REDLINE=.rev-redline
+[ -f "$REDLINE" ] || exit 0
+
+if [ "${HGVD_REV_SKIP:-0}" = "1" ]; then
+    echo "· 逆向闸：HGVD_REV_SKIP=1，本次跳过检查"
+    exit 0
+fi
+
+STAGED_LIST=.git/.rev-staged.$$
+RULES_NORM=.git/.rev-rules.$$
+HITS=.git/.rev-hits.$$
+trap 'rm -f "$STAGED_LIST" "$RULES_NORM" "$HITS"' EXIT HUP INT TERM
+
+git diff --cached --name-only --diff-filter=ACMR >"$STAGED_LIST" || exit 0
+[ -s "$STAGED_LIST" ] || exit 0
+
+# 词表容错：Windows 编辑器存成 CRLF 时，行尾的 \r 会粘在匹配串上导致漏判，
+# 所以读取前统一去掉 CR；暂存列表同样过一遍。
+tr -d '\r' <"$STAGED_LIST" >"$STAGED_LIST.norm" && mv "$STAGED_LIST.norm" "$STAGED_LIST"
+tr -d '\r' <"$REDLINE" >"$RULES_NORM"
+[ -s "$RULES_NORM" ] || exit 0
+
+: >"$HITS"
+record() { printf '%s\t%s\n' "$1" "$2" >>"$HITS"; }
+
+while IFS= read -r rule || [ -n "$rule" ]; do
+    [ -z "$rule" ] && continue
+    case "$rule" in \#*) continue ;; esac
+    kind=${rule%%:*}
+    pat=${rule#*:}
+    [ "$kind" = "$rule" ] && continue          # 没有冒号 ⇒ 格式不对，忽略
+    case "$kind" in
+    dir)
+        while IFS= read -r f; do
+            case "$f" in
+            "$pat"/*) record "$f" "$rule" ;;
+            esac
+        done <"$STAGED_LIST"
+        ;;
+    path)
+        while IFS= read -r f; do
+            [ "$f" = "$pat" ] && record "$f" "$rule"
+        done <"$STAGED_LIST"
+        ;;
+    text)
+        while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            if grep -q -i -F -e "$pat" -- "$f" 2>/dev/null; then
+                record "$f" "$rule"
+            fi
+        done <"$STAGED_LIST"
+        ;;
+    *) ;;                                      # 未知类型：忽略，不误伤
+    esac
+done <"$RULES_NORM"
+
+if [ -s "$HITS" ]; then
+    {
+        echo ""
+        echo "✗ 逆向闸：以下暂存内容命中本地红线（.rev-redline），提交已拒绝："
+        sort -u "$HITS" | sed 's/^/    /'
+        echo ""
+        echo "  做法：把这份内容挪到本地留档，并在 .gitignore 里排除；"
+        echo "        公开仓库只留结论，不贴过程、工具与样本。"
+        echo "  确需放行：HGVD_REV_SKIP=1 git commit ..."
+        echo ""
+    } >&2
+    exit 1
+fi
+
+exit 0

@@ -10,3 +10,6 @@
 *.bat  text eol=crlf
 *.ps1  text eol=crlf
 *.sh   text eol=lf
+
+# ★ git 钩子脚本（无扩展名）必须保持 LF：shebang 行带 CR 会让 sh 找不到解释器。
+.githooks/*  text eol=lf

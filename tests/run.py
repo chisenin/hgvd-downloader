@@ -464,11 +464,16 @@ def test_i_preload_protocol() -> None:
           isinstance(adapted["data"]["video_model"], dict))
     check("I15 适配后能解析出流", len(pb.parse_streams(adapted)) == 1)
 
-    # 文档里必须留下这次结论（否则下个会话又会去猜签名）
+    # 文档里必须留下这次结论（否则下个会话又会去猜签名）。
+    # 该文档属维护者本地留档（.gitignore 已排除）：公开 clone / CI 里没有 ⇒ 跳过这两项。
     root = Path(__file__).resolve().parent.parent
-    doc = (root / "docs" / "05-抓包与协议排查.md").read_text(encoding="utf-8")
-    check("I16 文档记录「不校验签名头」", "不校验签名头" in doc)
-    check("I17 文档记录新接口路径", "multi_video_model/preload" in doc)
+    doc_path = root / "docs" / "05-抓包与协议排查.md"
+    if doc_path.is_file():
+        doc = doc_path.read_text(encoding="utf-8")
+        check("I16 文档记录「不校验签名头」", "不校验签名头" in doc)
+        check("I17 文档记录新接口路径", "multi_video_model/preload" in doc)
+    else:
+        print("  · I16/I17 跳过：本地留档文档不在本副本里")
 
 
 def main() -> int:
